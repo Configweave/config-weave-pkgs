@@ -1,0 +1,134 @@
+package "linux_tmux" {
+  description = "Manage tmux configuration files and session definitions"
+
+  gatherer "tmux_paths" {
+    description = "Report tmux configuration paths for a target home directory"
+    script = "gatherers/tmux_paths.wisp"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+  }
+
+  gatherer "tmux_version" {
+    description = "Detect the tmux binary and version"
+    script = "gatherers/tmux_version.wisp"
+  }
+
+  resource "tmux_conf" {
+    description = "Ensure ~/.tmux.conf has exact content"
+    script = "resources/tmux_conf.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "content" { description = "Desired tmux.conf content" type = "string" required = true }
+  }
+
+  resource "tmux_conf_line" {
+    description = "Ensure a line is present in ~/.tmux.conf"
+    script = "resources/tmux_conf_line.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "line" { description = "Line to ensure in tmux.conf" type = "string" required = true }
+  }
+
+  resource "tmux_option" {
+    description = "Ensure a tmux set-option line exists in ~/.tmux.conf"
+    script = "resources/tmux_option.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "scope" { description = "Option scope: global, window, or server" type = "string" default = "global" }
+    param "name" { description = "tmux option name" type = "string" required = true }
+    param "value" { description = "tmux option value" type = "string" required = true }
+  }
+
+  resource "tmux_key_binding" {
+    description = "Ensure a tmux bind-key line exists in ~/.tmux.conf"
+    script = "resources/tmux_key_binding.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "key" { description = "Key to bind" type = "string" required = true }
+    param "command" { description = "tmux command to run for the binding" type = "string" required = true }
+    param "prefix" { description = "Whether the binding requires the tmux prefix" type = "bool" default = true }
+  }
+
+  resource "tmux_plugin" {
+    description = "Ensure a TPM plugin declaration exists in ~/.tmux.conf"
+    script = "resources/tmux_plugin.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "plugin" { description = "TPM plugin identifier such as tmux-plugins/tpm" type = "string" required = true }
+  }
+
+  resource "tmuxinator_project" {
+    description = "Ensure a tmuxinator project YAML file exists"
+    script = "resources/tmuxinator_project.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "name" { description = "Project name, with or without .yml suffix" type = "string" required = true }
+    param "content" { description = "Project YAML content" type = "string" required = true }
+  }
+
+  resource "teamocil_layout" {
+    description = "Ensure a teamocil layout YAML file exists"
+    script = "resources/teamocil_layout.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "name" { description = "Layout name, with or without .yml suffix" type = "string" required = true }
+    param "content" { description = "Layout YAML content" type = "string" required = true }
+  }
+
+  test "tmux_files_converge" {
+    description = "tmux file-backed resources converge"
+    image = "debian:12"
+    verify = "tests/tmux_files_verify.wisp"
+
+    gather "paths" {
+      description = "tmux paths resolve under an explicit home"
+      from = "tmux_paths"
+      params { home = "/tmp/cw-tmux-home" }
+      expect { config = "/tmp/cw-tmux-home/.tmux.conf" }
+    }
+
+    step "base-conf" {
+      description = "Create tmux.conf"
+      resource = "tmux_conf"
+      properties { home = "/tmp/cw-tmux-home" content = "set -g default-terminal tmux-256color\n" }
+    }
+
+    step "line" {
+      description = "Add a raw tmux line"
+      resource = "tmux_conf_line"
+      properties { home = "/tmp/cw-tmux-home" line = "set -g history-limit 50000" }
+    }
+
+    step "option" {
+      description = "Add a tmux option"
+      resource = "tmux_option"
+      requires = ["line"]
+      properties { home = "/tmp/cw-tmux-home" scope = "window" name = "mode-keys" value = "vi" }
+    }
+
+    step "binding" {
+      description = "Add a key binding"
+      resource = "tmux_key_binding"
+      requires = ["option"]
+      properties { home = "/tmp/cw-tmux-home" key = "r" command = "source-file ~/.tmux.conf \\; display-message reloaded" }
+    }
+
+    step "plugin" {
+      description = "Add a TPM plugin"
+      resource = "tmux_plugin"
+      requires = ["binding"]
+      properties { home = "/tmp/cw-tmux-home" plugin = "tmux-plugins/tpm" }
+    }
+
+    step "tmuxinator" {
+      description = "Write a tmuxinator project"
+      resource = "tmuxinator_project"
+      properties { home = "/tmp/cw-tmux-home" name = "work" content = "name: work\nroot: ~/src\nwindows: []\n" }
+    }
+
+    step "teamocil" {
+      description = "Write a teamocil layout"
+      resource = "teamocil_layout"
+      properties { home = "/tmp/cw-tmux-home" name = "work" content = "windows:\n  - name: shell\n" }
+    }
+  }
+}

@@ -24,6 +24,7 @@ so this repository intentionally does not require Config Weave loader changes.
 - `linux_system`: sysctl, hostname, timezone, locale, cron, logrotate and fstab.
 - `linux_network`: hosts entries, SSH config snippets and firewall front-ends.
 - `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.
+- `linux_tmux`: tmux configuration, options, key bindings, plugins and session files.
 
 ## Development
 
