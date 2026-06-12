@@ -6,7 +6,7 @@ package "linux_packages" {
     script = "resources/package_installed.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
   }
 
   resource "package_absent" {
@@ -14,14 +14,14 @@ package "linux_packages" {
     script = "resources/package_absent.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
   }
 
   resource "package_cache_updated" {
     description = "Update package-manager metadata once per marker"
     script = "resources/package_cache_updated.wisp"
     concurrency = "exclusive"
-    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
     param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
   }
 
@@ -45,6 +45,30 @@ package "linux_packages" {
     }
   }
 
+  test "dnf_existing_package" {
+    description = "DNF-family installed package checks work in Fedora"
+    image = "fedora:latest"
+
+    step "filesystem-installed" {
+      description = "filesystem is installed in Fedora"
+      resource = "package_installed"
+      expect = "already_configured"
+      properties { name = "filesystem" manager = "dnf" }
+    }
+  }
+
+  test "apk_existing_package" {
+    description = "apk installed package checks work in Alpine"
+    image = "alpine:3.20"
+
+    step "alpine-baselayout-installed" {
+      description = "alpine-baselayout is installed in Alpine"
+      resource = "package_installed"
+      expect = "already_configured"
+      properties { name = "alpine-baselayout" manager = "apk" }
+    }
+  }
+
   test "apt_repository_file" {
     description = "apt_repository writes a deterministic source file"
     image = "debian:12"
@@ -60,4 +84,3 @@ package "linux_packages" {
     }
   }
 }
-

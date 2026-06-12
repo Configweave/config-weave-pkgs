@@ -35,3 +35,28 @@ just docs
 `just test` needs Docker or Podman and a Linux Config Weave binary, following the
 Config Weave testlab rules.
 
+## Package Manager Support
+
+`linux_packages` supports native package managers for the common Linux families and
+several opt-in ecosystem managers. Use `manager = "auto"` for native detection, or
+set a manager explicitly:
+
+- Debian/Ubuntu: `apt`
+- Fedora/RHEL/CentOS/Rocky/Alma/Amazon-style RPM: `dnf5`, `dnf`, `microdnf`, `yum`
+- VMware Photon: `tdnf`
+- openSUSE/SUSE: `zypper`
+- Arch: `pacman`
+- Alpine: `apk`
+- Void: `xbps`
+- Gentoo: `emerge`
+- Solus: `eopkg`
+- Clear Linux: `swupd`
+- Mageia/OpenMandriva: `urpmi`
+- Slackware: `slackpkg`
+- OpenWrt/embedded Linux: `opkg`
+- rpm-ostree systems: `rpm-ostree`
+- Optional ecosystem managers: `flatpak`, `snap`, `nix`, `guix`
+
+The test suite avoids network installs. It checks package-state detection on
+container images with already-installed base packages and validates every manager
+branch through Wisp compilation.
