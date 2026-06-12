@@ -1,0 +1,32 @@
+package "windows_registry" {
+  description = "Manage Windows registry state"
+
+  resource "value" {
+    description = "Ensure a registry value exists with the given data"
+    script = "resources/value.wisp"
+    concurrency = "parallel"
+    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
+    param "name" { description = "Value name" type = "string" required = true }
+    param "data" { description = "Desired data (decimal string for dword/qword)" type = "string" required = true }
+    param "kind" { description = "Value kind: sz, expand_sz, dword or qword" type = "string" default = "sz" }
+  }
+
+  test "value_converges" {
+    description = "Registry values converge on a Windows VM"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    verify = "tests/value_verify.wisp"
+
+    step "greeting" {
+      description = "Write a string value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "greeting" data = "hello from config-weave" }
+    }
+
+    step "answer" {
+      description = "Write a dword value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "answer" data = "42" kind = "dword" }
+    }
+  }
+}
