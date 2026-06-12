@@ -1,0 +1,72 @@
+package "linux_accounts" {
+  description = "Manage Linux users, groups, SSH keys and sudoers drop-ins"
+
+  resource "group" {
+    description = "Ensure a local group exists"
+    script = "resources/group.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Group name" type = "string" required = true }
+    param "gid" { description = "Optional numeric group id" type = "int" default = 0 }
+  }
+
+  resource "user" {
+    description = "Ensure a local user exists"
+    script = "resources/user.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "User name" type = "string" required = true }
+    param "uid" { description = "Optional numeric user id" type = "int" default = 0 }
+    param "group" { description = "Optional primary group" type = "string" default = "" }
+    param "home" { description = "Optional home directory" type = "string" default = "" }
+    param "shell" { description = "Optional login shell" type = "string" default = "" }
+    param "system" { description = "Create a system account" type = "bool" default = false }
+  }
+
+  resource "authorized_key" {
+    description = "Ensure an SSH authorized key is present"
+    script = "resources/authorized_key.wisp"
+    concurrency = "parallel"
+    param "user" { description = "Account name" type = "string" required = true }
+    param "key" { description = "Authorized key line" type = "string" required = true }
+    param "home" { description = "Optional home directory override" type = "string" default = "" }
+  }
+
+  resource "sudoers_dropin" {
+    description = "Ensure a sudoers.d drop-in file exists"
+    script = "resources/sudoers_dropin.wisp"
+    concurrency = "global"
+    param "name" { description = "Drop-in filename" type = "string" required = true }
+    param "content" { description = "sudoers content" type = "string" required = true }
+    param "validate" { description = "Run visudo validation when available" type = "bool" default = true }
+  }
+
+  test "accounts_converge" {
+    description = "Group, user and authorized_key converge in a Debian container"
+    image = "debian:12"
+    verify = "tests/accounts_verify.wisp"
+
+    step "group" {
+      description = "Create group"
+      resource = "group"
+      properties { name = "cwtest" }
+    }
+
+    step "user" {
+      description = "Create user"
+      resource = "user"
+      requires = ["group"]
+      properties { name = "cwtest" group = "cwtest" home = "/home/cwtest" shell = "/bin/sh" }
+    }
+
+    step "key" {
+      description = "Install key"
+      resource = "authorized_key"
+      requires = ["user"]
+      properties {
+        user = "cwtest"
+        home = "/home/cwtest"
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey config-weave"
+      }
+    }
+  }
+}
+

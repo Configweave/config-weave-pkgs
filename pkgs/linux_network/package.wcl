@@ -1,0 +1,71 @@
+package "linux_network" {
+  description = "Manage Linux host networking configuration files and firewalls"
+
+  resource "hosts_entry" {
+    description = "Ensure an /etc/hosts entry"
+    script = "resources/hosts_entry.wisp"
+    concurrency = "parallel"
+    param "ip" { description = "IP address" type = "string" required = true }
+    param "names" { description = "Whitespace-separated hostnames" type = "string" required = true }
+  }
+
+  resource "ssh_config_setting" {
+    description = "Ensure a client SSH config drop-in"
+    script = "resources/ssh_config_setting.wisp"
+    concurrency = "parallel"
+    param "name" { description = "Drop-in filename" type = "string" required = true }
+    param "content" { description = "SSH config content" type = "string" required = true }
+  }
+
+  resource "sshd_config_setting" {
+    description = "Ensure an sshd_config.d drop-in and optionally validate it"
+    script = "resources/sshd_config_setting.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Drop-in filename" type = "string" required = true }
+    param "content" { description = "sshd config content" type = "string" required = true }
+    param "validate" { description = "Run sshd -t when available" type = "bool" default = true }
+  }
+
+  resource "nftables_ruleset" {
+    description = "Ensure /etc/nftables.conf and optionally reload nftables"
+    script = "resources/nftables_ruleset.wisp"
+    concurrency = "global"
+    param "content" { description = "nftables.conf content" type = "string" required = true }
+    param "reload" { description = "Run nft -f after writing" type = "bool" default = false }
+  }
+
+  resource "firewalld_service" {
+    description = "Ensure a firewalld service is enabled or disabled"
+    script = "resources/firewalld_service.wisp"
+    concurrency = "global"
+    param "service" { description = "firewalld service name" type = "string" required = true }
+    param "enabled" { description = "Whether service should be enabled" type = "bool" required = true }
+    param "zone" { description = "Optional firewalld zone" type = "string" default = "" }
+    param "permanent" { description = "Use permanent firewalld configuration" type = "bool" default = true }
+  }
+
+  test "network_files_converge" {
+    description = "Network configuration file resources converge"
+    image = "debian:12"
+    verify = "tests/network_verify.wisp"
+
+    step "hosts" {
+      description = "Add hosts entry"
+      resource = "hosts_entry"
+      properties { ip = "192.0.2.10" names = "cw-test.local cw-test" }
+    }
+
+    step "ssh-client" {
+      description = "Write SSH client drop-in"
+      resource = "ssh_config_setting"
+      properties { name = "99-config-weave-test.conf" content = "Host cw-test\n  StrictHostKeyChecking no\n" }
+    }
+
+    step "sshd" {
+      description = "Write sshd drop-in"
+      resource = "sshd_config_setting"
+      properties { name = "99-config-weave-test.conf" content = "PasswordAuthentication no\n" validate = false }
+    }
+  }
+}
+

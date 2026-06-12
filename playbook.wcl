@@ -1,0 +1,43 @@
+playbook "Config Weave Linux Packages" {
+  description = "Validation and documentation harness for the Linux package library"
+  version = "0.1.0"
+
+  gather "os" {
+    description = "Linux operating system facts"
+    from = "linux_facts.os_release"
+  }
+
+  gather "pm" {
+    description = "Detected package manager"
+    from = "linux_facts.package_manager"
+  }
+
+  vars {
+    work_root = "/tmp/config-weave-pkgs"
+  }
+
+  play "baseline" {
+    description = "Container-safe baseline examples"
+
+    step "example-dir" {
+      description = "Create an example directory"
+      resource = "linux_files.directory"
+      properties {
+        path = work_root
+        mode = "0755"
+      }
+    }
+
+    step "example-file" {
+      description = "Create an example file"
+      resource = "linux_files.file"
+      requires = ["example-dir"]
+      properties {
+        path = "/tmp/config-weave-pkgs/hello.txt"
+        content = "hello from config-weave-pkgs\n"
+        mode = "0644"
+      }
+    }
+  }
+}
+

@@ -1,0 +1,96 @@
+package "linux_system" {
+  description = "Manage core Linux system configuration"
+
+  resource "sysctl" {
+    description = "Ensure a runtime sysctl value"
+    script = "resources/sysctl.wisp"
+    concurrency = "global"
+    param "key" { description = "Sysctl key" type = "string" required = true }
+    param "value" { description = "Desired value" type = "string" required = true }
+    param "persist" { description = "Also write a sysctl.d drop-in" type = "bool" default = false }
+  }
+
+  resource "sysctl_dropin" {
+    description = "Ensure a sysctl.d drop-in file"
+    script = "resources/sysctl_dropin.wisp"
+    concurrency = "parallel"
+    param "name" { description = "Drop-in filename" type = "string" required = true }
+    param "content" { description = "Drop-in content" type = "string" required = true }
+  }
+
+  resource "hostname" {
+    description = "Ensure /etc/hostname and runtime hostname"
+    script = "resources/hostname.wisp"
+    concurrency = "global"
+    param "name" { description = "Desired hostname" type = "string" required = true }
+    param "runtime" { description = "Update runtime hostname" type = "bool" default = true }
+  }
+
+  resource "timezone" {
+    description = "Ensure system timezone"
+    script = "resources/timezone.wisp"
+    concurrency = "global"
+    param "name" { description = "Timezone such as UTC or Australia/Brisbane" type = "string" required = true }
+  }
+
+  resource "locale" {
+    description = "Ensure /etc/locale.conf content"
+    script = "resources/locale.wisp"
+    concurrency = "parallel"
+    param "content" { description = "locale.conf content" type = "string" required = true }
+  }
+
+  resource "cron_file" {
+    description = "Ensure an /etc/cron.d file"
+    script = "resources/cron_file.wisp"
+    concurrency = "parallel"
+    param "name" { description = "cron.d filename" type = "string" required = true }
+    param "content" { description = "Cron file content" type = "string" required = true }
+  }
+
+  resource "logrotate_conf" {
+    description = "Ensure a logrotate.d file"
+    script = "resources/logrotate_conf.wisp"
+    concurrency = "parallel"
+    param "name" { description = "logrotate.d filename" type = "string" required = true }
+    param "content" { description = "Logrotate file content" type = "string" required = true }
+  }
+
+  resource "fstab_mount" {
+    description = "Ensure an /etc/fstab entry and optionally mount it"
+    script = "resources/fstab_mount.wisp"
+    concurrency = "global"
+    param "spec" { description = "Filesystem spec" type = "string" required = true }
+    param "mountpoint" { description = "Mount point" type = "string" required = true }
+    param "fstype" { description = "Filesystem type" type = "string" required = true }
+    param "options" { description = "Mount options" type = "string" default = "defaults" }
+    param "dump" { description = "Dump field" type = "int" default = 0 }
+    param "pass" { description = "Pass field" type = "int" default = 0 }
+    param "mount" { description = "Run mount after editing fstab" type = "bool" default = false }
+  }
+
+  test "system_files_converge" {
+    description = "System config-file resources converge"
+    image = "debian:12"
+    verify = "tests/system_verify.wisp"
+
+    step "sysctl-dropin" {
+      description = "Write sysctl drop-in"
+      resource = "sysctl_dropin"
+      properties { name = "99-config-weave-test.conf" content = "fs.file-max = 100000\n" }
+    }
+
+    step "cron" {
+      description = "Write cron file"
+      resource = "cron_file"
+      properties { name = "config-weave-test" content = "SHELL=/bin/sh\n" }
+    }
+
+    step "logrotate" {
+      description = "Write logrotate file"
+      resource = "logrotate_conf"
+      properties { name = "config-weave-test" content = "/var/log/config-weave-test.log {\n  missingok\n}\n" }
+    }
+  }
+}
+

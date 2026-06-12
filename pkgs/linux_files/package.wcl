@@ -1,0 +1,94 @@
+package "linux_files" {
+  description = "Manage Linux filesystem state"
+
+  resource "file" {
+    description = "Ensure a file exists with exact content"
+    script = "resources/file.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "content" { description = "Desired file content" type = "string" default = "" }
+    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
+    param "owner" { description = "Optional file owner" type = "string" default = "" }
+    param "group" { description = "Optional file group" type = "string" default = "" }
+  }
+
+  resource "directory" {
+    description = "Ensure a directory exists"
+    script = "resources/directory.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute directory path" type = "string" required = true }
+    param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
+    param "owner" { description = "Optional directory owner" type = "string" default = "" }
+    param "group" { description = "Optional directory group" type = "string" default = "" }
+  }
+
+  resource "line_in_file" {
+    description = "Ensure a line is present in a text file"
+    script = "resources/line_in_file.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "line" { description = "Line to ensure" type = "string" required = true }
+    param "create" { description = "Create the file if absent" type = "bool" default = true }
+  }
+
+  resource "symlink" {
+    description = "Ensure a symlink points at a target"
+    script = "resources/symlink.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Symlink path" type = "string" required = true }
+    param "target" { description = "Symlink target" type = "string" required = true }
+  }
+
+  resource "download" {
+    description = "Download a file and optionally verify its SHA-256"
+    script = "resources/download.wisp"
+    concurrency = "parallel"
+    param "url" { description = "HTTP or HTTPS URL" type = "string" required = true }
+    param "dest" { description = "Destination file path" type = "string" required = true }
+    param "sha256" { description = "Optional expected SHA-256 digest" type = "string" default = "" }
+    param "mode" { description = "Optional octal mode" type = "string" default = "" }
+  }
+
+  resource "permissions" {
+    description = "Ensure owner, group and mode on an existing path"
+    script = "resources/permissions.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Target path" type = "string" required = true }
+    param "mode" { description = "Optional octal mode" type = "string" default = "" }
+    param "owner" { description = "Optional owner" type = "string" default = "" }
+    param "group" { description = "Optional group" type = "string" default = "" }
+  }
+
+  test "file_directory_line_symlink" {
+    description = "Core file resources converge"
+    image = "debian:12"
+    verify = "tests/files_verify.wisp"
+
+    step "dir" {
+      description = "Create directory"
+      resource = "directory"
+      properties { path = "/tmp/cw-files" mode = "0755" }
+    }
+
+    step "file" {
+      description = "Create file"
+      resource = "file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/a.txt" content = "alpha\n" mode = "0644" }
+    }
+
+    step "line" {
+      description = "Add line"
+      resource = "line_in_file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/lines.txt" line = "beta" }
+    }
+
+    step "link" {
+      description = "Create symlink"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
+    }
+  }
+}

@@ -1,0 +1,63 @@
+package "linux_packages" {
+  description = "Manage Linux packages and package-manager metadata"
+
+  resource "package_installed" {
+    description = "Ensure a package is installed"
+    script = "resources/package_installed.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+  }
+
+  resource "package_absent" {
+    description = "Ensure a package is absent"
+    script = "resources/package_absent.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+  }
+
+  resource "package_cache_updated" {
+    description = "Update package-manager metadata once per marker"
+    script = "resources/package_cache_updated.wisp"
+    concurrency = "exclusive"
+    param "manager" { description = "Package manager override" type = "string" default = "auto" }
+    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+  }
+
+  resource "apt_repository" {
+    description = "Manage an apt sources.list.d file"
+    script = "resources/apt_repository.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Repository file basename without .list" type = "string" required = true }
+    param "content" { description = "Repository file content" type = "string" required = true }
+  }
+
+  test "package_facts_and_existing_package" {
+    description = "Package resources can detect an installed Debian package"
+    image = "debian:12"
+
+    step "base-files-installed" {
+      description = "base-files is already installed in Debian"
+      resource = "package_installed"
+      expect = "already_configured"
+      properties { name = "base-files" manager = "apt" }
+    }
+  }
+
+  test "apt_repository_file" {
+    description = "apt_repository writes a deterministic source file"
+    image = "debian:12"
+    verify = "tests/apt_repository_verify.wisp"
+
+    step "repo" {
+      description = "Write repository file"
+      resource = "apt_repository"
+      properties {
+        name = "config-weave-test"
+        content = "deb http://deb.debian.org/debian bookworm main\n"
+      }
+    }
+  }
+}
+

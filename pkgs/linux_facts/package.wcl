@@ -1,0 +1,45 @@
+package "linux_facts" {
+  description = "Gather Linux operating system facts"
+
+  gatherer "os_release" {
+    description = "Read /etc/os-release and kernel facts"
+    script = "gatherers/os_release.wisp"
+  }
+
+  gatherer "package_manager" {
+    description = "Detect the host package manager"
+    script = "gatherers/package_manager.wisp"
+  }
+
+  gatherer "init_system" {
+    description = "Detect the init/service manager"
+    script = "gatherers/init_system.wisp"
+  }
+
+  gatherer "network" {
+    description = "Collect hostname and basic address information"
+    script = "gatherers/network.wisp"
+  }
+
+  test "facts_gather" {
+    description = "Linux facts gatherers work in a Debian container"
+    image = "debian:12"
+
+    gather "os" {
+      description = "OS facts"
+      from = "os_release"
+      expect {
+        family = "linux"
+      }
+    }
+
+    gather "pm" {
+      description = "Package manager facts"
+      from = "package_manager"
+      expect {
+        manager = "apt"
+      }
+    }
+  }
+}
+
