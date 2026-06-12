@@ -23,6 +23,7 @@ so this repository intentionally does not require Config Weave loader changes.
 - `linux_accounts`: users, groups, SSH authorized keys and sudoers drop-ins.
 - `linux_system`: sysctl, hostname, timezone, locale, cron, logrotate and fstab.
 - `linux_network`: hosts entries, SSH config snippets and firewall front-ends.
+- `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.
 
 ## Development
 

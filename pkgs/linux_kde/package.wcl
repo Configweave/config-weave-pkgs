@@ -1,0 +1,159 @@
+package "linux_kde" {
+  description = "Manage KDE Plasma configuration files"
+
+  gatherer "kde_paths" {
+    description = "Report KDE user configuration and data paths"
+    script = "gatherers/kde_paths.wisp"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+  }
+
+  gatherer "kde_version" {
+    description = "Detect available KDE Plasma configuration tools"
+    script = "gatherers/kde_version.wisp"
+  }
+
+  resource "kconfig_entry" {
+    description = "Ensure a KConfig key exists in a KDE configuration file"
+    script = "resources/kconfig_entry.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "file" { description = "KDE config filename under ~/.config, such as kdeglobals" type = "string" required = true }
+    param "group" { description = "KConfig group name" type = "string" required = true }
+    param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
+    param "key" { description = "KConfig key name" type = "string" required = true }
+    param "value" { description = "Desired string value" type = "string" required = true }
+  }
+
+  resource "kconfig_file" {
+    description = "Ensure a KDE configuration file has exact content"
+    script = "resources/kconfig_file.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "file" { description = "KDE config filename under ~/.config" type = "string" required = true }
+    param "content" { description = "Desired file content" type = "string" required = true }
+  }
+
+  resource "kdeglobals_setting" {
+    description = "Ensure a setting in ~/.config/kdeglobals"
+    script = "resources/kdeglobals_setting.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "group" { description = "KConfig group name" type = "string" required = true }
+    param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
+    param "key" { description = "KConfig key name" type = "string" required = true }
+    param "value" { description = "Desired string value" type = "string" required = true }
+  }
+
+  resource "kwin_setting" {
+    description = "Ensure a setting in ~/.config/kwinrc"
+    script = "resources/kwin_setting.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "group" { description = "KConfig group name" type = "string" required = true }
+    param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
+    param "key" { description = "KConfig key name" type = "string" required = true }
+    param "value" { description = "Desired string value" type = "string" required = true }
+  }
+
+  resource "plasma_setting" {
+    description = "Ensure a setting in a Plasma config file"
+    script = "resources/plasma_setting.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "file" { description = "Plasma config file under ~/.config, usually plasmarc or plasma-org.kde.plasma.desktop-appletsrc" type = "string" default = "plasmarc" }
+    param "group" { description = "KConfig group name" type = "string" required = true }
+    param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
+    param "key" { description = "KConfig key name" type = "string" required = true }
+    param "value" { description = "Desired string value" type = "string" required = true }
+  }
+
+  resource "color_scheme_file" {
+    description = "Install a KDE color scheme file under ~/.local/share/color-schemes"
+    script = "resources/color_scheme_file.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "name" { description = "Color scheme name, with or without .colors suffix" type = "string" required = true }
+    param "content" { description = "Color scheme file content" type = "string" required = true }
+  }
+
+  resource "desktop_theme_file" {
+    description = "Install a file into a Plasma desktop theme directory"
+    script = "resources/desktop_theme_file.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "theme" { description = "Desktop theme directory name" type = "string" required = true }
+    param "relative_path" { description = "Path inside the desktop theme directory" type = "string" required = true }
+    param "content" { description = "Desired file content" type = "string" required = true }
+  }
+
+  resource "autostart_desktop_file" {
+    description = "Ensure a KDE autostart .desktop file exists"
+    script = "resources/autostart_desktop_file.wisp"
+    concurrency = "parallel"
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "name" { description = "Autostart entry name, with or without .desktop suffix" type = "string" required = true }
+    param "content" { description = "Desktop entry content" type = "string" required = true }
+  }
+
+  test "kde_file_settings_converge" {
+    description = "KDE file-backed resources converge without a Plasma session"
+    image = "debian:12"
+    verify = "tests/kde_file_settings_verify.wisp"
+
+    gather "version" {
+      description = "KDE tool detection works without installed KDE tools"
+      from = "kde_version"
+      expect { plasma_major = 0 }
+    }
+
+    step "kconfig-entry" {
+      description = "Write a kdeglobals KConfig entry"
+      resource = "kconfig_entry"
+      properties { home = "/tmp/cw-kde-home" file = "kdeglobals" group = "KDE" key = "SingleClick" value = "false" }
+    }
+
+    step "kdeglobals" {
+      description = "Write a convenience kdeglobals setting"
+      resource = "kdeglobals_setting"
+      requires = ["kconfig-entry"]
+      properties { home = "/tmp/cw-kde-home" group = "KDE" key = "widgetStyle" value = "Breeze" }
+    }
+
+    step "kwin" {
+      description = "Write a kwinrc setting"
+      resource = "kwin_setting"
+      properties { home = "/tmp/cw-kde-home" group = "Windows" key = "FocusPolicy" value = "ClickToFocus" }
+    }
+
+    step "plasma" {
+      description = "Write a plasmarc setting"
+      resource = "plasma_setting"
+      properties { home = "/tmp/cw-kde-home" file = "plasmarc" group = "Theme" key = "name" value = "org.kde.breeze" }
+    }
+
+    step "whole-file" {
+      description = "Write an exact KConfig file"
+      resource = "kconfig_file"
+      properties { home = "/tmp/cw-kde-home" file = "ksmserverrc" content = "[General]\nloginMode=emptySession\n" }
+    }
+
+    step "colors" {
+      description = "Install a color scheme"
+      resource = "color_scheme_file"
+      properties { home = "/tmp/cw-kde-home" name = "ConfigWeave" content = "[General]\nName=ConfigWeave\n" }
+    }
+
+    step "theme-file" {
+      description = "Install a desktop theme file"
+      resource = "desktop_theme_file"
+      properties { home = "/tmp/cw-kde-home" theme = "config-weave" relative_path = "metadata.json" content = "{}\n" }
+    }
+
+    step "autostart" {
+      description = "Install an autostart desktop file"
+      resource = "autostart_desktop_file"
+      properties { home = "/tmp/cw-kde-home" name = "config-weave-test" content = "[Desktop Entry]\nType=Application\nExec=true\nName=Config Weave Test\n" }
+    }
+  }
+}
+
