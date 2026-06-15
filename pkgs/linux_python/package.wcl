@@ -1,0 +1,22 @@
+package "linux_python" {
+  description = "Manage Python packages via pip"
+
+  resource "pip_package" {
+    description = "Ensure a pip package is installed (system or virtualenv)"
+    script = "resources/pip_package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Distribution name" type = "string" required = true }
+    param "version" { description = "Optional version to pin; empty means any version" type = "string" default = "" }
+    param "virtualenv" { description = "Virtualenv path; empty uses the system interpreter" type = "string" default = "" }
+    param "executable" { description = "pip executable name" type = "string" default = "pip3" }
+  }
+
+  resource "pip_absent" {
+    description = "Ensure a pip package is not installed"
+    script = "resources/pip_absent.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Distribution name" type = "string" required = true }
+    param "virtualenv" { description = "Virtualenv path; empty uses the system interpreter" type = "string" default = "" }
+    param "executable" { description = "pip executable name" type = "string" default = "pip3" }
+  }
+}

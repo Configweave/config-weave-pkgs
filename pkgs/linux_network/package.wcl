@@ -44,9 +44,20 @@ package "linux_network" {
     param "permanent" { description = "Use permanent firewalld configuration" type = "bool" default = true }
   }
 
+  resource "known_host" {
+    description = "Ensure an entry in an SSH known_hosts file"
+    script = "resources/known_host.wisp"
+    concurrency = "parallel"
+    param "name" { description = "Host the key belongs to (descriptive)" type = "string" default = "" }
+    param "key" { description = "Full known_hosts line (host keytype keydata)" type = "string" required = true }
+    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "path" { description = "Explicit known_hosts path; overrides home" type = "string" default = "" }
+  }
+
   test "network_files_converge" {
     description = "Network configuration file resources converge"
     image = "debian:12"
+    group = "network"
     verify = "tests/network_verify.wisp"
 
     step "hosts" {
@@ -65,6 +76,22 @@ package "linux_network" {
       description = "Write sshd drop-in"
       resource = "sshd_config_setting"
       properties { name = "99-config-weave-test.conf" content = "PasswordAuthentication no\n" validate = false }
+    }
+  }
+
+  test "known_host_converge" {
+    description = "known_host adds an SSH host key entry"
+    image = "debian:12"
+    group = "network"
+    verify = "tests/known_host_verify.wisp"
+
+    step "add" {
+      description = "Add a known host entry"
+      resource = "known_host"
+      properties {
+        name = "cw-test.example"
+        key = "cw-test.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICONFIGWEAVEexamplekeydata"
+      }
     }
   }
 }

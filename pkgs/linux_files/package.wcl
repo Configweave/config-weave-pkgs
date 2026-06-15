@@ -31,12 +31,64 @@ package "linux_files" {
     param "create" { description = "Create the file if absent" type = "bool" default = true }
   }
 
+  resource "line_absent" {
+    description = "Ensure a line is not present in a text file"
+    script = "resources/line_absent.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "line" { description = "Exact line to remove" type = "string" required = true }
+  }
+
   resource "symlink" {
     description = "Ensure a symlink points at a target"
     script = "resources/symlink.wisp"
     concurrency = "parallel"
     param "path" { description = "Symlink path" type = "string" required = true }
     param "target" { description = "Symlink target" type = "string" required = true }
+  }
+
+  resource "path_absent" {
+    description = "Ensure a file, directory or symlink does not exist"
+    script = "resources/path_absent.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Target path" type = "string" required = true }
+    param "recursive" { description = "Allow removing a non-empty directory" type = "bool" default = false }
+  }
+
+  resource "block_in_file" {
+    description = "Ensure a marked text block is present and up to date"
+    script = "resources/block_in_file.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "block" { description = "Block body placed between the markers" type = "string" required = true }
+    param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
+    param "create" { description = "Create the file if absent" type = "bool" default = true }
+  }
+
+  resource "block_absent" {
+    description = "Ensure a previously managed marked block is removed"
+    script = "resources/block_absent.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
+  }
+
+  resource "file_substitution" {
+    description = "Replace a literal substring throughout a file"
+    script = "resources/file_substitution.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "pattern" { description = "Literal substring to replace (not a regex)" type = "string" required = true }
+    param "replacement" { description = "Replacement text; must not contain the pattern" type = "string" default = "" }
+  }
+
+  resource "archive_extracted" {
+    description = "Ensure a local archive has been extracted into a directory"
+    script = "resources/archive_extracted.wisp"
+    concurrency = "parallel"
+    param "src" { description = "Local archive path (.zip, .tar.gz, .tgz)" type = "string" required = true }
+    param "dest" { description = "Destination directory" type = "string" required = true }
+    param "creates" { description = "Optional path whose existence marks extraction done" type = "string" default = "" }
   }
 
   resource "download" {
@@ -47,6 +99,8 @@ package "linux_files" {
     param "dest" { description = "Destination file path" type = "string" required = true }
     param "sha256" { description = "Optional expected SHA-256 digest" type = "string" default = "" }
     param "mode" { description = "Optional octal mode" type = "string" default = "" }
+    param "owner" { description = "Optional file owner" type = "string" default = "" }
+    param "group" { description = "Optional file group" type = "string" default = "" }
   }
 
   resource "permissions" {
@@ -59,9 +113,23 @@ package "linux_files" {
     param "group" { description = "Optional group" type = "string" default = "" }
   }
 
+  gatherer "path_stat" {
+    description = "Report a path's existence, type, size and mode"
+    script = "gatherers/path_stat.wisp"
+    param "path" { description = "Target path" type = "string" required = true }
+  }
+
+  gatherer "paths_matching" {
+    description = "List files under a root matching a glob pattern"
+    script = "gatherers/paths_matching.wisp"
+    param "path" { description = "Root directory" type = "string" required = true }
+    param "pattern" { description = "Glob pattern relative to the root" type = "string" default = "*" }
+  }
+
   test "file_directory_line_symlink" {
     description = "Core file resources converge"
     image = "debian:12"
+    group = "files"
     verify = "tests/files_verify.wisp"
 
     step "dir" {
@@ -89,6 +157,58 @@ package "linux_files" {
       resource = "symlink"
       requires = ["file"]
       properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
+    }
+  }
+
+  test "file_edits_converge" {
+    description = "Editing, removal and extraction resources converge"
+    image = "debian:12"
+    group = "files"
+    setup = "printf 'one\\ntwo\\nthree\\n' > /tmp/cw-seed.txt; printf 'a replace-me b\\n' > /tmp/cw-subst.txt; echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
+    verify = "tests/file_edits_verify.wisp"
+
+    gather "seed_stat" {
+      description = "Stat the seed file created during setup"
+      from = "path_stat"
+      params { path = "/tmp/cw-subst.txt" }
+      expect { exists = true }
+    }
+
+    gather "src_matches" {
+      description = "Glob the archive source directory"
+      from = "paths_matching"
+      params { path = "/tmp/cw-arch-src" pattern = "*.txt" }
+      expect { count = 1 }
+    }
+
+    step "block" {
+      description = "Insert a managed block"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block.txt" block = "hello\nworld" }
+    }
+
+    step "subst" {
+      description = "Replace a literal substring"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-subst.txt" pattern = "replace-me" replacement = "replaced" }
+    }
+
+    step "rmline" {
+      description = "Remove a line"
+      resource = "line_absent"
+      properties { path = "/tmp/cw-seed.txt" line = "two" }
+    }
+
+    step "rmpath" {
+      description = "Remove a file"
+      resource = "path_absent"
+      properties { path = "/tmp/cw-del.txt" }
+    }
+
+    step "extract" {
+      description = "Extract an archive"
+      resource = "archive_extracted"
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" creates = "/tmp/cw-extracted/inside.txt" }
     }
   }
 }

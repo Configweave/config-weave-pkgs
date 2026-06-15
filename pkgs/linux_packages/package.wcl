@@ -6,6 +6,7 @@ package "linux_packages" {
     script = "resources/package_installed.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
+    param "version" { description = "Optional version to pin (apt/dnf/yum/zypper); empty means any version" type = "string" default = "" }
     param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
   }
 
@@ -31,6 +32,65 @@ package "linux_packages" {
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .list" type = "string" required = true }
     param "content" { description = "Repository file content" type = "string" required = true }
+  }
+
+  resource "apt_repository_deb822" {
+    description = "Manage a modern deb822 .sources file"
+    script = "resources/apt_repository_deb822.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Repository file basename without .sources" type = "string" required = true }
+    param "content" { description = "deb822-format repository content" type = "string" required = true }
+  }
+
+  resource "yum_repository" {
+    description = "Manage a yum/dnf .repo file"
+    script = "resources/yum_repository.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Repository file basename without .repo" type = "string" required = true }
+    param "content" { description = "Repository file content" type = "string" required = true }
+  }
+
+  resource "apt_signing_key" {
+    description = "Install an apt signing key under /etc/apt/keyrings"
+    script = "resources/apt_signing_key.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Keyring basename" type = "string" required = true }
+    param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
+    param "dearmor" { description = "Also produce a binary .gpg keyring via gpg --dearmor" type = "bool" default = true }
+  }
+
+  resource "rpm_gpg_key" {
+    description = "Install and import an RPM GPG key"
+    script = "resources/rpm_gpg_key.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
+    param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
+  }
+
+  resource "package_held" {
+    description = "Hold a package at its current version"
+    script = "resources/package_held.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf or yum" type = "string" default = "auto" }
+  }
+
+  resource "package_unheld" {
+    description = "Release a held package"
+    script = "resources/package_unheld.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf or yum" type = "string" default = "auto" }
+  }
+
+  resource "debconf_selection" {
+    description = "Pre-seed a debconf answer"
+    script = "resources/debconf_selection.wisp"
+    concurrency = "exclusive"
+    param "package" { description = "Owning package name" type = "string" required = true }
+    param "question" { description = "debconf question name" type = "string" required = true }
+    param "vtype" { description = "Answer type (string, boolean, select, ...)" type = "string" default = "string" }
+    param "value" { description = "Answer value" type = "string" required = true }
   }
 
   test "package_facts_and_existing_package" {
@@ -84,6 +144,32 @@ package "linux_packages" {
       properties {
         name = "config-weave-test"
         content = "deb http://deb.debian.org/debian bookworm main\n"
+      }
+    }
+  }
+
+  test "apt_modern_converge" {
+    description = "deb822 repository and apt signing key converge"
+    image = "debian:12"
+    group = "debian"
+    verify = "tests/apt_modern_verify.wisp"
+
+    step "deb822" {
+      description = "Write a deb822 sources file"
+      resource = "apt_repository_deb822"
+      properties {
+        name = "cw-modern"
+        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: main\n"
+      }
+    }
+
+    step "key" {
+      description = "Install an apt signing key (armored, no dearmor)"
+      resource = "apt_signing_key"
+      properties {
+        name = "cw-test"
+        dearmor = false
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
       }
     }
   }

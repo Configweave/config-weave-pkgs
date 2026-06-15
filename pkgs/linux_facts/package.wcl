@@ -21,6 +21,23 @@ package "linux_facts" {
     script = "gatherers/network.wisp"
   }
 
+  gatherer "services" {
+    description = "List systemd services and their active state"
+    script = "gatherers/services.wisp"
+  }
+
+  gatherer "mounts" {
+    description = "List mounted filesystems from /proc/mounts"
+    script = "gatherers/mounts.wisp"
+  }
+
+  gatherer "getent" {
+    description = "Look up an entry in a system database via getent"
+    script = "gatherers/getent.wisp"
+    param "database" { description = "Database such as passwd, group, hosts or services" type = "string" required = true }
+    param "key" { description = "Optional key to look up; empty enumerates the database" type = "string" default = "" }
+  }
+
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"
@@ -39,6 +56,28 @@ package "linux_facts" {
       expect {
         manager = "apt"
       }
+    }
+
+    gather "root_user" {
+      description = "getent finds the root user"
+      from = "getent"
+      params { database = "passwd" key = "root" }
+      expect {
+        found = true
+      }
+    }
+
+    gather "mnt" {
+      description = "root filesystem is mounted"
+      from = "mounts"
+      expect {
+        has_root = true
+      }
+    }
+
+    gather "svc" {
+      description = "services gatherer runs without error"
+      from = "services"
     }
   }
 }

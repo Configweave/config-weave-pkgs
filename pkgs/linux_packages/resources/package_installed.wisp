@@ -73,30 +73,69 @@ fn installed(name: string, m: string) -> Result[bool, string] {
     Ok(shell::bash(cmd, Value::Null)?.success)
 }
 
+// Version pinning is supported only on managers with a predictable
+// "name + sep + version" install spec and a queryable installed version.
+fn supports_version(m: string) -> bool {
+    m == "apt" || m == "dnf5" || m == "dnf" || m == "microdnf" || m == "yum" || m == "tdnf" || m == "zypper"
+}
+
+// The installed version string, or "" when not installed / unknown.
+fn installed_version(name: string, m: string) -> Result[string, string] {
+    let cmd = if m == "apt" {
+        "dpkg-query -W -f='${Version}' " + q(name) + " 2>/dev/null"
+    } else {
+        "rpm -q --qf '%{VERSION}' " + q(name) + " 2>/dev/null"
+    }
+    let out = shell::bash(cmd, Value::Null)?
+    if !out.success { return Ok("") }
+    Ok(out.stdout.trim())
+}
+
+// The install spec for a pinned version, per manager.
+fn versioned_spec(name: string, version: string, m: string) -> string {
+    if m == "apt" || m == "zypper" {
+        name + "=" + version
+    } else {
+        name + "-" + version
+    }
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
+    let version = param_str(params, "version", "")
+    let m = manager(params)
     if name == "" { return Err("missing 'name' parameter") }
-    if installed(name, manager(params))? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if version == "" {
+        if installed(name, m)? { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
+    }
+    if !supports_version(m) { return Err("version pinning is not supported for package manager '" + m + "'") }
+    if installed_version(name, m)? == version { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
+    let version = param_str(params, "version", "")
     let m = manager(params)
     if name == "" { return Err("missing 'name' parameter") }
+    if version != "" && !supports_version(m) {
+        return Err("version pinning is not supported for package manager '" + m + "'")
+    }
+    let target = if version != "" { versioned_spec(name, version, m) } else { name }
     let cmd = if m == "apt" {
-        "DEBIAN_FRONTEND=noninteractive apt-get install -y " + q(name)
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y " + q(target)
     } else if m == "dnf5" {
-        "dnf5 install -y " + q(name)
+        "dnf5 install -y " + q(target)
     } else if m == "dnf" {
-        "dnf install -y " + q(name)
+        "dnf install -y " + q(target)
     } else if m == "microdnf" {
-        "microdnf install -y " + q(name)
+        "microdnf install -y " + q(target)
     } else if m == "yum" {
-        "yum install -y " + q(name)
+        "yum install -y " + q(target)
     } else if m == "tdnf" {
-        "tdnf install -y " + q(name)
+        "tdnf install -y " + q(target)
     } else if m == "zypper" {
-        "zypper --non-interactive install " + q(name)
+        "zypper --non-interactive install " + q(target)
     } else if m == "pacman" {
         "pacman -S --noconfirm " + q(name)
     } else if m == "apk" {

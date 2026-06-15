@@ -56,6 +56,23 @@ package "linux_system" {
     param "content" { description = "Logrotate file content" type = "string" required = true }
   }
 
+  resource "cron_job" {
+    description = "Ensure a single cron.d job entry"
+    script = "resources/cron_job.wisp"
+    concurrency = "parallel"
+    param "name" { description = "Job name (also the cron.d filename; no dots)" type = "string" required = true }
+    param "schedule" { description = "Cron schedule such as '*/5 * * * *'" type = "string" required = true }
+    param "command" { description = "Command to run" type = "string" required = true }
+    param "user" { description = "User to run as" type = "string" default = "root" }
+  }
+
+  resource "cron_job_absent" {
+    description = "Ensure a cron.d job entry is removed"
+    script = "resources/cron_job_absent.wisp"
+    concurrency = "parallel"
+    param "name" { description = "Job name (cron.d filename)" type = "string" required = true }
+  }
+
   resource "fstab_mount" {
     description = "Ensure an /etc/fstab entry and optionally mount it"
     script = "resources/fstab_mount.wisp"
@@ -72,6 +89,7 @@ package "linux_system" {
   test "system_files_converge" {
     description = "System config-file resources converge"
     image = "debian:12"
+    group = "system"
     verify = "tests/system_verify.wisp"
 
     step "sysctl-dropin" {
@@ -90,6 +108,26 @@ package "linux_system" {
       description = "Write logrotate file"
       resource = "logrotate_conf"
       properties { name = "config-weave-test" content = "/var/log/config-weave-test.log {\n  missingok\n}\n" }
+    }
+  }
+
+  test "cron_job_converge" {
+    description = "cron_job adds and cron_job_absent removes a cron.d entry"
+    image = "debian:12"
+    group = "system"
+    setup = "echo placeholder > /etc/cron.d/cw-rm-job"
+    verify = "tests/cron_job_verify.wisp"
+
+    step "add" {
+      description = "Add a cron job"
+      resource = "cron_job"
+      properties { name = "cw-test-job" schedule = "*/5 * * * *" command = "/bin/true" }
+    }
+
+    step "remove" {
+      description = "Remove a cron job"
+      resource = "cron_job_absent"
+      properties { name = "cw-rm-job" }
     }
   }
 }
