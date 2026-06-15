@@ -36,6 +36,9 @@ package "linux_packages" {
   test "package_facts_and_existing_package" {
     description = "Package resources can detect an installed Debian package"
     image = "debian:12"
+    # Shares one container with apt_repository_file (both debian:12, and
+    # they touch unrelated state: an installed-package check vs. a repo file).
+    group = "debian"
 
     step "base-files-installed" {
       description = "base-files is already installed in Debian"
@@ -72,6 +75,7 @@ package "linux_packages" {
   test "apt_repository_file" {
     description = "apt_repository writes a deterministic source file"
     image = "debian:12"
+    group = "debian"
     verify = "tests/apt_repository_verify.wisp"
 
     step "repo" {
