@@ -15,4 +15,18 @@ package "windows_updates" {
     param "kb" { description = "KB identifier such as KB5031234" type = "string" required = true }
     param "path" { description = "Local path or HTTP(S) URL of the .msu to install when missing" type = "string" default = "" }
   }
+
+  resource "automatic_updates" {
+    description = "Enable or disable automatic Windows Updates (the NoAutoUpdate AU policy)"
+    script = "resources/automatic_updates.wisp"
+    concurrency = "global"
+    param "enabled" { description = "Whether automatic updates are allowed (false sets NoAutoUpdate=1)" type = "bool" default = true }
+  }
+
+  resource "windows_update_service" {
+    description = "Enable or disable the Windows Update service (wuauserv)"
+    script = "resources/windows_update_service.wisp"
+    concurrency = "global"
+    param "enabled" { description = "Whether wuauserv may run (false stops it and sets startup to disabled)" type = "bool" default = true }
+  }
 }
