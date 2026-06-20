@@ -250,6 +250,12 @@ mod data {
     fn ini_serialize(a0: Value) -> Result[string, string]
 }
 
+/// Render Tera templates against a variable map (autoescape off)
+mod template {
+    /// Render a Tera template string with a map of variables
+    fn render(a0: string, a1: Value) -> Result[string, string]
+}
+
 /// Windows registry (Windows only). Keys are hive-prefixed paths like HKLM\Software\App
 mod registry {
     const HKLM: string // = "HKLM"

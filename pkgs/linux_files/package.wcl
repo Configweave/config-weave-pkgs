@@ -12,6 +12,18 @@ package "linux_files" {
     param "group" { description = "Optional file group" type = "string" default = "" }
   }
 
+  resource "template" {
+    description = "Render a Tera template to a file with exact content"
+    script = "resources/template.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "template" { description = "Tera template body (author as a raw heredoc)" type = "string" required = true }
+    param "vars" { description = "Variables exposed to the template" type = "map" }
+    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
+    param "owner" { description = "Optional file owner" type = "string" default = "" }
+    param "group" { description = "Optional file group" type = "string" default = "" }
+  }
+
   resource "directory" {
     description = "Ensure a directory exists"
     script = "resources/directory.wisp"
@@ -157,6 +169,28 @@ package "linux_files" {
       resource = "symlink"
       requires = ["file"]
       properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
+    }
+  }
+
+  test "template_renders" {
+    description = "Tera template resource renders and converges"
+    image = "debian:12"
+    group = "files"
+    verify = "tests/template_verify.wisp"
+
+    step "tmpl" {
+      description = "Render a Tera template"
+      resource = "template"
+      properties {
+        path = "/tmp/cw-tmpl/app.conf"
+        vars = { title: "cw", hosts: ["a", "b"], enabled: true }
+        mode = "0644"
+        template = <<'TMPL'
+# {{ title }}
+servers={{ hosts | join(sep=",") }}
+{% if enabled %}enabled=yes{% endif %}
+TMPL
+      }
     }
   }
 
