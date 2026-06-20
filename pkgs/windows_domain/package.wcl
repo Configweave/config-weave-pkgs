@@ -1,0 +1,55 @@
+package "windows_domain" {
+  description = "Promote domain controllers and join machines to Active Directory"
+
+  resource "forest" {
+    description = "Create a new AD forest (promote this server to the first domain controller)"
+    script = "resources/forest.wisp"
+    concurrency = "global"
+    param "domain_name"        { description = "Root domain FQDN, e.g. corp.example.com" type = "string" required = true }
+    param "safe_mode_password" { description = "DSRM (Directory Services Restore Mode) password — plaintext in the playbook" type = "string" required = true }
+    param "netbios_name"       { description = "NetBIOS domain name; empty = derived from the first label" type = "string" default = "" }
+    param "install_dns"        { description = "Install and configure the DNS Server role" type = "bool" default = true }
+    param "forest_mode"        { description = "Forest functional level (e.g. WinThreshold); empty = cmdlet default" type = "string" default = "" }
+    param "domain_mode"        { description = "Domain functional level; empty = cmdlet default" type = "string" default = "" }
+    param "database_path"      { description = "NTDS database path; empty = default" type = "string" default = "" }
+    param "log_path"           { description = "NTDS log path; empty = default" type = "string" default = "" }
+    param "sysvol_path"        { description = "SYSVOL path; empty = default" type = "string" default = "" }
+  }
+
+  resource "domain_controller" {
+    description = "Add an additional domain controller to an existing domain"
+    script = "resources/domain_controller.wisp"
+    concurrency = "global"
+    param "domain_name"         { description = "Existing domain FQDN to promote into" type = "string" required = true }
+    param "safe_mode_password"  { description = "DSRM password — plaintext in the playbook" type = "string" required = true }
+    param "credential_user"     { description = "Domain admin authorizing the promotion (UPN or DOMAIN\\user)" type = "string" required = true }
+    param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" required = true }
+    param "install_dns"         { description = "Install and configure the DNS Server role" type = "bool" default = true }
+    param "site_name"           { description = "AD site to place the DC in; empty = default" type = "string" default = "" }
+    param "database_path"       { description = "NTDS database path; empty = default" type = "string" default = "" }
+    param "log_path"            { description = "NTDS log path; empty = default" type = "string" default = "" }
+    param "sysvol_path"         { description = "SYSVOL path; empty = default" type = "string" default = "" }
+  }
+
+  resource "domain_member" {
+    description = "Join this computer to an existing Active Directory domain"
+    script = "resources/domain_member.wisp"
+    concurrency = "global"
+    param "domain_name"         { description = "Domain FQDN to join" type = "string" required = true }
+    param "credential_user"     { description = "Account with join rights (UPN or DOMAIN\\user)" type = "string" required = true }
+    param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" required = true }
+    param "ou_path"             { description = "Distinguished name of the OU to place the computer; empty = default Computers container" type = "string" default = "" }
+    param "new_name"            { description = "Rename the computer as part of the join; empty = keep current name" type = "string" default = "" }
+  }
+
+  // Multi-VM, reboot-driven test of the whole DC lifecycle over a declared
+  // vmlab lab (forest root serving DNS, an additional DC, a member server,
+  // and a second forest). The driver brings each VM up by name and applies
+  // its resource across the reboot it requires. Needs vmlab + the
+  // windows-server-2025 template.
+  scenario "ad_matrix" {
+    description = "Forest, additional DC, member join and a second forest converge over real reboots"
+    lab = "tests/ad-lab"
+    script = "tests/ad_matrix.wisp"
+  }
+}

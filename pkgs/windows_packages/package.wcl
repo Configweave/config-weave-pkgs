@@ -1,0 +1,65 @@
+package "windows_packages" {
+  description = "Manage Windows software via Chocolatey, Scoop and winget"
+
+  resource "chocolatey_package" {
+    description = "Ensure a Chocolatey package is installed"
+    script = "resources/chocolatey_package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Chocolatey package id" type = "string" required = true }
+    param "version" { description = "Optional version to pin; empty means any version" type = "string" default = "" }
+    param "source" { description = "Optional source name or URL" type = "string" default = "" }
+  }
+
+  resource "chocolatey_absent" {
+    description = "Ensure a Chocolatey package is not installed"
+    script = "resources/chocolatey_absent.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Chocolatey package id" type = "string" required = true }
+  }
+
+  resource "chocolatey_source" {
+    description = "Ensure a Chocolatey source is registered"
+    script = "resources/chocolatey_source.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Source name" type = "string" required = true }
+    param "url" { description = "Source URL" type = "string" required = true }
+  }
+
+  resource "scoop_package" {
+    description = "Ensure a Scoop app is installed (per-user)"
+    script = "resources/scoop_package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Scoop app name, optionally bucket/name" type = "string" required = true }
+  }
+
+  resource "scoop_absent" {
+    description = "Ensure a Scoop app is not installed"
+    script = "resources/scoop_absent.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Scoop app name" type = "string" required = true }
+  }
+
+  resource "scoop_bucket" {
+    description = "Ensure a Scoop bucket is added"
+    script = "resources/scoop_bucket.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Bucket name" type = "string" required = true }
+    param "url" { description = "Optional bucket repository URL" type = "string" default = "" }
+  }
+
+  resource "winget_package" {
+    description = "Ensure a winget package is installed"
+    script = "resources/winget_package.wisp"
+    concurrency = "exclusive"
+    param "id" { description = "winget package identifier (exact)" type = "string" required = true }
+    param "version" { description = "Optional version to install" type = "string" default = "" }
+    param "source" { description = "Optional winget source" type = "string" default = "" }
+  }
+
+  resource "winget_absent" {
+    description = "Ensure a winget package is not installed"
+    script = "resources/winget_absent.wisp"
+    concurrency = "exclusive"
+    param "id" { description = "winget package identifier (exact)" type = "string" required = true }
+  }
+}

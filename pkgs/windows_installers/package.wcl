@@ -1,0 +1,29 @@
+package "windows_installers" {
+  description = "Install Windows software from MSI and EXE installers"
+
+  resource "msi_package" {
+    description = "Install an MSI, identified for idempotence by its ProductCode"
+    script = "resources/msi_package.wisp"
+    concurrency = "exclusive"
+    param "path" { description = "Local path or HTTP(S) URL of the .msi" type = "string" required = true }
+    param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
+    param "args" { description = "Extra msiexec arguments (e.g. property assignments)" type = "string" default = "" }
+  }
+
+  resource "msi_absent" {
+    description = "Uninstall an MSI by its ProductCode"
+    script = "resources/msi_absent.wisp"
+    concurrency = "exclusive"
+    param "product_id" { description = "MSI ProductCode GUID" type = "string" required = true }
+  }
+
+  resource "exe_installer" {
+    description = "Run an EXE installer once, guarded by a creates path or product_id"
+    script = "resources/exe_installer.wisp"
+    concurrency = "exclusive"
+    param "path" { description = "Local path or HTTP(S) URL of the .exe" type = "string" required = true }
+    param "args" { description = "Silent-install arguments passed to the installer" type = "string" default = "" }
+    param "creates" { description = "Path whose existence means the install is done" type = "string" default = "" }
+    param "product_id" { description = "Uninstall-key GUID whose presence means the install is done" type = "string" default = "" }
+  }
+}

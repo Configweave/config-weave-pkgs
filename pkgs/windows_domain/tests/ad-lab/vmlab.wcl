@@ -1,0 +1,58 @@
+// vmlab lab for the windows_domain `ad_matrix` scenario.
+//
+// Two segments: `corp` (the AD domain corp.example.com, with dc01 serving
+// DNS) and `alt` (an independent second forest). config-weave's scenario
+// runner copies this dir, gives the lab a unique name, and brings each VM
+// up by name on demand — so the VMs are declared here once and the driver
+// (tests/ad_matrix.wisp) just interacts with them.
+
+import <vmlab.wcl>
+
+lab "cw-windows-domain" {
+
+  segment "corp" {
+    subnet = "10.50.0.0/24"
+    nat = true
+    // The forest root owns DNS for the domain; corp members resolve it.
+    dns { server = "10.50.0.10" }
+  }
+
+  segment "alt" {
+    subnet = "10.60.0.0/24"
+    nat = true
+  }
+
+  // Forest root for corp.example.com (fixed IP so it can serve DNS).
+  vm "dc01" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 2
+    memory   = "4G"
+    nic { segment = "corp" ip = "10.50.0.10" }
+  }
+
+  // Additional domain controller for corp.example.com.
+  vm "dc02" {
+    template   = "x86_64/windows-server-2025"
+    cpus       = 2
+    memory     = "4G"
+    depends_on = ["dc01"]
+    nic { segment = "corp" }
+  }
+
+  // Member server that joins corp.example.com.
+  vm "member01" {
+    template   = "x86_64/windows-server-2025"
+    cpus       = 2
+    memory     = "4G"
+    depends_on = ["dc01"]
+    nic { segment = "corp" }
+  }
+
+  // A second, independent forest (alt.test) on its own segment.
+  vm "dc-alt" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 2
+    memory   = "4G"
+    nic { segment = "alt" ip = "10.60.0.10" }
+  }
+}

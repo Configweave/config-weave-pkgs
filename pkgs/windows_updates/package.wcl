@@ -1,0 +1,18 @@
+package "windows_updates" {
+  description = "Apply Windows Updates and individual hotfixes"
+
+  resource "windows_update" {
+    description = "Install applicable Windows Updates via the Windows Update Agent"
+    script = "resources/windows_update.wisp"
+    concurrency = "global"
+    param "query" { description = "Update search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
+  }
+
+  resource "hotfix_installed" {
+    description = "Ensure a specific KB hotfix is installed"
+    script = "resources/hotfix_installed.wisp"
+    concurrency = "global"
+    param "kb" { description = "KB identifier such as KB5031234" type = "string" required = true }
+    param "path" { description = "Local path or HTTP(S) URL of the .msu to install when missing" type = "string" default = "" }
+  }
+}

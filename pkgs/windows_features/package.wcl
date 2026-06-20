@@ -1,0 +1,28 @@
+package "windows_features" {
+  description = "Manage Windows optional features, capabilities and Server roles"
+
+  resource "windows_optional_feature" {
+    description = "Enable or disable a Windows optional feature (DISM)"
+    script = "resources/windows_optional_feature.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Feature name such as Microsoft-Hyper-V or NetFx3" type = "string" required = true }
+    param "enabled" { description = "Whether the feature should be enabled" type = "bool" default = true }
+  }
+
+  resource "windows_capability" {
+    description = "Add or remove a Windows capability (Feature on Demand)"
+    script = "resources/windows_capability.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Capability name such as OpenSSH.Client~~~~0.0.1.0" type = "string" required = true }
+    param "present" { description = "Whether the capability should be installed" type = "bool" default = true }
+  }
+
+  resource "windows_server_feature" {
+    description = "Install or remove a Windows Server role/feature"
+    script = "resources/windows_server_feature.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Feature name such as Web-Server or DNS" type = "string" required = true }
+    param "present" { description = "Whether the feature should be installed" type = "bool" default = true }
+    param "include_management_tools" { description = "Also install the feature's management tools" type = "bool" default = false }
+  }
+}
