@@ -48,18 +48,27 @@ package "windows_packages" {
   }
 
   resource "winget_package" {
-    description = "Ensure a winget package is installed"
+    description = "Ensure a winget package is installed or removed"
     script = "resources/winget_package.wisp"
     concurrency = "exclusive"
     param "id" { description = "winget package identifier (exact)" type = "string" required = true }
     param "version" { description = "Optional version to install" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
+    param "present" { description = "Whether the package should be installed" type = "bool" default = true }
   }
 
-  resource "winget_absent" {
-    description = "Ensure a winget package is not installed"
-    script = "resources/winget_absent.wisp"
+  resource "winget_source" {
+    description = "Ensure a winget source is registered (or removed)"
+    script = "resources/winget_source.wisp"
     concurrency = "exclusive"
-    param "id" { description = "winget package identifier (exact)" type = "string" required = true }
+    param "name" { description = "Source name" type = "string" required = true }
+    param "url" { description = "Source argument/URL (required when present)" type = "string" default = "" }
+    param "type" { description = "Optional source type, e.g. Microsoft.Rest" type = "string" default = "" }
+    param "present" { description = "Whether the source should exist" type = "bool" default = true }
+  }
+
+  gatherer "winget_packages" {
+    description = "Enumerate installed winget packages (id, name, version)"
+    script = "gatherers/winget_packages.wisp"
   }
 }

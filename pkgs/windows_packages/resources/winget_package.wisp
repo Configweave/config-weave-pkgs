@@ -6,6 +6,11 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn param_bool(params: Value, key: string, fallback: bool) -> bool {
+    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
+    fallback
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 // winget exits 0 even when nothing matches, printing a "no installed
@@ -19,17 +24,23 @@ fn installed(id: string) -> Result[bool, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let id = param_str(params, "id", "")
     if id == "" { return Err("missing 'id' parameter") }
-    if installed(id)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let present = param_bool(params, "present", true)
+    if installed(id)? == present { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let id = param_str(params, "id", "")
-    let version = param_str(params, "version", "")
-    let source = param_str(params, "source", "")
     if id == "" { return Err("missing 'id' parameter") }
-    let varg = if version != "" { " --version " + ps_q(version) } else { "" }
-    let sarg = if source != "" { " --source " + ps_q(source) } else { "" }
-    let cmd = "winget install --exact --id " + ps_q(id) + varg + sarg + " --silent --accept-package-agreements --accept-source-agreements; exit $LASTEXITCODE"
+    let present = param_bool(params, "present", true)
+    let cmd = if present {
+        let version = param_str(params, "version", "")
+        let source = param_str(params, "source", "")
+        let varg = if version != "" { " --version " + ps_q(version) } else { "" }
+        let sarg = if source != "" { " --source " + ps_q(source) } else { "" }
+        "winget install --exact --id " + ps_q(id) + varg + sarg + " --silent --accept-package-agreements --accept-source-agreements; exit $LASTEXITCODE"
+    } else {
+        "winget uninstall --exact --id " + ps_q(id) + " --silent --accept-source-agreements; exit $LASTEXITCODE"
+    }
     let out = shell::powershell(cmd, Value::Null)?
     if !out.success { return Err(out.stdout.trim() + " " + out.stderr.trim()) }
     Ok(ApplyResult::Success)
