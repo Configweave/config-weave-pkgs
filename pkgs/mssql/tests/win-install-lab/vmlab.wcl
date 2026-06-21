@@ -1,0 +1,20 @@
+// vmlab lab for the mssql `win_install` scenario: a single Windows Server VM
+// with enough memory for a SQL Server install. config-weave's scenario runner
+// copies this dir, gives the lab a unique name, and brings the VM up by name.
+
+import <vmlab.wcl>
+
+lab "cw-mssql-install" {
+
+  segment "lan" {
+    subnet = "10.70.0.0/24"
+    nat = true
+  }
+
+  vm "sql01" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 4
+    memory   = "8G"
+    nic { segment = "lan" }
+  }
+}

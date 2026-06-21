@@ -1,0 +1,351 @@
+package "mssql" {
+  description = "Install and configure Microsoft SQL Server on Windows and Linux"
+
+  // ---------------------------------------------------------------------------
+  // Installation
+  // ---------------------------------------------------------------------------
+
+  resource "instance" {
+    description = "Install a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
+    script = "resources/instance.wisp"
+    concurrency = "global"
+    param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root)" type = "string" default = "" }
+    param "instance_name"         { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
+    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN" type = "string" default = "SQLENGINE" }
+    param "edition"               { description = "Edition / product id (Linux MSSQL_PID): Developer, Express, Standard, Enterprise, EnterpriseCore or a 25-char key" type = "string" default = "Developer" }
+    param "security_mode"         { description = "Authentication mode: Windows (integrated only) or SQL (mixed mode; needs sa_password)" type = "string" default = "Windows" }
+    param "sa_password"           { description = "sa password; required for SQL/mixed mode and for the Linux engine — plaintext in the playbook" type = "string" default = "" }
+    param "sql_sysadmin_accounts" { description = "Windows only: accounts added to the sysadmin role, comma or space separated" type = "string" default = "BUILTIN\\Administrators" }
+    param "collation"             { description = "Server collation; empty = setup default (Windows /SQLCOLLATION; Linux mssql-conf collation)" type = "string" default = "" }
+    param "tcp_enabled"           { description = "Enable the TCP/IP protocol during Windows setup" type = "bool" default = true }
+    param "data_dir"              { description = "Windows only: default data directory (/SQLUSERDBDIR); empty = setup default" type = "string" default = "" }
+    param "log_dir"               { description = "Windows only: default log directory (/SQLUSERDBLOGDIR); empty = setup default" type = "string" default = "" }
+    param "backup_dir"            { description = "Windows only: backup directory (/SQLBACKUPDIR); empty = setup default" type = "string" default = "" }
+    param "version"               { description = "Linux only: major version repo to use, e.g. 2022 or 2019" type = "string" default = "2022" }
+    param "repo_url"              { description = "Linux only: override the Microsoft repo definition URL (apt .list or yum .repo); empty = auto by distro" type = "string" default = "" }
+    param "config_file"           { description = "Windows only: path to a full ConfigurationFile.ini passed via /ConfigurationFile (overrides most flags)" type = "string" default = "" }
+    param "extra_args"            { description = "Windows only: extra setup.exe arguments appended verbatim" type = "string" default = "" }
+    param "install_timeout"       { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
+  }
+
+  resource "instance_absent" {
+    description = "Uninstall a SQL Server instance (Windows setup.exe /ACTION=Uninstall or Linux package removal)"
+    script = "resources/instance_absent.wisp"
+    concurrency = "global"
+    param "instance_name"   { description = "Instance name to remove" type = "string" default = "MSSQLSERVER" }
+    param "setup_path"      { description = "Windows only: path or URL of setup.exe used to run the uninstall" type = "string" default = "" }
+    param "features"        { description = "Windows only: /FEATURES to remove; empty removes the whole instance via SQLENGINE" type = "string" default = "" }
+    param "install_timeout" { description = "Maximum seconds to wait for the uninstaller" type = "int" default = 3600 }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Server-level configuration (T-SQL via sqlcmd)
+  // ---------------------------------------------------------------------------
+
+  resource "server_setting" {
+    description = "Converge an sp_configure server setting to a value (compares the running value_in_use)"
+    script = "resources/server_setting.wisp"
+    concurrency = "exclusive"
+    param "name"         { description = "sp_configure setting name, e.g. 'max server memory (MB)' or 'cost threshold for parallelism'" type = "string" required = true }
+    param "value"        { description = "Desired integer value" type = "int" required = true }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "login" {
+    description = "Ensure a server login exists (SQL or Windows auth) with its enabled state, default database and server roles"
+    script = "resources/login.wisp"
+    concurrency = "parallel"
+    param "name"             { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
+    param "auth"             { description = "Authentication type: windows or sql" type = "string" default = "windows" }
+    param "password"         { description = "Password for SQL logins — plaintext; cannot be read back so drift is undetectable (see force_password)" type = "string" default = "" }
+    param "default_database" { description = "Default database for the login" type = "string" default = "master" }
+    param "enabled"          { description = "Whether the login is enabled" type = "bool" default = true }
+    param "server_roles"     { description = "Fixed server roles to grant, comma separated, e.g. sysadmin,dbcreator" type = "string" default = "" }
+    param "check_policy"     { description = "SQL logins: enforce the Windows password policy (CHECK_POLICY)" type = "bool" default = false }
+    param "force_password"   { description = "SQL logins: re-ALTER the password on every apply (use when rotating passwords, since drift can't be detected)" type = "bool" default = false }
+    param "server"           { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"         { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"         { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"     { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "login_absent" {
+    description = "Ensure a server login does not exist"
+    script = "resources/login_absent.wisp"
+    concurrency = "parallel"
+    param "name"         { description = "Login name to drop" type = "string" required = true }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "database" {
+    description = "Ensure a database exists with the desired recovery model, owner and compatibility level"
+    script = "resources/database.wisp"
+    concurrency = "parallel"
+    param "name"                { description = "Database name" type = "string" required = true }
+    param "recovery_model"      { description = "Recovery model: FULL, SIMPLE or BULK_LOGGED; empty = engine default" type = "string" default = "" }
+    param "collation"           { description = "Collation set at CREATE; existing-database mismatch is reported as an error (no in-place change)" type = "string" default = "" }
+    param "owner"               { description = "Login to own the database (ALTER AUTHORIZATION); empty = leave as-is" type = "string" default = "" }
+    param "compatibility_level" { description = "Compatibility level, e.g. 160; 0 = leave as-is" type = "int" default = 0 }
+    param "server"              { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"            { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"            { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"        { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "database_absent" {
+    description = "Ensure a database does not exist (drops it after forcing SINGLE_USER)"
+    script = "resources/database_absent.wisp"
+    concurrency = "exclusive"
+    param "name"         { description = "Database name to drop" type = "string" required = true }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "database_user" {
+    description = "Ensure a database user mapped to a login exists with its role memberships"
+    script = "resources/database_user.wisp"
+    concurrency = "parallel"
+    param "database"       { description = "Database the user lives in" type = "string" required = true }
+    param "name"           { description = "Database user name" type = "string" required = true }
+    param "login"          { description = "Server login to map the user to" type = "string" required = true }
+    param "roles"          { description = "Database roles to grant, comma separated, e.g. db_datareader,db_datawriter" type = "string" default = "" }
+    param "default_schema" { description = "Default schema for the user" type = "string" default = "dbo" }
+    param "server"         { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"       { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"       { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"   { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Change Data Capture
+  // ---------------------------------------------------------------------------
+
+  resource "database_cdc" {
+    description = "Enable or disable Change Data Capture at the database level (needs SQL Server Agent for capture to run)"
+    script = "resources/database_cdc.wisp"
+    concurrency = "exclusive"
+    param "database"     { description = "Database to enable/disable CDC on" type = "string" required = true }
+    param "enabled"      { description = "Whether CDC should be enabled on the database" type = "bool" default = true }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "cdc_table" {
+    description = "Enable a Change Data Capture instance for a table (requires database CDC already enabled)"
+    script = "resources/cdc_table.wisp"
+    concurrency = "exclusive"
+    param "database"             { description = "Database holding the table" type = "string" required = true }
+    param "schema"               { description = "Source table schema" type = "string" default = "dbo" }
+    param "table"                { description = "Source table name" type = "string" required = true }
+    param "capture_instance"     { description = "Capture instance name; empty = <schema>_<table>" type = "string" default = "" }
+    param "role_name"            { description = "Gating database role for the change tables; empty = no gating role" type = "string" default = "" }
+    param "supports_net_changes" { description = "Create the net-changes function (requires a primary key)" type = "bool" default = true }
+    param "server"               { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"             { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"             { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"         { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Network protocol
+  // ---------------------------------------------------------------------------
+
+  resource "tcp" {
+    description = "Configure the TCP/IP protocol and static port, restarting the engine so the change takes effect"
+    script = "resources/tcp.wisp"
+    concurrency = "global"
+    param "instance_name" { description = "Instance whose TCP protocol to configure" type = "string" default = "MSSQLSERVER" }
+    param "port"          { description = "Static TCP port" type = "int" default = 1433 }
+    param "enabled"       { description = "Whether the TCP/IP protocol is enabled (Windows only; Linux TCP is always on)" type = "bool" default = true }
+    param "restart"       { description = "Restart the SQL Server service after changing the configuration" type = "bool" default = true }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Replication
+  // ---------------------------------------------------------------------------
+
+  resource "replication_distributor" {
+    description = "Configure this server as its own replication distributor with a distribution database"
+    script = "resources/replication_distributor.wisp"
+    concurrency = "exclusive"
+    param "distribution_db"   { description = "Distribution database name" type = "string" default = "distribution" }
+    param "working_directory" { description = "Replication working directory (snapshot folder); empty = engine default" type = "string" default = "" }
+    param "server"            { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"          { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"          { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"      { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "replication_publisher" {
+    description = "Enable a database for replication on a publisher whose distributor is already configured"
+    script = "resources/replication_publisher.wisp"
+    concurrency = "exclusive"
+    param "publisher_db" { description = "Database to enable for publishing" type = "string" required = true }
+    param "type"         { description = "Replication type to enable on the database: publish (transactional/snapshot) or merge" type = "string" default = "publish" }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Database Mail
+  // ---------------------------------------------------------------------------
+
+  resource "database_mail" {
+    description = "Enable Database Mail and ensure an SMTP account is linked to a mail profile"
+    script = "resources/database_mail.wisp"
+    concurrency = "exclusive"
+    param "profile"       { description = "Mail profile name" type = "string" required = true }
+    param "account"       { description = "Mail account name" type = "string" required = true }
+    param "smtp_server"   { description = "SMTP server host name" type = "string" required = true }
+    param "from_address"  { description = "From e-mail address for the account" type = "string" required = true }
+    param "port"          { description = "SMTP port" type = "int" default = 25 }
+    param "use_ssl"       { description = "Use SSL/TLS for the SMTP connection" type = "bool" default = false }
+    param "smtp_user"     { description = "SMTP authentication user; empty = anonymous" type = "string" default = "" }
+    param "smtp_password" { description = "SMTP password — plaintext; cannot be read back (see force)" type = "string" default = "" }
+    param "force"         { description = "Re-apply the account settings on every apply (use when rotating the SMTP password)" type = "bool" default = false }
+    param "server"        { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"      { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"      { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"  { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // SQL Server Agent jobs
+  // ---------------------------------------------------------------------------
+
+  resource "agent_job" {
+    description = "Ensure a single-step SQL Server Agent job exists, targeted at the local server"
+    script = "resources/agent_job.wisp"
+    concurrency = "parallel"
+    param "name"         { description = "Job name" type = "string" required = true }
+    param "command"      { description = "Command for the job's single step" type = "string" required = true }
+    param "subsystem"    { description = "Job step subsystem: TSQL, CmdExec or PowerShell" type = "string" default = "TSQL" }
+    param "step_name"    { description = "Name of the job's single step" type = "string" default = "Step 1" }
+    param "database"     { description = "Database context for a TSQL step" type = "string" default = "master" }
+    param "enabled"      { description = "Whether the job is enabled" type = "bool" default = true }
+    param "owner"        { description = "Job owner login; empty = current login" type = "string" default = "" }
+    param "description"  { description = "Job description" type = "string" default = "" }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  resource "agent_job_absent" {
+    description = "Ensure a SQL Server Agent job does not exist"
+    script = "resources/agent_job_absent.wisp"
+    concurrency = "parallel"
+    param "name"         { description = "Job name to delete" type = "string" required = true }
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Always On availability groups (best-effort, single-node primary side)
+  // ---------------------------------------------------------------------------
+
+  resource "availability_group" {
+    description = "Enable Always On HADR and create an availability group on the primary (multi-node join is a scenario concern)"
+    script = "resources/availability_group.wisp"
+    concurrency = "global"
+    param "name"           { description = "Availability group name" type = "string" required = true }
+    param "instance_name"  { description = "Instance to enable HADR on (Windows service name)" type = "string" default = "MSSQLSERVER" }
+    param "endpoint_port"  { description = "Database mirroring endpoint port" type = "int" default = 5022 }
+    param "endpoint_name"  { description = "Database mirroring endpoint name" type = "string" default = "Hadr_endpoint" }
+    param "server"         { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"       { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"       { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password"   { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Facts
+  // ---------------------------------------------------------------------------
+
+  gatherer "instance_info" {
+    description = "Report SQL Server version, edition, collation and HADR state from SERVERPROPERTY"
+    script = "gatherers/instance_info.wisp"
+    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
+    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
+    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
+    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tests
+  // ---------------------------------------------------------------------------
+
+  // Docker test against the official SQL Server image. The testlab keeps the
+  // container alive with `--entrypoint sleep`, so the engine is NOT auto-started;
+  // `setup` launches sqlservr in the background and waits until it accepts
+  // connections, then the three-run protocol exercises the T-SQL resources that
+  // do not need an install or a service restart.
+  test "config_converges" {
+    description = "Server, login, database, user and CDC resources converge against a running engine"
+    backend = "docker"
+    image = "mcr.microsoft.com/mssql/server:2022-latest"
+    setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q 'SELECT 1' >/dev/null 2>&1"
+    verify = "tests/config_verify.wisp"
+
+    step "memory" {
+      description = "Constrain max server memory"
+      resource = "server_setting"
+      properties { name = "max server memory (MB)" value = 2048 sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "app_login" {
+      description = "Create a SQL login"
+      resource = "login"
+      properties { name = "weave_app" auth = "sql" password = "L0gin!Passw0rd" check_policy = false sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "app_db" {
+      description = "Create the application database"
+      resource = "database"
+      properties { name = "weave_app_db" recovery_model = "SIMPLE" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "app_user" {
+      description = "Map the login into the database with reader/writer roles"
+      resource = "database_user"
+      requires = ["app_login", "app_db"]
+      properties { database = "weave_app_db" name = "weave_app" login = "weave_app" roles = "db_datareader,db_datawriter" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "app_cdc" {
+      description = "Enable CDC on the application database"
+      resource = "database_cdc"
+      requires = ["app_db"]
+      properties { database = "weave_app_db" enabled = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    gather "info" {
+      description = "Engine facts"
+      from = "instance_info"
+      params { sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+  }
+
+  // Full silent install on a real Windows VM, then converge configuration over
+  // the install. Heavy (multi-GB media); needs vmlab + the windows-server-2025
+  // template and a reachable SQL Server setup.exe (set in the driver).
+  scenario "win_install" {
+    description = "Silent SQL Server install on Windows then database + setting + CDC converge"
+    lab = "tests/win-install-lab"
+    script = "tests/win_install.wisp"
+  }
+}

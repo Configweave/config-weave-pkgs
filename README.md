@@ -26,6 +26,44 @@ so this repository intentionally does not require Config Weave loader changes.
 - `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.
 - `linux_tmux`: tmux configuration, options, key bindings, plugins and session files.
 
+Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
+`windows_registry`, `windows_updates`, `windows_domain`) and the cross-platform
+`mssql` package round out the library.
+
+### `mssql`
+
+Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
+and **Linux** (the Microsoft repo plus `mssql-conf`), then converge a broad set
+of T-SQL-driven settings via `sqlcmd`:
+
+- `instance` / `instance_absent` — silent install/uninstall, feature selection,
+  edition, collation, service accounts, TCP and a `ConfigurationFile.ini`
+  passthrough on Windows.
+- `server_setting` — any `sp_configure` value (compares the running
+  `value_in_use`).
+- `login` / `login_absent`, `database` / `database_absent`, `database_user` —
+  principals, databases (recovery model, owner, compatibility level) and role
+  membership.
+- `database_cdc`, `cdc_table` — Change Data Capture at the database and table
+  level.
+- `tcp` — the TCP/IP protocol and static port (registry on Windows, `mssql-conf`
+  on Linux), restarting the engine so the change takes effect.
+- `replication_distributor`, `replication_publisher` — distributor setup and
+  enabling a database for transactional or merge replication.
+- `database_mail`, `agent_job` / `agent_job_absent` — Database Mail profiles and
+  SQL Agent jobs.
+- `availability_group` — enable Always On HADR and create an availability group
+  on the primary (multi-node joins are a scenario concern).
+- `instance_info` gatherer — version, edition, collation and HADR state.
+
+Connection parameters (`server`, `instance`, `sql_user`, `sql_password`) are
+declared on every T-SQL resource; omit `sql_user` to use integrated (Windows)
+authentication. **Known limits:** SQL/SMTP/sa passwords cannot be read back, so
+password drift is undetectable (use the `force_password` / `force` flags to
+re-apply); database collation is enforced only at create; the Windows install and
+availability groups may require a reboot and are covered by the `win_install`
+vmlab scenario rather than the docker `test`.
+
 ## Development
 
 ```sh
