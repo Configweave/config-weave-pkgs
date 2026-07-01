@@ -17,7 +17,9 @@ fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if !fs::is_file("/etc/hostname") || fs::read("/etc/hostname")?.trim() != name { return Ok(CheckResult::NotConfigured) }
+    if !fs::is_file("/etc/hostname") { return Ok(CheckResult::NotConfigured) }
+    let current = fs::read("/etc/hostname")?
+    if current.trim() != name { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 

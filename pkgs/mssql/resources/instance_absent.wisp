@@ -18,8 +18,12 @@ fn param_int(params: Value, key: string, fallback: int) -> int {
 }
 
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-// setup.exe expects double-quoted values; single quotes become literal chars.
-fn dq(s: string) -> string { "\"" + s.replace("\"", "") + "\"" }
+// setup.exe expects double-quoted values and has no escape for an embedded
+// double quote, so such values are rejected rather than silently mangled.
+fn dq(s: string) -> Result[string, string] {
+    if s.contains("\"") { return Err("a setup.exe argument value contains a double quote, which cannot be escaped") }
+    Ok("\"" + s + "\"")
+}
 
 fn win_installed(instance_name: string) -> Result[bool, string] {
     let key = "HKLM\\SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
@@ -58,7 +62,7 @@ fn win_apply(params: Value) -> Result[ApplyResult, string] {
     let inst = param_str(params, "instance_name", "MSSQLSERVER")
     let features = param_str(params, "features", "")
     let feat_arg = if features != "" { features } else { "SQLENGINE" }
-    let args = "/Q /ACTION=Uninstall /INSTANCENAME=" + dq(inst) + " /FEATURES=" + feat_arg
+    let args = "/Q /ACTION=Uninstall /INSTANCENAME=" + dq(inst)? + " /FEATURES=" + feat_arg
     log::info("uninstalling SQL Server instance " + inst)
     let script = "$c=(Start-Process -FilePath " + ps_q(local) + " -ArgumentList " + ps_q(args) + " -Wait -PassThru).ExitCode; exit $c"
     let opts = Value::Map(#{ "timeout": Value::Int(param_int(params, "install_timeout", 3600)) })

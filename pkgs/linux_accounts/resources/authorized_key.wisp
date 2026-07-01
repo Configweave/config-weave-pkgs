@@ -44,7 +44,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         let sep = if text == "" || text.ends_with("\n") { "" } else { "\n" }
         fs::write(p, text + sep + key.trim() + "\n")?
     }
-    shell::bash("chmod 700 " + q(home + "/.ssh") + " && chmod 600 " + q(p) + " && chown -R " + q(user) + ":" + q(user) + " " + q(home + "/.ssh"), Value::Null)?
+    let out = shell::bash("chmod 700 " + q(home + "/.ssh") + " && chmod 600 " + q(p) + " && chown -R " + q(user) + ":" + q(user) + " " + q(home + "/.ssh"), Value::Null)?
+    if !out.success { return Err("securing " + home + "/.ssh failed: " + out.stderr.trim()) }
     Ok(ApplyResult::Success)
 }
 

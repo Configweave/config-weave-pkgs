@@ -23,8 +23,12 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
 }
 
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-// setup.exe expects double-quoted values; single quotes become literal chars.
-fn dq(s: string) -> string { "\"" + s.replace("\"", "") + "\"" }
+// setup.exe expects double-quoted values and has no escape for an embedded
+// double quote, so such values are rejected rather than silently mangled.
+fn dq(s: string) -> Result[string, string] {
+    if s.contains("\"") { return Err("a setup.exe argument value contains a double quote, which cannot be escaped") }
+    Ok("\"" + s + "\"")
+}
 
 // The Instance Names registry value is present once an instance is installed.
 fn win_installed(instance_name: string) -> Result[bool, string] {
@@ -61,11 +65,11 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 // --- Windows --------------------------------------------------------------
 
-fn win_pid_arg(edition: string) -> string {
+fn win_pid_arg(edition: string) -> Result[string, string] {
     if edition == "" || edition == "Developer" || edition == "Evaluation" || edition == "Express" {
-        return ""
+        return Ok("")
     }
-    " /PID=" + dq(edition)
+    Ok(" /PID=" + dq(edition)?)
 }
 
 fn win_apply(params: Value) -> Result[ApplyResult, string] {
@@ -85,29 +89,29 @@ fn win_apply(params: Value) -> Result[ApplyResult, string] {
 
     // A full ConfigurationFile.ini wins: pass it through and only add the EULA.
     let args = if cfg != "" {
-        "/Q /IACCEPTSQLSERVERLICENSETERMS /ConfigurationFile=" + dq(cfg)
+        "/Q /IACCEPTSQLSERVERLICENSETERMS /ConfigurationFile=" + dq(cfg)?
     } else {
         let sec = param_str(params, "security_mode", "Windows")
         let sa = param_str(params, "sa_password", "")
         let sec_arg = if sec == "SQL" {
             if sa == "" { return Err("security_mode=SQL requires an 'sa_password'") }
-            " /SECURITYMODE=SQL /SAPWD=" + dq(sa)
+            " /SECURITYMODE=SQL /SAPWD=" + dq(sa)?
         } else { "" }
         let coll = param_str(params, "collation", "")
-        let coll_arg = if coll != "" { " /SQLCOLLATION=" + dq(coll) } else { "" }
+        let coll_arg = if coll != "" { " /SQLCOLLATION=" + dq(coll)? } else { "" }
         let dd = param_str(params, "data_dir", "")
-        let dd_arg = if dd != "" { " /SQLUSERDBDIR=" + dq(dd) } else { "" }
+        let dd_arg = if dd != "" { " /SQLUSERDBDIR=" + dq(dd)? } else { "" }
         let ld = param_str(params, "log_dir", "")
-        let ld_arg = if ld != "" { " /SQLUSERDBLOGDIR=" + dq(ld) } else { "" }
+        let ld_arg = if ld != "" { " /SQLUSERDBLOGDIR=" + dq(ld)? } else { "" }
         let bd = param_str(params, "backup_dir", "")
-        let bd_arg = if bd != "" { " /SQLBACKUPDIR=" + dq(bd) } else { "" }
+        let bd_arg = if bd != "" { " /SQLBACKUPDIR=" + dq(bd)? } else { "" }
         let extra = param_str(params, "extra_args", "")
         let extra_arg = if extra != "" { " " + extra } else { "" }
         "/Q /ACTION=Install /IACCEPTSQLSERVERLICENSETERMS" +
-            win_pid_arg(param_str(params, "edition", "Developer")) +
+            win_pid_arg(param_str(params, "edition", "Developer"))? +
             " /FEATURES=" + param_str(params, "features", "SQLENGINE") +
-            " /INSTANCENAME=" + dq(inst) +
-            " /SQLSYSADMINACCOUNTS=" + dq(param_str(params, "sql_sysadmin_accounts", "BUILTIN\\Administrators")) +
+            " /INSTANCENAME=" + dq(inst)? +
+            " /SQLSYSADMINACCOUNTS=" + dq(param_str(params, "sql_sysadmin_accounts", "BUILTIN\\Administrators"))? +
             " /TCPENABLED=" + tcp +
             " /UPDATEENABLED=0" +
             sec_arg + coll_arg + dd_arg + ld_arg + bd_arg + extra_arg

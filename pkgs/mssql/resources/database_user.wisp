@@ -100,6 +100,11 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let schema = param_str(params, "default_schema", "dbo")
     let uid = tsql_id(name)
 
+    // CREATE USER ... FOR LOGIN fails with an opaque T-SQL error when the login
+    // is missing — surface the ordering problem explicitly instead.
+    let login_exists = run_scalar(params, "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = " + tsql_lit(login) + ") THEN '1' ELSE '0' END;")?
+    if login_exists == "0" { return Err("login '" + login + "' does not exist on the server; create it with mssql.login in an earlier step") }
+
     let create = "USE " + tsql_id(db) + "; " +
         "IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = " + tsql_lit(name) + ") " +
         "CREATE USER " + uid + " FOR LOGIN " + tsql_id(login) + " WITH DEFAULT_SCHEMA = " + tsql_id(schema) + "; "

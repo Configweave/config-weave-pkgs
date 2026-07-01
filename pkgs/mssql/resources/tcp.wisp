@@ -91,12 +91,16 @@ fn linux_port() -> Result[string, string] {
     Ok("1433")
 }
 
+// mssql-conf has no switch to turn the TCP protocol off, so enabled=false is
+// an error on Linux rather than a silently ignored parameter.
 fn linux_check(params: Value) -> Result[CheckResult, string] {
+    if !param_bool(params, "enabled", true) { return Err("'enabled = false' is not supported on Linux: mssql-conf cannot disable the TCP protocol") }
     let port = param_int(params, "port", 1433)
     if linux_port()? == str(port) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn linux_apply(params: Value) -> Result[ApplyResult, string] {
+    if !param_bool(params, "enabled", true) { return Err("'enabled = false' is not supported on Linux: mssql-conf cannot disable the TCP protocol") }
     let port = param_int(params, "port", 1433)
     let set = shell::bash("/opt/mssql/bin/mssql-conf set network.tcpport " + str(port), Value::Null)?
     if !set.success { return Err("mssql-conf set tcpport failed: " + set.stderr.trim()) }
