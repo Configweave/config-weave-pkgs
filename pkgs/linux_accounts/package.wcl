@@ -24,7 +24,8 @@ package "linux_accounts" {
   resource "authorized_key" {
     description = "Ensure an SSH authorized key is present"
     script = "resources/authorized_key.wisp"
-    concurrency = "parallel"
+    // read-modify-write on a shared authorized_keys file — parallel steps lose updates
+    concurrency = "exclusive"
     param "user" { description = "Account name" type = "string" required = true }
     param "key" { description = "Authorized key line" type = "string" required = true }
     param "home" { description = "Optional home directory override" type = "string" default = "" }

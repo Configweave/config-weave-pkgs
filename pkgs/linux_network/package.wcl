@@ -4,7 +4,8 @@ package "linux_network" {
   resource "hosts_entry" {
     description = "Ensure an /etc/hosts entry"
     script = "resources/hosts_entry.wisp"
-    concurrency = "parallel"
+    // read-modify-write on the shared /etc/hosts — parallel steps lose updates
+    concurrency = "exclusive"
     param "ip" { description = "IP address" type = "string" required = true }
     param "names" { description = "Whitespace-separated hostnames" type = "string" required = true }
   }
@@ -47,7 +48,8 @@ package "linux_network" {
   resource "known_host" {
     description = "Ensure an entry in an SSH known_hosts file"
     script = "resources/known_host.wisp"
-    concurrency = "parallel"
+    // read-modify-write on a shared known_hosts file — parallel steps lose updates
+    concurrency = "exclusive"
     param "name" { description = "Host the key belongs to (descriptive)" type = "string" default = "" }
     param "key" { description = "Full known_hosts line (host keytype keydata)" type = "string" required = true }
     param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }

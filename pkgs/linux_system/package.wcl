@@ -36,7 +36,8 @@ package "linux_system" {
   resource "locale" {
     description = "Ensure /etc/locale.conf content"
     script = "resources/locale.wisp"
-    concurrency = "parallel"
+    // whole-file write to the singleton /etc/locale.conf
+    concurrency = "exclusive"
     param "content" { description = "locale.conf content" type = "string" required = true }
   }
 
