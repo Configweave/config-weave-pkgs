@@ -245,4 +245,30 @@ TMPL
       properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" creates = "/tmp/cw-extracted/inside.txt" }
     }
   }
+
+  // download needs an HTTP endpoint, so this test runs on a python image and
+  // serves a local directory — no external network.
+  test "download_and_permissions_converge" {
+    description = "download fetches over local HTTP and permissions converges a mode"
+    image = "python:3.12-slim"
+    setup = "mkdir -p /srv/www && printf 'payload\\n' > /srv/www/payload.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
+    verify = "tests/download_verify.wisp"
+
+    step "download" {
+      description = "Download a file from the local HTTP server"
+      resource = "download"
+      properties {
+        url = "http://127.0.0.1:8080/payload.txt"
+        dest = "/srv/dl/payload.txt"
+        sha256 = "d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b"
+        mode = "0644"
+      }
+    }
+
+    step "perms" {
+      description = "Tighten the mode of a pre-seeded file"
+      resource = "permissions"
+      properties { path = "/srv/perm.txt" mode = "0600" }
+    }
+  }
 }

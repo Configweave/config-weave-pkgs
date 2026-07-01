@@ -28,5 +28,14 @@ fn verify(facts: Value) -> Result[bool, string] {
     let login = q1("SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'weave_app') THEN '1' ELSE '0' END;")?
     let user = q1("USE weave_app_db; SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'weave_app') THEN '1' ELSE '0' END;")?
     let mem = q1("SELECT CAST(value_in_use AS varchar(16)) FROM sys.configurations WHERE name = N'max server memory (MB)';")?
-    Ok(db == "1" && cdc == "1" && login == "1" && user == "1" && mem == "2048")
+    if !(db == "1" && cdc == "1" && login == "1" && user == "1" && mem == "2048") { return Ok(false) }
+
+    // The absent resources really dropped the pre-seeded principals/objects…
+    let drop_login = q1("SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'cw_drop_login') THEN '1' ELSE '0' END;")?
+    let drop_db = q1("SELECT CASE WHEN DB_ID(N'cw_drop_db') IS NOT NULL THEN '1' ELSE '0' END;")?
+    let drop_job = q1("SELECT CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'cw_drop_job') THEN '1' ELSE '0' END;")?
+    // …and the create resources landed: the Agent job plus a CDC capture instance.
+    let job = q1("SELECT CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = N'cw_job') THEN '1' ELSE '0' END;")?
+    let capture = q1("USE cw_cdc_db; SELECT CASE WHEN EXISTS (SELECT 1 FROM cdc.change_tables WHERE capture_instance = N'dbo_cw_rows') THEN '1' ELSE '0' END;")?
+    Ok(drop_login == "0" && drop_db == "0" && drop_job == "0" && job == "1" && capture == "1")
 }

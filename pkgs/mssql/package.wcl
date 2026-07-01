@@ -298,7 +298,7 @@ package "mssql" {
     description = "Server, login, database, user and CDC resources converge against a running engine"
     backend = "docker"
     image = "mcr.microsoft.com/mssql/server:2022-latest"
-    setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q 'SELECT 1' >/dev/null 2>&1"
+    setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q \"CREATE LOGIN cw_drop_login WITH PASSWORD=N'Dr0p!Me12345', CHECK_POLICY=OFF; CREATE DATABASE cw_drop_db; CREATE DATABASE cw_cdc_db; EXEC msdb.dbo.sp_add_job @job_name=N'cw_drop_job';\" && /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -d cw_cdc_db -Q 'CREATE TABLE dbo.cw_rows (id int NOT NULL PRIMARY KEY);'"
     verify = "tests/config_verify.wisp"
 
     step "memory" {
@@ -331,6 +331,43 @@ package "mssql" {
       resource = "database_cdc"
       requires = ["app_db"]
       properties { database = "weave_app_db" enabled = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "drop_login" {
+      description = "Drop the login pre-seeded by setup"
+      resource = "login_absent"
+      properties { name = "cw_drop_login" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "drop_db" {
+      description = "Drop the database pre-seeded by setup"
+      resource = "database_absent"
+      properties { name = "cw_drop_db" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "job" {
+      description = "Create a single-step Agent job (msdb metadata; the agent service need not run)"
+      resource = "agent_job"
+      properties { name = "cw_job" command = "SELECT 1" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "drop_job" {
+      description = "Delete the Agent job pre-seeded by setup"
+      resource = "agent_job_absent"
+      properties { name = "cw_drop_job" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_db" {
+      description = "Enable CDC on the table-test database"
+      resource = "database_cdc"
+      properties { database = "cw_cdc_db" enabled = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_table" {
+      description = "Enable a capture instance for the pre-seeded table"
+      resource = "cdc_table"
+      requires = ["cdc_db"]
+      properties { database = "cw_cdc_db" table = "cw_rows" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     gather "info" {

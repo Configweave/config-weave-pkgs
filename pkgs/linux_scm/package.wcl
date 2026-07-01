@@ -20,4 +20,19 @@ package "linux_scm" {
     param "dest" { description = "Destination working copy path" type = "string" required = true }
     param "revision" { description = "Optional revision to pin; empty means HEAD" type = "string" default = "" }
   }
+
+  // subversion_checkout stays untested: no common base image ships svn and
+  // installing it in a test container would need the network.
+  test "git_checkout_converge" {
+    description = "git_checkout clones a local bare repo at a ref"
+    image = "alpine/git:latest"
+    setup = "mkdir -p /srv/src && cd /srv/src && git init -q -b main . && echo hello > README.md && git add README.md && git -c user.email=cw@test.local -c user.name=cw commit -qm init && git clone -q --bare /srv/src /srv/origin.git"
+    verify = "tests/git_verify.wisp"
+
+    step "clone" {
+      description = "Check out main from the local origin"
+      resource = "git_checkout"
+      properties { repo = "/srv/origin.git" dest = "/srv/checkout" ref = "main" }
+    }
+  }
 }

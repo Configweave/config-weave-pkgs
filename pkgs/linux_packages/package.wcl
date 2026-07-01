@@ -111,6 +111,7 @@ package "linux_packages" {
   test "dnf_existing_package" {
     description = "DNF-family installed package checks work in Fedora"
     image = "fedora:latest"
+    group = "fedora"
 
     step "filesystem-installed" {
       description = "filesystem is installed in Fedora"
@@ -170,6 +171,65 @@ package "linux_packages" {
         name = "cw-test"
         dearmor = false
         content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
+      }
+    }
+  }
+
+  // Untested by design: package_cache_updated hits the network (apt-get
+  // update), and rpm_gpg_key runs `rpm --import`, which rejects anything but
+  // a real key — neither converges honestly in an offline container.
+  //
+  // The apt steps are chained with `requires`: `exclusive` only serializes
+  // steps of the SAME resource type, but package_absent/held/unheld all
+  // contend for the one dpkg lock, so mixing them concurrently fails.
+  // Playbooks mixing these resources need the same ordering.
+  test "apt_state_changes" {
+    description = "Removal, holds and debconf selections converge offline on Debian"
+    image = "debian:12"
+    group = "debian"
+    setup = "apt-mark hold gzip >/dev/null"
+    verify = "tests/apt_state_verify.wisp"
+
+    step "remove" {
+      description = "Remove the preinstalled tzdata package (offline)"
+      resource = "package_absent"
+      properties { name = "tzdata" manager = "apt" }
+    }
+
+    step "hold" {
+      description = "Hold base-files at its current version"
+      resource = "package_held"
+      requires = ["remove"]
+      properties { name = "base-files" manager = "apt" }
+    }
+
+    step "unhold" {
+      description = "Release the hold setup placed on gzip"
+      resource = "package_unheld"
+      requires = ["hold"]
+      properties { name = "gzip" manager = "apt" }
+    }
+
+    step "debconf" {
+      description = "Pre-seed a debconf answer"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/enable" vtype = "boolean" value = "true" }
+    }
+  }
+
+  test "yum_repo_file" {
+    description = "yum_repository writes a deterministic .repo file"
+    image = "fedora:latest"
+    group = "fedora"
+    verify = "tests/yum_repository_verify.wisp"
+
+    step "repo" {
+      description = "Write a .repo file"
+      resource = "yum_repository"
+      properties {
+        name = "cw-test"
+        content = "[cw-test]\nname=Config Weave Test\nbaseurl=https://example.invalid/repo\nenabled=0\n"
       }
     }
   }

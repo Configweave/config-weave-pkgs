@@ -71,4 +71,88 @@ package "windows_packages" {
     description = "Enumerate installed winget packages (id, name, version)"
     script = "gatherers/winget_packages.wisp"
   }
+
+  // The vmlab guests have NAT internet (the mssql win_install scenario
+  // installs sqlcmd guest-side), so setup bootstraps Chocolatey from the
+  // community repo. The bootstrap edits the machine PATH, but resource execs
+  // inherit the guest agent's pre-setup environment, so setup also drops a
+  // System32 choco.cmd shim so the resources' bare `choco` invocations
+  // resolve in later processes.
+  test "chocolatey_manages_packages" {
+    description = "Chocolatey package presence, absence and source management converge"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol=3072; irm https://community.chocolatey.org/install.ps1 | iex; Set-Content -Path C:\\Windows\\System32\\choco.cmd -Value '@C:\\ProgramData\\chocolatey\\choco.exe %*'\""
+    verify = "tests/chocolatey_verify.wisp"
+
+    step "self_installed" {
+      description = "Chocolatey lists itself as installed after the bootstrap"
+      resource = "chocolatey_package"
+      expect = "already_configured"
+      properties { name = "chocolatey" }
+    }
+
+    step "core_extension" {
+      description = "A tiny real package (pure PowerShell helpers) converges"
+      resource = "chocolatey_package"
+      properties { name = "chocolatey-core.extension" }
+    }
+
+    step "ghost_absent" {
+      description = "A never-installed package is already absent"
+      resource = "chocolatey_absent"
+      expect = "already_configured"
+      properties { name = "cw-not-a-package" }
+    }
+
+    step "add_source" {
+      description = "Registering a source converges (offline config write)"
+      resource = "chocolatey_source"
+      properties { name = "cwtest" url = "https://example.com/api/v2/" }
+    }
+  }
+
+  // winget (App Installer) and scoop are absent on a stock Server 2025
+  // guest — and winget is unavailable to the SYSTEM context the guest agent
+  // runs under even where installed — so converging installs through them is
+  // scenario territory. These steps cover what the resources actually hit on
+  // a manager-less machine: the winget checks treat a failed `winget` run as
+  // "nothing installed / no such source" (matching present = false), the
+  // scoop checks are plain path probes under the user profile, and
+  // scoop_package's apply surfaces a missing scoop binary as an error.
+  test "absent_managers_detect" {
+    description = "winget and scoop detection paths work without the managers installed"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+
+    step "winget_pkg_absent" {
+      description = "An uninstalled winget id with present = false is already configured"
+      resource = "winget_package"
+      expect = "already_configured"
+      properties { id = "ConfigWeave.NotInstalled" present = false }
+    }
+
+    step "winget_source_absent" {
+      description = "A missing winget source with present = false is already configured"
+      resource = "winget_source"
+      expect = "already_configured"
+      properties { name = "cw-missing-source" present = false }
+    }
+
+    step "scoop_app_absent" {
+      description = "A never-installed scoop app is already absent"
+      resource = "scoop_absent"
+      expect = "already_configured"
+      properties { name = "cw-not-an-app" }
+    }
+
+    step "scoop_missing_errors" {
+      description = "Installing via a missing scoop binary errors"
+      resource = "scoop_package"
+      expect = "error"
+      properties { name = "cw-anything" }
+    }
+  }
 }

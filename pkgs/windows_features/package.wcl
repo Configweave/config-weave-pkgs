@@ -25,4 +25,39 @@ package "windows_features" {
     param "present" { description = "Whether the feature should be installed" type = "bool" default = true }
     param "include_management_tools" { description = "Also install the feature's management tools" type = "bool" default = false }
   }
+
+  // Telnet-Client installs offline from the local component store with no
+  // reboot, so it gets real converge coverage. Enabling a disabled optional
+  // feature or adding a capability on Server generally pulls payload from
+  // Windows Update / source media (slow, network-bound), so those two
+  // resources assert their detection path instead, against state that ships
+  // enabled on Server 2025: the .NET Framework 4.x server features and the
+  // preinstalled OpenSSH Server capability.
+  test "features_converge_and_detect" {
+    description = "Server feature converges; optional feature and capability detection work"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/features_verify.wisp"
+
+    step "telnet_client" {
+      description = "Install the Telnet-Client feature (offline, no reboot)"
+      resource = "windows_server_feature"
+      properties { name = "Telnet-Client" }
+    }
+
+    step "netfx_enabled" {
+      description = ".NET Framework 4.x server features ship enabled"
+      resource = "windows_optional_feature"
+      expect = "already_configured"
+      properties { name = "NetFx4ServerFeatures" }
+    }
+
+    step "openssh_server_capability" {
+      description = "The OpenSSH Server capability is preinstalled on Server 2025"
+      resource = "windows_capability"
+      expect = "already_configured"
+      properties { name = "OpenSSH.Server~~~~0.0.1.0" }
+    }
+  }
 }

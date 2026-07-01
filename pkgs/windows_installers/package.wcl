@@ -26,4 +26,47 @@ package "windows_installers" {
     param "creates" { description = "Path whose existence means the install is done" type = "string" default = "" }
     param "product_id" { description = "Uninstall-key GUID whose presence means the install is done" type = "string" default = "" }
   }
+
+  // The msi_package step downloads the small (~2 MB) 7-Zip MSI guest-side —
+  // the vmlab guests have NAT internet (the mssql win_install scenario
+  // installs sqlcmd the same way); 7-Zip MSI ProductCodes follow the stable
+  // {23170F69-40C1-2702-VVVV-000001000000} pattern (VVVV = version). The
+  // exe_installer step is fully offline: cmd.exe stands in as the
+  // "installer", exercising the creates-guard, download-less path and the
+  // Start-Process argument handling. msi_absent asserts its detection path
+  // against a ProductCode that was never installed (a real uninstall would
+  // first need an MSI installed just to remove it).
+  test "installers_converge" {
+    description = "MSI install, guarded EXE install and MSI-absent detection converge"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/installers_verify.wisp"
+
+    step "seven_zip_msi" {
+      description = "Install 7-Zip from its MSI, detected by ProductCode"
+      resource = "msi_package"
+      properties {
+        path = "https://www.7-zip.org/a/7z2409-x64.msi"
+        product_id = "{23170F69-40C1-2702-2409-000001000000}"
+      }
+    }
+
+    step "exe_marker" {
+      description = "Run an EXE installer once, guarded by its creates path"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe-marker.txt"
+        creates = "C:\\weave-exe-marker.txt"
+      }
+    }
+
+    step "ghost_msi_absent" {
+      description = "A never-installed ProductCode is already absent"
+      resource = "msi_absent"
+      expect = "already_configured"
+      properties { product_id = "{00000000-0000-0000-0000-000000000000}" }
+    }
+  }
 }

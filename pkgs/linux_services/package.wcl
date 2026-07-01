@@ -40,5 +40,25 @@ package "linux_services" {
       }
     }
   }
+
+  // service_state and service_enabled need a live systemd, which containers
+  // do not have — they converge against a real VM instead.
+  test "service_control_converges" {
+    description = "service_enabled and service_state converge against live systemd"
+    backend = "vmlab"
+    image = "x86_64/ubuntu-24.04"
+
+    step "disable" {
+      description = "Disable systemd-timesyncd at boot"
+      resource = "service_enabled"
+      properties { name = "systemd-timesyncd" enabled = false }
+    }
+
+    step "stop" {
+      description = "Stop systemd-timesyncd"
+      resource = "service_state"
+      properties { name = "systemd-timesyncd" state = "stopped" }
+    }
+  }
 }
 

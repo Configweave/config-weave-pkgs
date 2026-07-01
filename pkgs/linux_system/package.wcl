@@ -131,5 +131,38 @@ package "linux_system" {
       properties { name = "cw-rm-job" }
     }
   }
+
+  // sysctl stays untested here: /proc/sys is read-only in unprivileged
+  // containers, so its runtime write cannot converge honestly in docker.
+  test "singletons_converge" {
+    description = "hostname, timezone, locale and fstab file edits converge"
+    image = "debian:12"
+    group = "system"
+    verify = "tests/singletons_verify.wisp"
+
+    step "hostname" {
+      description = "Write /etc/hostname without touching the runtime hostname"
+      resource = "hostname"
+      properties { name = "cw-test-host" runtime = false }
+    }
+
+    step "timezone" {
+      description = "Set the timezone via /etc/timezone and /etc/localtime"
+      resource = "timezone"
+      properties { name = "Australia/Brisbane" }
+    }
+
+    step "locale" {
+      description = "Write /etc/locale.conf"
+      resource = "locale"
+      properties { content = "LANG=C.UTF-8\n" }
+    }
+
+    step "fstab" {
+      description = "Add an fstab entry without mounting it"
+      resource = "fstab_mount"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw-test" fstype = "tmpfs" mount = false }
+    }
+  }
 }
 
