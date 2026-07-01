@@ -55,7 +55,7 @@ fn linux_manager() -> string {
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     if sys::family() == "windows" {
         if win_installed(inst)? { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
@@ -84,7 +84,7 @@ fn win_apply(params: Value) -> Result[ApplyResult, string] {
     }
 
     let cfg = param_str(params, "config_file", "")
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     let tcp = if param_bool(params, "tcp_enabled", true) { "1" } else { "0" }
 
     // A full ConfigurationFile.ini wins: pass it through and only add the EULA.

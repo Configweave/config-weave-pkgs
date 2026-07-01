@@ -80,7 +80,7 @@ fn run(lab: Lab) -> Result[bool, string] {
         "security_mode": s("SQL"),
         "sa_password": s("Str0ng!Passw0rd"),
         "tcp_enabled": b(true),
-        "instance_name": s("MSSQLSERVER")
+        "instance": s("MSSQLSERVER")
     })
     let r = m.apply_resource("mssql.instance", install)?
     if r.status == "reboot_required" {

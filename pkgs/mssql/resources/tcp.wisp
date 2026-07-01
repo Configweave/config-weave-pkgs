@@ -39,7 +39,7 @@ fn win_service_name(instance_name: string) -> string {
 }
 
 fn win_check(params: Value) -> Result[CheckResult, string] {
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     let port = param_int(params, "port", 1433)
     let want_enabled = if param_bool(params, "enabled", true) { 1 } else { 0 }
     let id = win_instance_id(inst)?
@@ -57,7 +57,7 @@ fn win_check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn win_apply(params: Value) -> Result[ApplyResult, string] {
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     let port = param_int(params, "port", 1433)
     let want_enabled = if param_bool(params, "enabled", true) { 1 } else { 0 }
     let id = win_instance_id(inst)?

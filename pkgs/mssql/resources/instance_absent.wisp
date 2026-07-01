@@ -41,7 +41,7 @@ fn linux_manager() -> string {
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     if sys::family() == "windows" {
         if win_installed(inst)? { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
@@ -59,7 +59,7 @@ fn win_apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         setup
     }
-    let inst = param_str(params, "instance_name", "MSSQLSERVER")
+    let inst = param_str(params, "instance", "MSSQLSERVER")
     let features = param_str(params, "features", "")
     let feat_arg = if features != "" { features } else { "SQLENGINE" }
     let args = "/Q /ACTION=Uninstall /INSTANCENAME=" + dq(inst)? + " /FEATURES=" + feat_arg

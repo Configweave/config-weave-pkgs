@@ -10,7 +10,7 @@ package "mssql" {
     script = "resources/instance.wisp"
     concurrency = "global"
     param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root)" type = "string" default = "" }
-    param "instance_name"         { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
+    param "instance"              { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
     param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN" type = "string" default = "SQLENGINE" }
     param "edition"               { description = "Edition / product id (Linux MSSQL_PID): Developer, Express, Standard, Enterprise, EnterpriseCore or a 25-char key" type = "string" default = "Developer" }
     param "security_mode"         { description = "Authentication mode: Windows (integrated only) or SQL (mixed mode; needs sa_password)" type = "string" default = "Windows" }
@@ -32,7 +32,7 @@ package "mssql" {
     description = "Uninstall a SQL Server instance (Windows setup.exe /ACTION=Uninstall or Linux package removal)"
     script = "resources/instance_absent.wisp"
     concurrency = "global"
-    param "instance_name"   { description = "Instance name to remove" type = "string" default = "MSSQLSERVER" }
+    param "instance"        { description = "Instance name to remove" type = "string" default = "MSSQLSERVER" }
     param "setup_path"      { description = "Windows only: path or URL of setup.exe used to run the uninstall" type = "string" default = "" }
     param "features"        { description = "Windows only: /FEATURES to remove; empty removes the whole instance via SQLENGINE" type = "string" default = "" }
     param "install_timeout" { description = "Maximum seconds to wait for the uninstaller" type = "int" default = 3600 }
@@ -164,9 +164,9 @@ package "mssql" {
     description = "Configure the TCP/IP protocol and static port, restarting the engine so the change takes effect"
     script = "resources/tcp.wisp"
     concurrency = "global"
-    param "instance_name" { description = "Instance whose TCP protocol to configure" type = "string" default = "MSSQLSERVER" }
-    param "port"          { description = "Static TCP port" type = "int" default = 1433 }
-    param "enabled"       { description = "Whether the TCP/IP protocol is enabled (Windows only; Linux TCP is always on)" type = "bool" default = true }
+    param "instance" { description = "Instance whose TCP protocol to configure" type = "string" default = "MSSQLSERVER" }
+    param "port"     { description = "Static TCP port" type = "int" default = 1433 }
+    param "enabled"  { description = "Whether the TCP/IP protocol is enabled (Windows only; false errors on Linux, where mssql-conf cannot disable TCP)" type = "bool" default = true }
     param "restart"       { description = "Restart the SQL Server service after changing the configuration" type = "bool" default = true }
   }
 
