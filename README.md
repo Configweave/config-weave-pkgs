@@ -1,6 +1,6 @@
 # config-weave-pkgs
 
-Standard Linux package library for Config Weave.
+Standard package library for Config Weave: Linux, Windows and SQL Server.
 
 This repository is meant to live next to `config-weave` and be vendored into
 playbooks by copying or symlinking selected package directories:
@@ -25,6 +25,8 @@ so this repository intentionally does not require Config Weave loader changes.
 - `linux_network`: hosts entries, SSH config snippets and firewall front-ends.
 - `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.
 - `linux_tmux`: tmux configuration, options, key bindings, plugins and session files.
+- `linux_python`: pip packages, system-wide or in a virtualenv.
+- `linux_scm`: git and subversion checkouts.
 
 Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`) and the cross-platform
@@ -68,12 +70,17 @@ vmlab scenario rather than the docker `test`.
 
 ```sh
 just validate
-just test
+just test               # everything: docker tests, vmlab tests and scenarios
+just test linux_files   # one package
+just test mssql:config_converges   # one test
 just docs
 ```
 
-`just test` needs Docker or Podman and a Linux Config Weave binary, following the
-Config Weave testlab rules.
+An unfiltered `just test` runs every test on its declared backend plus the
+scenarios, so it needs Docker (or Podman) **and** vmlab with the
+`x86_64/windows-server-2025` and `x86_64/ubuntu-24.04` templates. Filter to a
+package or `package:test` while iterating — the docker-only tests need no
+vmlab.
 
 ## Package Manager Support
 
