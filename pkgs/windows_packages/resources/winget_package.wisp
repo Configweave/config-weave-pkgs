@@ -6,9 +6,11 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
 }
 
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
@@ -24,14 +26,14 @@ fn installed(id: string) -> Result[bool, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let id = param_str(params, "id", "")
     if id == "" { return Err("missing 'id' parameter") }
-    let present = param_bool(params, "present", true)
+    let present = want_present(params)?
     if installed(id)? == present { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let id = param_str(params, "id", "")
     if id == "" { return Err("missing 'id' parameter") }
-    let present = param_bool(params, "present", true)
+    let present = want_present(params)?
     let cmd = if present {
         let version = param_str(params, "version", "")
         let source = param_str(params, "source", "")

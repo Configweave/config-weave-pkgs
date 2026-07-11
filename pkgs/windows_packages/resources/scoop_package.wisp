@@ -6,6 +6,13 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 // A scoop app is installed when its current junction exists under the
@@ -18,13 +25,18 @@ fn installed(name: string) -> Result[bool, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if installed(name)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if installed(name)? == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    let out = shell::powershell("scoop install " + ps_q(name) + "; exit $LASTEXITCODE", Value::Null)?
+    let cmd = if want_present(params)? {
+        "scoop install " + ps_q(name) + "; exit $LASTEXITCODE"
+    } else {
+        "scoop uninstall " + ps_q(name) + "; exit $LASTEXITCODE"
+    }
+    let out = shell::powershell(cmd, Value::Null)?
     if !out.success { return Err(out.stdout.trim() + " " + out.stderr.trim()) }
     Ok(ApplyResult::Success)
 }

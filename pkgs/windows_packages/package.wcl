@@ -2,19 +2,13 @@ package "windows_packages" {
   description = "Manage Windows software via Chocolatey, Scoop and winget"
 
   resource "chocolatey_package" {
-    description = "Ensure a Chocolatey package is installed"
+    description = "Ensure a Chocolatey package is installed or absent"
     script = "resources/chocolatey_package.wisp"
     concurrency = "exclusive"
     param "name" { description = "Chocolatey package id" type = "string" required = true }
-    param "version" { description = "Optional version to pin; empty means any version" type = "string" default = "" }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
     param "source" { description = "Optional source name or URL" type = "string" default = "" }
-  }
-
-  resource "chocolatey_absent" {
-    description = "Ensure a Chocolatey package is not installed"
-    script = "resources/chocolatey_absent.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Chocolatey package id" type = "string" required = true }
   }
 
   resource "chocolatey_source" {
@@ -26,17 +20,11 @@ package "windows_packages" {
   }
 
   resource "scoop_package" {
-    description = "Ensure a Scoop app is installed (per-user)"
+    description = "Ensure a Scoop app is installed (per-user) or absent"
     script = "resources/scoop_package.wisp"
     concurrency = "exclusive"
     param "name" { description = "Scoop app name, optionally bucket/name" type = "string" required = true }
-  }
-
-  resource "scoop_absent" {
-    description = "Ensure a Scoop app is not installed"
-    script = "resources/scoop_absent.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Scoop app name" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
   }
 
   resource "scoop_bucket" {
@@ -52,9 +40,9 @@ package "windows_packages" {
     script = "resources/winget_package.wisp"
     concurrency = "exclusive"
     param "id" { description = "winget package identifier (exact)" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
     param "version" { description = "Optional version to install" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
-    param "present" { description = "Whether the package should be installed" type = "bool" default = true }
   }
 
   resource "winget_source" {
@@ -62,9 +50,9 @@ package "windows_packages" {
     script = "resources/winget_source.wisp"
     concurrency = "exclusive"
     param "name" { description = "Source name" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
     param "url" { description = "Source argument/URL (required when present)" type = "string" default = "" }
     param "type" { description = "Optional source type, e.g. Microsoft.Rest" type = "string" default = "" }
-    param "present" { description = "Whether the source should exist" type = "bool" default = true }
   }
 
   gatherer "winget_packages" {
@@ -101,9 +89,9 @@ package "windows_packages" {
 
     step "ghost_absent" {
       description = "A never-installed package is already absent"
-      resource = "chocolatey_absent"
+      resource = "chocolatey_package"
       expect = "already_configured"
-      properties { name = "cw-not-a-package" }
+      properties { name = "cw-not-a-package" ensure = "absent" }
     }
 
     step "add_source" {
@@ -118,7 +106,7 @@ package "windows_packages" {
   // runs under even where installed — so converging installs through them is
   // scenario territory. These steps cover what the resources actually hit on
   // a manager-less machine: the winget checks treat a failed `winget` run as
-  // "nothing installed / no such source" (matching present = false), the
+  // "nothing installed / no such source" (matching ensure = "absent"), the
   // scoop checks are plain path probes under the user profile, and
   // scoop_package's apply surfaces a missing scoop binary as an error.
   test "absent_managers_detect" {
@@ -128,24 +116,24 @@ package "windows_packages" {
     group = "win2025"
 
     step "winget_pkg_absent" {
-      description = "An uninstalled winget id with present = false is already configured"
+      description = "An uninstalled winget id with ensure = absent is already configured"
       resource = "winget_package"
       expect = "already_configured"
-      properties { id = "ConfigWeave.NotInstalled" present = false }
+      properties { id = "ConfigWeave.NotInstalled" ensure = "absent" }
     }
 
     step "winget_source_absent" {
-      description = "A missing winget source with present = false is already configured"
+      description = "A missing winget source with ensure = absent is already configured"
       resource = "winget_source"
       expect = "already_configured"
-      properties { name = "cw-missing-source" present = false }
+      properties { name = "cw-missing-source" ensure = "absent" }
     }
 
     step "scoop_app_absent" {
       description = "A never-installed scoop app is already absent"
-      resource = "scoop_absent"
+      resource = "scoop_package"
       expect = "already_configured"
-      properties { name = "cw-not-an-app" }
+      properties { name = "cw-not-an-app" ensure = "absent" }
     }
 
     step "scoop_missing_errors" {
