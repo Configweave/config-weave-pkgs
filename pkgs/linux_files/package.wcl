@@ -2,10 +2,11 @@ package "linux_files" {
   description = "Manage Linux filesystem state"
 
   resource "file" {
-    description = "Ensure a file exists with exact content"
+    description = "Ensure a file exists with exact content, or is absent"
     script = "resources/file.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
     param "content" { description = "Desired file content" type = "string" default = "" }
     param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
     param "owner" { description = "Optional file owner" type = "string" default = "" }
@@ -25,64 +26,45 @@ package "linux_files" {
   }
 
   resource "directory" {
-    description = "Ensure a directory exists"
+    description = "Ensure a directory exists or is absent"
     script = "resources/directory.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute directory path" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
     param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
     param "owner" { description = "Optional directory owner" type = "string" default = "" }
     param "group" { description = "Optional directory group" type = "string" default = "" }
+    param "recursive" { description = "When ensure = \"absent\": allow removing the directory and its contents" type = "bool" default = false }
   }
 
-  resource "line_in_file" {
-    description = "Ensure a line is present in a text file"
-    script = "resources/line_in_file.wisp"
+  resource "line" {
+    description = "Ensure a line is present in or absent from a text file"
+    script = "resources/line.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
-    param "line" { description = "Line to ensure" type = "string" required = true }
-    param "create" { description = "Create the file if absent" type = "bool" default = true }
-  }
-
-  resource "line_absent" {
-    description = "Ensure a line is not present in a text file"
-    script = "resources/line_absent.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "line" { description = "Exact line to remove" type = "string" required = true }
+    param "line" { description = "The exact line" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
   }
 
   resource "symlink" {
-    description = "Ensure a symlink points at a target"
+    description = "Ensure a symlink points at a target, or is absent"
     script = "resources/symlink.wisp"
     concurrency = "parallel"
     param "path" { description = "Symlink path" type = "string" required = true }
-    param "target" { description = "Symlink target" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "target" { description = "Symlink target (required when present)" type = "string" default = "" }
   }
 
-  resource "path_absent" {
-    description = "Ensure a file, directory or symlink does not exist"
-    script = "resources/path_absent.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Target path" type = "string" required = true }
-    param "recursive" { description = "Allow removing a non-empty directory" type = "bool" default = false }
-  }
-
-  resource "block_in_file" {
-    description = "Ensure a marked text block is present and up to date"
-    script = "resources/block_in_file.wisp"
+  resource "block" {
+    description = "Ensure a marked text block is present and up to date, or absent"
+    script = "resources/block.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
-    param "block" { description = "Block body placed between the markers" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "block" { description = "Block body placed between the markers (required when present)" type = "string" default = "" }
     param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
-    param "create" { description = "Create the file if absent" type = "bool" default = true }
-  }
-
-  resource "block_absent" {
-    description = "Ensure a previously managed marked block is removed"
-    script = "resources/block_absent.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
+    param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
   }
 
   resource "file_substitution" {
@@ -159,7 +141,7 @@ package "linux_files" {
 
     step "line" {
       description = "Add line"
-      resource = "line_in_file"
+      resource = "line"
       requires = ["dir"]
       properties { path = "/tmp/cw-files/lines.txt" line = "beta" }
     }
@@ -217,7 +199,7 @@ TMPL
 
     step "block" {
       description = "Insert a managed block"
-      resource = "block_in_file"
+      resource = "block"
       properties { path = "/tmp/cw-block.txt" block = "hello\nworld" }
     }
 
@@ -229,14 +211,14 @@ TMPL
 
     step "rmline" {
       description = "Remove a line"
-      resource = "line_absent"
-      properties { path = "/tmp/cw-seed.txt" line = "two" }
+      resource = "line"
+      properties { path = "/tmp/cw-seed.txt" line = "two" ensure = "absent" }
     }
 
     step "rmpath" {
       description = "Remove a file"
-      resource = "path_absent"
-      properties { path = "/tmp/cw-del.txt" }
+      resource = "file"
+      properties { path = "/tmp/cw-del.txt" ensure = "absent" }
     }
 
     step "extract" {

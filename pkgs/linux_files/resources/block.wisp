@@ -12,6 +12,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn begin_marker(label: string) -> string { "# BEGIN " + label }
 fn end_marker(label: string) -> string { "# END " + label }
 
@@ -42,18 +49,30 @@ fn strip_region(text: string, label: string) -> string {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = param_str(params, "path", "")
-    let block = param_str(params, "block", "")
     let label = param_str(params, "marker_label", "config-weave")
     if p == "" { return Err("missing 'path' parameter") }
+    if !want_present(params)? {
+        if !fs::exists(p) { return Ok(CheckResult::AlreadyConfigured) }
+        if fs::read(p)?.contains(begin_marker(label)) { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    let block = param_str(params, "block", "")
+    if block == "" { return Err("missing 'block' parameter") }
     if !fs::exists(p) { return Ok(CheckResult::NotConfigured) }
     if fs::read(p)?.contains(segment(label, block)) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = param_str(params, "path", "")
-    let block = param_str(params, "block", "")
     let label = param_str(params, "marker_label", "config-weave")
     if p == "" { return Err("missing 'path' parameter") }
+    if !want_present(params)? {
+        if !fs::exists(p) { return Ok(ApplyResult::Success) }
+        fs::write(p, strip_region(fs::read(p)?, label))?
+        return Ok(ApplyResult::Success)
+    }
+    let block = param_str(params, "block", "")
+    if block == "" { return Err("missing 'block' parameter") }
     if !fs::exists(p) {
         if !param_bool(params, "create", true) { return Err("file does not exist and create is false") }
         fs::mkdir(path::parent(p))?

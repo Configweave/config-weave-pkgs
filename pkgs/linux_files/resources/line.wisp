@@ -12,6 +12,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn has_line(text: string, line: string) -> bool {
     for l in text.split("\n") {
         if l == line { return true }
@@ -19,11 +26,24 @@ fn has_line(text: string, line: string) -> bool {
     false
 }
 
+fn without_line(text: string, line: string) -> string {
+    let kept = []
+    for l in text.split("\n") {
+        if l != line { kept.push(l) }
+    }
+    kept.join("\n")
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = param_str(params, "path", "")
     let line = param_str(params, "line", "")
     if p == "" { return Err("missing 'path' parameter") }
     if line == "" { return Err("missing 'line' parameter") }
+    if !want_present(params)? {
+        if !fs::exists(p) { return Ok(CheckResult::AlreadyConfigured) }
+        if has_line(fs::read(p)?, line) { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
     if !fs::exists(p) { return Ok(CheckResult::NotConfigured) }
     if has_line(fs::read(p)?, line) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
@@ -33,6 +53,11 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let line = param_str(params, "line", "")
     if p == "" { return Err("missing 'path' parameter") }
     if line == "" { return Err("missing 'line' parameter") }
+    if !want_present(params)? {
+        if !fs::exists(p) { return Ok(ApplyResult::Success) }
+        fs::write(p, without_line(fs::read(p)?, line))?
+        return Ok(ApplyResult::Success)
+    }
     if !fs::exists(p) {
         if !param_bool(params, "create", true) { return Err("file does not exist and create is false") }
         fs::mkdir(path::parent(p))?
@@ -45,4 +70,3 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     }
     Ok(ApplyResult::Success)
 }
-
