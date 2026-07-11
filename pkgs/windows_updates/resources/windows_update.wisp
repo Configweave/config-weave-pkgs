@@ -27,10 +27,10 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let script = "$ErrorActionPreference='Stop'; " +
         "$s = New-Object -ComObject Microsoft.Update.Session; " +
         "$r = $s.CreateUpdateSearcher().Search(" + ps_q(query) + "); " +
-        "if ($r.Updates.Count -eq 0) { exit 0 }; " +
+        "if ($r.Updates.Count -eq 0) {{ exit 0 }}; " +
         "$dl = $s.CreateUpdateDownloader(); $dl.Updates = $r.Updates; $dl.Download() | Out-Null; " +
         "$inst = $s.CreateUpdateInstaller(); $inst.Updates = $r.Updates; $ir = $inst.Install(); " +
-        "if ($ir.RebootRequired) { exit 3010 } elseif ($ir.ResultCode -eq 2) { exit 0 } else { exit 1 }"
+        "if ($ir.RebootRequired) {{ exit 3010 }} elseif ($ir.ResultCode -eq 2) {{ exit 0 }} else {{ exit 1 }}"
     let out = shell::powershell(script, Value::Null)?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
     if !out.success { return Err("windows update install failed: " + out.stderr.trim()) }

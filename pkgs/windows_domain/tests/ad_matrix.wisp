@@ -58,7 +58,7 @@ fn install_role(m: Machine) -> Result[bool, string] {
 // after `reboot()` races it — this waits it out.
 fn ad_wait(m: Machine, value_expr: string, cond: string) -> Result[string, string] {
     let ps = "$ErrorActionPreference='SilentlyContinue'; $v=$null; " +
-        "for($i=0; $i -lt 60; $i++){ try{ $v=" + value_expr + "; if(" + cond + "){ break } }catch{}; Start-Sleep -Seconds 5 }; " +
+        "for($i=0; $i -lt 60; $i++){{ try{{ $v=" + value_expr + "; if(" + cond + "){{ break }} }}catch{}; Start-Sleep -Seconds 5 }}; " +
         "\"$v\""
     let r = m.powershell(ps)?
     Ok(r.stdout.trim())
@@ -67,9 +67,9 @@ fn ad_wait(m: Machine, value_expr: string, cond: string) -> Result[string, strin
 // Wait until `m` can resolve `name` via its DNS (the DC), so a join/promote
 // doesn't race the DC's DNS coming up.
 fn wait_resolve(m: Machine, name: string) -> Result[bool, string] {
-    let ps = "$ok=$false; for($i=0; $i -lt 60; $i++){ if(Resolve-DnsName -Name '" + name +
-        "' -ErrorAction SilentlyContinue){ $ok=$true; break }; Start-Sleep -Seconds 5 }; " +
-        "if($ok){'ok'}else{'no'}"
+    let ps = "$ok=$false; for($i=0; $i -lt 60; $i++){{ if(Resolve-DnsName -Name '" + name +
+        "' -ErrorAction SilentlyContinue){{ $ok=$true; break }}; Start-Sleep -Seconds 5 }}; " +
+        "if($ok){{'ok'}}else{{'no'}}"
     let r = m.powershell(ps)?
     if r.stdout.trim() != "ok" {
         return Err(m.name() + " cannot resolve " + name + " (DC DNS not reachable)")

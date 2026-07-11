@@ -11,7 +11,7 @@ fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 // A scoop app is installed when its current junction exists under the
 // scoop root (per-user, so SCOOP env var wins, else ~\scoop).
 fn installed(name: string) -> Result[bool, string] {
-    let script = "$root = if ($env:SCOOP) { $env:SCOOP } else { \"$env:USERPROFILE\\scoop\" }; if (Test-Path \"$root\\apps\\" + name + "\\current\") { 'YES' } else { 'NO' }"
+    let script = "$root = if ($env:SCOOP) {{ $env:SCOOP }} else {{ \"$env:USERPROFILE\\scoop\" }}; if (Test-Path \"$root\\apps\\" + name + "\\current\") {{ 'YES' }} else {{ 'NO' }}"
     Ok(shell::powershell(script, Value::Null)?.stdout.trim() == "YES")
 }
 

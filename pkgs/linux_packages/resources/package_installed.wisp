@@ -40,7 +40,7 @@ fn installed(name: string, m: string) -> Result[bool, string] {
     let cmd = if m == "apt" {
         // dpkg -s exits 0 even for a removed package whose conffiles remain
         // ("rc" state), so inspect the status field instead.
-        "test \"$(dpkg-query -W -f='${db:Status-Status}' " + q(name) + " 2>/dev/null)\" = installed"
+        "test \"$(dpkg-query -W -f='${{db:Status-Status}}' " + q(name) + " 2>/dev/null)\" = installed"
     } else if m == "dnf5" || m == "dnf" || m == "microdnf" || m == "yum" || m == "tdnf" || m == "zypper" || m == "rpm-ostree" {
         "rpm -q " + q(name) + " >/dev/null 2>&1"
     } else if m == "pacman" {
@@ -84,9 +84,9 @@ fn supports_version(m: string) -> bool {
 // The installed version string, or "" when not installed / unknown.
 fn installed_version(name: string, m: string) -> Result[string, string] {
     let cmd = if m == "apt" {
-        "dpkg-query -W -f='${Version}' " + q(name) + " 2>/dev/null"
+        "dpkg-query -W -f='${{Version}}' " + q(name) + " 2>/dev/null"
     } else {
-        "rpm -q --qf '%{VERSION}' " + q(name) + " 2>/dev/null"
+        "rpm -q --qf '%{{VERSION}}' " + q(name) + " 2>/dev/null"
     }
     let out = shell::bash(cmd, Value::Null)?
     if !out.success { return Ok("") }

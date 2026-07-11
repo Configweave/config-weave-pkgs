@@ -12,7 +12,7 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 fn present(kb: string) -> Result[bool, string] {
-    let script = "if (Get-HotFix -Id " + ps_q(kb) + " -ErrorAction SilentlyContinue) { 'YES' } else { 'NO' }"
+    let script = "if (Get-HotFix -Id " + ps_q(kb) + " -ErrorAction SilentlyContinue) {{ 'YES' }} else {{ 'NO' }}"
     Ok(shell::powershell(script, Value::Null)?.stdout.trim() == "YES")
 }
 

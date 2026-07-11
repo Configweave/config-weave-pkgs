@@ -10,7 +10,7 @@ fn run_stdout(cmd: string) -> string {
 fn gather(params: Value) -> Value {
     Value::Map(#{
         "hostname": Value::String(env::hostname()),
-        "default_ipv4": Value::String(run_stdout("hostname -I 2>/dev/null | awk '{print $1}'")),
+        "default_ipv4": Value::String(run_stdout("hostname -I 2>/dev/null | awk '{{print $1}}'")),
         "fqdn": Value::String(run_stdout("hostname -f 2>/dev/null"))
     })
 }

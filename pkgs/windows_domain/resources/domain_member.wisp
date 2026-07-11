@@ -17,7 +17,7 @@ fn ps_cred(user: string, pw: string) -> string {
 // True when this machine is already a member of `domain`.
 fn member_of(domain: string) -> Result[bool, string] {
     let script = "$ErrorActionPreference='Stop'; $c = Get-CimInstance Win32_ComputerSystem; " +
-        "if ($c.PartOfDomain -and $c.Domain -eq " + ps_q(domain) + ") { 'YES' } else { 'NO' }"
+        "if ($c.PartOfDomain -and $c.Domain -eq " + ps_q(domain) + ") {{ 'YES' }} else {{ 'NO' }}"
     let out = shell::powershell(script, Value::Null)?
     if !out.success { return Err(out.stderr.trim()) }
     Ok(out.stdout.trim() == "YES")

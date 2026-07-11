@@ -35,7 +35,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         "Remove-WindowsCapability -Online -Name " + ps_q(name)
     }
-    let script = "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; if ($r.RestartNeeded) { exit 3010 } else { exit 0 }"
+    let script = "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; if ($r.RestartNeeded) {{ exit 3010 }} else {{ exit 0 }}"
     let out = shell::powershell(script, Value::Null)?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
     if !out.success { return Err(out.stderr.trim()) }

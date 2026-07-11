@@ -70,7 +70,7 @@ fn run(lab: Lab) -> Result[bool, string] {
         "$drive = ($img | Get-Volume).DriveLetter; " +
         "Copy-Item -Path ($drive + ':\\*') -Destination C:\\sqlsetup -Recurse -Force; " +
         "Dismount-DiskImage -ImagePath C:\\media\\sql.iso | Out-Null; " +
-        "if(-not (Test-Path C:\\sqlsetup\\SETUP.EXE)){throw 'setup.exe not found in media'}")?
+        "if(-not (Test-Path C:\\sqlsetup\\SETUP.EXE)){{throw 'setup.exe not found in media'}}")?
 
     lab.log("installing SQL Server with mssql.instance (silent)")
     let install = Value::Map(#{
@@ -106,15 +106,15 @@ fn run(lab: Lab) -> Result[bool, string] {
         "$ErrorActionPreference='Stop'; " +
         "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
         "$winget=Get-Command winget -ErrorAction SilentlyContinue; " +
-        "if($winget){ winget install --id sqlcmd --exact --silent --accept-package-agreements --accept-source-agreements } " +
-        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){ " +
+        "if($winget){{ winget install --id sqlcmd --exact --silent --accept-package-agreements --accept-source-agreements }} " +
+        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{ " +
         "  $rel=Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/microsoft/go-sqlcmd/releases/latest; " +
-        "  $a=$rel.assets | Where-Object { $_.name -like '*amd64.msi' } | Select-Object -First 1; " +
-        "  if(-not $a){throw 'no go-sqlcmd msi asset found'}; " +
+        "  $a=$rel.assets | Where-Object {{ $_.name -like '*amd64.msi' }} | Select-Object -First 1; " +
+        "  if(-not $a){{throw 'no go-sqlcmd msi asset found'}}; " +
         "  Invoke-WebRequest -UseBasicParsing $a.browser_download_url -OutFile C:\\media\\sqlcmd.msi; " +
         "  Start-Process msiexec.exe -ArgumentList '/i','C:\\media\\sqlcmd.msi','/qn' -Wait " +
-        "} " +
-        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){throw 'sqlcmd not installed'}")?
+        "}} " +
+        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{throw 'sqlcmd not installed'}}")?
 
     lab.log("converging configuration")
     let db = Value::Map(#{

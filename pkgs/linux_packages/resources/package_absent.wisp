@@ -40,7 +40,7 @@ fn installed(name: string, m: string) -> Result[bool, string] {
     let cmd = if m == "apt" {
         // dpkg -s exits 0 even for a removed package whose conffiles remain
         // ("rc" state), so inspect the status field instead.
-        "test \"$(dpkg-query -W -f='${db:Status-Status}' " + q(name) + " 2>/dev/null)\" = installed"
+        "test \"$(dpkg-query -W -f='${{db:Status-Status}}' " + q(name) + " 2>/dev/null)\" = installed"
     } else if m == "dnf5" || m == "dnf" || m == "microdnf" || m == "yum" || m == "tdnf" || m == "zypper" || m == "rpm-ostree" {
         "rpm -q " + q(name) + " >/dev/null 2>&1"
     } else if m == "pacman" {

@@ -23,7 +23,7 @@ fn ps_cred(user: string, pw: string) -> string {
 // Win32_ComputerSystem.DomainRole: 4 = backup DC, 5 = primary DC.
 fn is_dc_for(domain: string) -> Result[bool, string] {
     let script = "$ErrorActionPreference='Stop'; $c = Get-CimInstance Win32_ComputerSystem; " +
-        "if ($c.DomainRole -ge 4 -and $c.Domain -eq " + ps_q(domain) + ") { 'YES' } else { 'NO' }"
+        "if ($c.DomainRole -ge 4 -and $c.Domain -eq " + ps_q(domain) + ") {{ 'YES' }} else {{ 'NO' }}"
     let out = shell::powershell(script, Value::Null)?
     if !out.success { return Err(out.stderr.trim()) }
     Ok(out.stdout.trim() == "YES")

@@ -9,7 +9,7 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 fn installed(name: string) -> Result[bool, string] {
-    let script = "$root = if ($env:SCOOP) { $env:SCOOP } else { \"$env:USERPROFILE\\scoop\" }; if (Test-Path \"$root\\apps\\" + name + "\\current\") { 'YES' } else { 'NO' }"
+    let script = "$root = if ($env:SCOOP) {{ $env:SCOOP }} else {{ \"$env:USERPROFILE\\scoop\" }}; if (Test-Path \"$root\\apps\\" + name + "\\current\") {{ 'YES' }} else {{ 'NO' }}"
     Ok(shell::powershell(script, Value::Null)?.stdout.trim() == "YES")
 }
 

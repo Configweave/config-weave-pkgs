@@ -15,7 +15,7 @@ fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 // Get-WindowsFeature.Installed (Server only; the cmdlet errors on client SKUs).
 fn installed(name: string) -> Result[bool, string] {
-    let script = "$ErrorActionPreference='Stop'; if ((Get-WindowsFeature -Name " + ps_q(name) + ").Installed) { 'YES' } else { 'NO' }"
+    let script = "$ErrorActionPreference='Stop'; if ((Get-WindowsFeature -Name " + ps_q(name) + ").Installed) {{ 'YES' }} else {{ 'NO' }}"
     let out = shell::powershell(script, Value::Null)?
     if !out.success { return Err(out.stderr.trim()) }
     Ok(out.stdout.trim() == "YES")
@@ -36,7 +36,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         "Uninstall-WindowsFeature -Name " + ps_q(name)
     }
-    let script = "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; if ($r.RestartNeeded -ne 'No') { exit 3010 } else { exit 0 }"
+    let script = "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; if ($r.RestartNeeded -ne 'No') {{ exit 3010 }} else {{ exit 0 }}"
     let out = shell::powershell(script, Value::Null)?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
     if !out.success { return Err(out.stderr.trim()) }
