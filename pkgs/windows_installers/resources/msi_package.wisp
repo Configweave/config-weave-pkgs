@@ -10,6 +10,13 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 // An MSI ProductCode appears as an Uninstall subkey (64- or 32-bit view).
@@ -20,13 +27,26 @@ fn product_present(product_id: string) -> Result[bool, string] {
     Ok(registry::key_exists("HKLM" + wow + product_id)?)
 }
 
+fn run_msiexec(argline: string) -> Result[ApplyResult, string] {
+    let script = "$c = (Start-Process -FilePath 'msiexec.exe' -ArgumentList " + ps_q(argline) + " -Wait -PassThru).ExitCode; exit $c"
+    let out = shell::powershell(script, Value::Null)?
+    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
+    if !out.success { return Err("msiexec exited " + str(out.code) + ": " + out.stderr.trim()) }
+    Ok(ApplyResult::Success)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     let product_id = param_str(params, "product_id", "")
     if product_id == "" { return Err("missing 'product_id' parameter (the MSI ProductCode)") }
-    if product_present(product_id)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if product_present(product_id)? == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    let product_id = param_str(params, "product_id", "")
+    if product_id == "" { return Err("missing 'product_id' parameter (the MSI ProductCode)") }
+    if !want_present(params)? {
+        return run_msiexec("/x \"" + product_id + "\" /qn /norestart")
+    }
     let src = param_str(params, "path", "")
     let args = param_str(params, "args", "")
     if src == "" { return Err("missing 'path' parameter") }
@@ -38,10 +58,5 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         src
     }
     let extra = if args != "" { " " + args } else { "" }
-    let argline = "/i \"" + local + "\" /qn /norestart" + extra
-    let script = "$c = (Start-Process -FilePath 'msiexec.exe' -ArgumentList " + ps_q(argline) + " -Wait -PassThru).ExitCode; exit $c"
-    let out = shell::powershell(script, Value::Null)?
-    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err("msiexec exited " + str(out.code) + ": " + out.stderr.trim()) }
-    Ok(ApplyResult::Success)
+    run_msiexec("/i \"" + local + "\" /qn /norestart" + extra)
 }

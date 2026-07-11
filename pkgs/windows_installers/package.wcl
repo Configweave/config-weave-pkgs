@@ -2,19 +2,13 @@ package "windows_installers" {
   description = "Install Windows software from MSI and EXE installers"
 
   resource "msi_package" {
-    description = "Install an MSI, identified for idempotence by its ProductCode"
+    description = "Install or uninstall an MSI, identified for idempotence by its ProductCode"
     script = "resources/msi_package.wisp"
     concurrency = "exclusive"
-    param "path" { description = "Local path or HTTP(S) URL of the .msi" type = "string" required = true }
     param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "path" { description = "Local path or HTTP(S) URL of the .msi (required when present)" type = "string" default = "" }
     param "args" { description = "Extra msiexec arguments (e.g. property assignments)" type = "string" default = "" }
-  }
-
-  resource "msi_absent" {
-    description = "Uninstall an MSI by its ProductCode"
-    script = "resources/msi_absent.wisp"
-    concurrency = "exclusive"
-    param "product_id" { description = "MSI ProductCode GUID" type = "string" required = true }
   }
 
   resource "exe_installer" {
@@ -33,9 +27,9 @@ package "windows_installers" {
   // {23170F69-40C1-2702-VVVV-000001000000} pattern (VVVV = version). The
   // exe_installer step is fully offline: cmd.exe stands in as the
   // "installer", exercising the creates-guard, download-less path and the
-  // Start-Process argument handling. msi_absent asserts its detection path
-  // against a ProductCode that was never installed (a real uninstall would
-  // first need an MSI installed just to remove it).
+  // Start-Process argument handling. The ensure = "absent" step asserts the
+  // detection path against a ProductCode that was never installed (a real
+  // uninstall would first need an MSI installed just to remove it).
   test "installers_converge" {
     description = "MSI install, guarded EXE install and MSI-absent detection converge"
     backend = "vmlab"
@@ -64,9 +58,9 @@ package "windows_installers" {
 
     step "ghost_msi_absent" {
       description = "A never-installed ProductCode is already absent"
-      resource = "msi_absent"
+      resource = "msi_package"
       expect = "already_configured"
-      properties { product_id = "{00000000-0000-0000-0000-000000000000}" }
+      properties { product_id = "{00000000-0000-0000-0000-000000000000}" ensure = "absent" }
     }
   }
 }
