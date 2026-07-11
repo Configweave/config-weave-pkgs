@@ -11,6 +11,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 // Get-WindowsFeature.Installed (Server only; the cmdlet errors on client SKUs).
@@ -24,13 +31,13 @@ fn installed(name: string) -> Result[bool, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if installed(name)? == param_bool(params, "present", true) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if installed(name)? == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    let cmdlet = if param_bool(params, "present", true) {
+    let cmdlet = if want_present(params)? {
         let mgmt = if param_bool(params, "include_management_tools", false) { " -IncludeManagementTools" } else { "" }
         "Install-WindowsFeature -Name " + ps_q(name) + mgmt
     } else {

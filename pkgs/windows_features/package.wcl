@@ -14,7 +14,7 @@ package "windows_features" {
     script = "resources/windows_capability.wisp"
     concurrency = "exclusive"
     param "name" { description = "Capability name such as OpenSSH.Client~~~~0.0.1.0" type = "string" required = true }
-    param "present" { description = "Whether the capability should be installed" type = "bool" default = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
   }
 
   resource "windows_server_feature" {
@@ -22,7 +22,7 @@ package "windows_features" {
     script = "resources/windows_server_feature.wisp"
     concurrency = "exclusive"
     param "name" { description = "Feature name such as Web-Server or DNS" type = "string" required = true }
-    param "present" { description = "Whether the feature should be installed" type = "bool" default = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
     param "include_management_tools" { description = "Also install the feature's management tools" type = "bool" default = false }
   }
 
