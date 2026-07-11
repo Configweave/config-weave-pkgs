@@ -7,6 +7,13 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
 fn manager(params: Value) -> string {
@@ -33,17 +40,19 @@ fn is_held(name: string, m: string) -> Result[bool, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if is_held(name, manager(params))? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let held = is_held(name, manager(params))?
+    if held == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     let m = manager(params)
     if name == "" { return Err("missing 'name' parameter") }
+    let want = want_present(params)?
     let cmd = if m == "apt" {
-        "apt-mark hold " + q(name)
+        if want { "apt-mark hold " + q(name) } else { "apt-mark unhold " + q(name) }
     } else if m == "dnf5" || m == "dnf" || m == "yum" {
-        m + " versionlock add " + q(name)
+        if want { m + " versionlock add " + q(name) } else { m + " versionlock delete " + q(name) }
     } else {
         return Err("hold is not supported for package manager '" + m + "'")
     }

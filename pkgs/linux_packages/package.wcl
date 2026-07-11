@@ -1,20 +1,13 @@
 package "linux_packages" {
   description = "Manage Linux packages and package-manager metadata"
 
-  resource "package_installed" {
-    description = "Ensure a package is installed"
-    script = "resources/package_installed.wisp"
+  resource "package" {
+    description = "Ensure a package is installed or absent"
+    script = "resources/package.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "version" { description = "Optional version to pin (apt/dnf/yum/zypper); empty means any version" type = "string" default = "" }
-    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
-  }
-
-  resource "package_absent" {
-    description = "Ensure a package is absent"
-    script = "resources/package_absent.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "version" { description = "Optional version to pin when present (apt/dnf/yum/zypper); empty means any version" type = "string" default = "" }
     param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
   }
 
@@ -67,19 +60,12 @@ package "linux_packages" {
     param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
   }
 
-  resource "package_held" {
-    description = "Hold a package at its current version"
-    script = "resources/package_held.wisp"
+  resource "package_hold" {
+    description = "Ensure a version hold on a package is present or absent"
+    script = "resources/package_hold.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "manager" { description = "Package manager override: auto, apt, dnf5, dnf or yum" type = "string" default = "auto" }
-  }
-
-  resource "package_unheld" {
-    description = "Release a held package"
-    script = "resources/package_unheld.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: present (held) or absent (not held)" type = "string" default = "present" }
     param "manager" { description = "Package manager override: auto, apt, dnf5, dnf or yum" type = "string" default = "auto" }
   }
 
@@ -102,7 +88,7 @@ package "linux_packages" {
 
     step "base-files-installed" {
       description = "base-files is already installed in Debian"
-      resource = "package_installed"
+      resource = "package"
       expect = "already_configured"
       properties { name = "base-files" manager = "apt" }
     }
@@ -115,7 +101,7 @@ package "linux_packages" {
 
     step "filesystem-installed" {
       description = "filesystem is installed in Fedora"
-      resource = "package_installed"
+      resource = "package"
       expect = "already_configured"
       properties { name = "filesystem" manager = "dnf" }
     }
@@ -127,7 +113,7 @@ package "linux_packages" {
 
     step "alpine-baselayout-installed" {
       description = "alpine-baselayout is installed in Alpine"
-      resource = "package_installed"
+      resource = "package"
       expect = "already_configured"
       properties { name = "alpine-baselayout" manager = "apk" }
     }
@@ -180,7 +166,7 @@ package "linux_packages" {
   // a real key — neither converges honestly in an offline container.
   //
   // The apt steps are chained with `requires`: `exclusive` only serializes
-  // steps of the SAME resource type, but package_absent/held/unheld all
+  // steps of the SAME resource type, but package/package_hold/debconf all
   // contend for the one dpkg lock, so mixing them concurrently fails.
   // Playbooks mixing these resources need the same ordering.
   test "apt_state_changes" {
@@ -192,22 +178,22 @@ package "linux_packages" {
 
     step "remove" {
       description = "Remove the preinstalled tzdata package (offline)"
-      resource = "package_absent"
-      properties { name = "tzdata" manager = "apt" }
+      resource = "package"
+      properties { name = "tzdata" manager = "apt" ensure = "absent" }
     }
 
     step "hold" {
       description = "Hold base-files at its current version"
-      resource = "package_held"
+      resource = "package_hold"
       requires = ["remove"]
       properties { name = "base-files" manager = "apt" }
     }
 
     step "unhold" {
       description = "Release the hold setup placed on gzip"
-      resource = "package_unheld"
+      resource = "package_hold"
       requires = ["hold"]
-      properties { name = "gzip" manager = "apt" }
+      properties { name = "gzip" manager = "apt" ensure = "absent" }
     }
 
     step "debconf" {
