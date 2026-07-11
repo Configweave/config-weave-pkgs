@@ -16,6 +16,11 @@ so this repository intentionally does not require Config Weave loader changes.
 
 ## Packages
 
+Removal is expressed with `ensure = "absent"` on the same resource that
+creates the thing — every install/remove resource takes an `ensure` param
+(`"present"`, the default, or `"absent"`) instead of a separate `*_absent`
+resource.
+
 - `linux_facts`: Linux OS, package manager, init system and network facts.
 - `linux_files`: files, directories, symlinks, downloads, line edits and modes.
 - `linux_packages`: package-manager resources for common Linux distributions.
@@ -38,22 +43,22 @@ Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
 and **Linux** (the Microsoft repo plus `mssql-conf`), then converge a broad set
 of T-SQL-driven settings via `sqlcmd`:
 
-- `instance` / `instance_absent` — silent install/uninstall, feature selection,
-  edition, collation, service accounts, TCP and a `ConfigurationFile.ini`
-  passthrough on Windows.
+- `instance` — silent install/uninstall (`ensure = present|absent`), feature
+  selection, edition, collation, service accounts, TCP and a
+  `ConfigurationFile.ini` passthrough on Windows.
 - `server_setting` — any `sp_configure` value (compares the running
   `value_in_use`).
-- `login` / `login_absent`, `database` / `database_absent`, `database_user` —
-  principals, databases (recovery model, owner, compatibility level) and role
-  membership.
+- `login`, `database`, `database_user` — principals, databases (recovery
+  model, owner, compatibility level) and role membership; `login` and
+  `database` drop via `ensure = "absent"`.
 - `database_cdc`, `cdc_table` — Change Data Capture at the database and table
   level.
 - `tcp` — the TCP/IP protocol and static port (registry on Windows, `mssql-conf`
   on Linux), restarting the engine so the change takes effect.
 - `replication_distributor`, `replication_publisher` — distributor setup and
   enabling a database for transactional or merge replication.
-- `database_mail`, `agent_job` / `agent_job_absent` — Database Mail profiles and
-  SQL Agent jobs.
+- `database_mail`, `agent_job` — Database Mail profiles and SQL Agent jobs
+  (`agent_job` deletes via `ensure = "absent"`).
 - `availability_group` — enable Always On HADR and create an availability group
   on the primary (multi-node joins are a scenario concern).
 - `instance_info` gatherer — version, edition, collation and HADR state.
