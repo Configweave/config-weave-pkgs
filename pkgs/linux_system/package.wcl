@@ -58,20 +58,14 @@ package "linux_system" {
   }
 
   resource "cron_job" {
-    description = "Ensure a single cron.d job entry"
+    description = "Ensure a single cron.d job entry is present or absent"
     script = "resources/cron_job.wisp"
     concurrency = "parallel"
     param "name" { description = "Job name (also the cron.d filename; no dots)" type = "string" required = true }
-    param "schedule" { description = "Cron schedule such as '*/5 * * * *'" type = "string" required = true }
-    param "command" { description = "Command to run" type = "string" required = true }
+    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "schedule" { description = "Cron schedule such as '*/5 * * * *' (required when present)" type = "string" default = "" }
+    param "command" { description = "Command to run (required when present)" type = "string" default = "" }
     param "user" { description = "User to run as" type = "string" default = "root" }
-  }
-
-  resource "cron_job_absent" {
-    description = "Ensure a cron.d job entry is removed"
-    script = "resources/cron_job_absent.wisp"
-    concurrency = "parallel"
-    param "name" { description = "Job name (cron.d filename)" type = "string" required = true }
   }
 
   resource "fstab_mount" {
@@ -113,7 +107,7 @@ package "linux_system" {
   }
 
   test "cron_job_converge" {
-    description = "cron_job adds and cron_job_absent removes a cron.d entry"
+    description = "cron_job adds and removes (ensure = absent) a cron.d entry"
     image = "debian:12"
     group = "system"
     setup = "echo placeholder > /etc/cron.d/cw-rm-job"
@@ -127,8 +121,8 @@ package "linux_system" {
 
     step "remove" {
       description = "Remove a cron job"
-      resource = "cron_job_absent"
-      properties { name = "cw-rm-job" }
+      resource = "cron_job"
+      properties { name = "cw-rm-job" ensure = "absent" }
     }
   }
 
