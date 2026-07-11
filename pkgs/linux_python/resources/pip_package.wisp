@@ -6,6 +6,13 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
 fn pip_bin(params: Value) -> string {
@@ -30,6 +37,11 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let version = param_str(params, "version", "")
     if name == "" { return Err("missing 'name' parameter") }
     let iv = pip_version(pip_bin(params), name)?
+    if !want_present(params)? {
+        // existence probe only: any installed version means work to do
+        if iv != "" { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
     if version == "" {
         if iv != "" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
@@ -41,8 +53,12 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     let version = param_str(params, "version", "")
     if name == "" { return Err("missing 'name' parameter") }
-    let spec = if version != "" { name + "==" + version } else { name }
-    let out = shell::bash(q(pip_bin(params)) + " install " + q(spec), Value::Null)?
+    let out = if want_present(params)? {
+        let spec = if version != "" { name + "==" + version } else { name }
+        shell::bash(q(pip_bin(params)) + " install " + q(spec), Value::Null)?
+    } else {
+        shell::bash(q(pip_bin(params)) + " uninstall -y " + q(name), Value::Null)?
+    }
     if !out.success { return Err(out.stderr.trim()) }
     Ok(ApplyResult::Success)
 }
