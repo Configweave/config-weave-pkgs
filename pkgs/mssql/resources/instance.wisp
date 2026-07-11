@@ -22,6 +22,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 // setup.exe expects double-quoted values and has no escape for an embedded
 // double quote, so such values are rejected rather than silently mangled.
@@ -56,6 +63,16 @@ fn linux_manager() -> string {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let inst = param_str(params, "instance", "MSSQLSERVER")
+    if !want_present(params)? {
+        // existence probe only: on Linux the bare engine binary (even
+        // without a configured service) still means work to do
+        if sys::family() == "windows" {
+            if win_installed(inst)? { return Ok(CheckResult::NotConfigured) }
+            return Ok(CheckResult::AlreadyConfigured)
+        }
+        if fs::exists("/opt/mssql/bin/sqlservr") { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
     if sys::family() == "windows" {
         if win_installed(inst)? { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
@@ -206,6 +223,56 @@ fn linux_apply(params: Value) -> Result[ApplyResult, string] {
     Ok(ApplyResult::Success)
 }
 
+// --- Removal ----------------------------------------------------------------
+
+fn win_remove(params: Value) -> Result[ApplyResult, string] {
+    let setup = param_str(params, "setup_path", "")
+    if setup == "" { return Err("missing 'setup_path' parameter (path or URL of setup.exe for uninstall)") }
+    let local = if setup.starts_with("http") {
+        let f = path::join(fs::temp_dir()?, "sqlserver-setup.exe")
+        http::download(setup, f, Value::Null)?
+        f
+    } else {
+        setup
+    }
+    let inst = param_str(params, "instance", "MSSQLSERVER")
+    let features = param_str(params, "features", "SQLENGINE")
+    let feat_arg = if features != "" { features } else { "SQLENGINE" }
+    let args = "/Q /ACTION=Uninstall /INSTANCENAME=" + dq(inst)? + " /FEATURES=" + feat_arg
+    log::info("uninstalling SQL Server instance " + inst)
+    let script = "$c=(Start-Process -FilePath " + ps_q(local) + " -ArgumentList " + ps_q(args) + " -Wait -PassThru).ExitCode; exit $c"
+    let opts = Value::Map(#{ "timeout": Value::Int(param_int(params, "install_timeout", 3600)) })
+    let out = shell::powershell(script, opts)?
+    if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
+    if !out.success { return Err("uninstall exited " + str(out.code) + ": " + out.stderr.trim()) }
+    Ok(ApplyResult::Success)
+}
+
+fn linux_remove(params: Value) -> Result[ApplyResult, string] {
+    let m = linux_manager()
+    let cmd = if m == "apt" {
+        "DEBIAN_FRONTEND=noninteractive apt-get remove -y mssql-server"
+    } else if m == "dnf5" {
+        "dnf5 remove -y mssql-server"
+    } else if m == "dnf" {
+        "dnf remove -y mssql-server"
+    } else if m == "yum" {
+        "yum remove -y mssql-server"
+    } else if m == "zypper" {
+        "zypper --non-interactive remove mssql-server"
+    } else {
+        return Err("unsupported Linux package manager")
+    }
+    log::info("removing mssql-server package")
+    let out = shell::bash(cmd, Value::Null)?
+    if !out.success { return Err("removing mssql-server failed: " + out.stderr.trim()) }
+    Ok(ApplyResult::Success)
+}
+
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    if !want_present(params)? {
+        if sys::family() == "windows" { return win_remove(params) }
+        return linux_remove(params)
+    }
     if sys::family() == "windows" { win_apply(params) } else { linux_apply(params) }
 }

@@ -12,6 +12,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn dq(s: string) -> string { "\"" + s.replace("\"", "\"\"") + "\"" }
 fn tsql_lit(s: string) -> string { "N'" + s.replace("'", "''") + "'" }
 fn tsql_id(s: string) -> string { "[" + s.replace("]", "]]") + "]" }
@@ -76,6 +83,14 @@ fn role_member_predicate(role: string, login: string) -> string {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
+    if !want_present(params)? {
+        // existence probe only, never the negated rich check
+        let q = "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals WHERE name = " + tsql_lit(name) +
+            ") THEN 'MISSING' ELSE 'GONE' END;"
+        let r = run_scalar(params, q)?
+        if r == "GONE" { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
+    }
     let db = param_str(params, "default_database", "master")
     let want_disabled = if param_bool(params, "enabled", true) { "0" } else { "1" }
 
@@ -94,6 +109,12 @@ fn check(params: Value) -> Result[CheckResult, string] {
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
+    if !want_present(params)? {
+        let batch = "IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = " + tsql_lit(name) + ") " +
+            "DROP LOGIN " + tsql_id(name) + ";"
+        run_exec(params, batch)?
+        return Ok(ApplyResult::Success)
+    }
     let auth = param_str(params, "auth", "windows")
     let db = param_str(params, "default_database", "master")
     let id = tsql_id(name)

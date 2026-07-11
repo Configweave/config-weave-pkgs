@@ -12,6 +12,13 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn dq(s: string) -> string { "\"" + s.replace("\"", "\"\"") + "\"" }
 fn tsql_lit(s: string) -> string { "N'" + s.replace("'", "''") + "'" }
 
@@ -61,15 +68,21 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
     let q = "SELECT CASE WHEN EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = " + tsql_lit(name) +
-        ") THEN 'CONFIGURED' ELSE 'MISSING' END;"
+        ") THEN 'PRESENT' ELSE 'GONE' END;"
     let r = run_scalar(params, q)?
-    if r == "CONFIGURED" { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if (r == "PRESENT") == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
-    let command = param_str(params, "command", "")
     if name == "" { return Err("missing 'name' parameter") }
+    if !want_present(params)? {
+        let batch = "IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobs WHERE name = " + tsql_lit(name) + ") " +
+            "EXEC msdb.dbo.sp_delete_job @job_name = " + tsql_lit(name) + ";"
+        run_exec(params, batch)?
+        return Ok(ApplyResult::Success)
+    }
+    let command = param_str(params, "command", "")
     if command == "" { return Err("missing 'command' parameter") }
     let subsystem = param_str(params, "subsystem", "TSQL")
     let step_name = param_str(params, "step_name", "Step 1")

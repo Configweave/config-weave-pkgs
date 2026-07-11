@@ -6,12 +6,13 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "instance" {
-    description = "Install a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
+    description = "Install or uninstall a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
     script = "resources/instance.wisp"
     concurrency = "global"
-    param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root)" type = "string" default = "" }
+    param "ensure"                { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); also required for ensure = absent (runs the uninstall)" type = "string" default = "" }
     param "instance"              { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
-    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN" type = "string" default = "SQLENGINE" }
+    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN; when ensure = absent: features to remove (SQLENGINE removes the whole instance)" type = "string" default = "SQLENGINE" }
     param "edition"               { description = "Edition / product id (Linux MSSQL_PID): Developer, Express, Standard, Enterprise, EnterpriseCore or a 25-char key" type = "string" default = "Developer" }
     param "security_mode"         { description = "Authentication mode: Windows (integrated only) or SQL (mixed mode; needs sa_password)" type = "string" default = "Windows" }
     param "sa_password"           { description = "sa password; required for SQL/mixed mode and for the Linux engine — plaintext in the playbook" type = "string" default = "" }
@@ -26,16 +27,6 @@ package "mssql" {
     param "config_file"           { description = "Windows only: path to a full ConfigurationFile.ini passed via /ConfigurationFile (overrides most flags)" type = "string" default = "" }
     param "extra_args"            { description = "Windows only: extra setup.exe arguments appended verbatim" type = "string" default = "" }
     param "install_timeout"       { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
-  }
-
-  resource "instance_absent" {
-    description = "Uninstall a SQL Server instance (Windows setup.exe /ACTION=Uninstall or Linux package removal)"
-    script = "resources/instance_absent.wisp"
-    concurrency = "global"
-    param "instance"        { description = "Instance name to remove" type = "string" default = "MSSQLSERVER" }
-    param "setup_path"      { description = "Windows only: path or URL of setup.exe used to run the uninstall" type = "string" default = "" }
-    param "features"        { description = "Windows only: /FEATURES to remove; empty removes the whole instance via SQLENGINE" type = "string" default = "" }
-    param "install_timeout" { description = "Maximum seconds to wait for the uninstaller" type = "int" default = 3600 }
   }
 
   // ---------------------------------------------------------------------------
@@ -55,10 +46,11 @@ package "mssql" {
   }
 
   resource "login" {
-    description = "Ensure a server login exists (SQL or Windows auth) with its enabled state, default database and server roles"
+    description = "Ensure a server login exists (SQL or Windows auth) with its enabled state, default database and server roles, or is absent"
     script = "resources/login.wisp"
     concurrency = "parallel"
     param "name"             { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
+    param "ensure"           { description = "Desired state: present or absent" type = "string" default = "present" }
     param "auth"             { description = "Authentication type: windows or sql" type = "string" default = "windows" }
     param "password"         { description = "Password for SQL logins — plaintext; cannot be read back so drift is undetectable (see force_password)" type = "string" default = "" }
     param "default_database" { description = "Default database for the login" type = "string" default = "master" }
@@ -72,22 +64,14 @@ package "mssql" {
     param "sql_password"     { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
   }
 
-  resource "login_absent" {
-    description = "Ensure a server login does not exist"
-    script = "resources/login_absent.wisp"
-    concurrency = "parallel"
-    param "name"         { description = "Login name to drop" type = "string" required = true }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
-  }
-
   resource "database" {
-    description = "Ensure a database exists with the desired recovery model, owner and compatibility level"
+    description = "Ensure a database exists with the desired recovery model, owner and compatibility level, or is absent (drops after forcing SINGLE_USER)"
     script = "resources/database.wisp"
-    concurrency = "parallel"
+    // the ensure = "absent" drop path forces SINGLE_USER WITH ROLLBACK
+    // IMMEDIATE, so distinct-database creates serialize too
+    concurrency = "exclusive"
     param "name"                { description = "Database name" type = "string" required = true }
+    param "ensure"              { description = "Desired state: present or absent" type = "string" default = "present" }
     param "recovery_model"      { description = "Recovery model: FULL, SIMPLE or BULK_LOGGED; empty = engine default" type = "string" default = "" }
     param "collation"           { description = "Collation set at CREATE; existing-database mismatch is reported as an error (no in-place change)" type = "string" default = "" }
     param "owner"               { description = "Login to own the database (ALTER AUTHORIZATION); empty = leave as-is" type = "string" default = "" }
@@ -96,17 +80,6 @@ package "mssql" {
     param "instance"            { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
     param "sql_user"            { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
     param "sql_password"        { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
-  }
-
-  resource "database_absent" {
-    description = "Ensure a database does not exist (drops it after forcing SINGLE_USER)"
-    script = "resources/database_absent.wisp"
-    concurrency = "exclusive"
-    param "name"         { description = "Database name to drop" type = "string" required = true }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
   }
 
   resource "database_user" {
@@ -226,28 +199,18 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "agent_job" {
-    description = "Ensure a single-step SQL Server Agent job exists, targeted at the local server"
+    description = "Ensure a single-step SQL Server Agent job exists (targeted at the local server) or is absent"
     script = "resources/agent_job.wisp"
     concurrency = "parallel"
     param "name"         { description = "Job name" type = "string" required = true }
-    param "command"      { description = "Command for the job's single step" type = "string" required = true }
+    param "ensure"       { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "command"      { description = "Command for the job's single step (required when present)" type = "string" default = "" }
     param "subsystem"    { description = "Job step subsystem: TSQL, CmdExec or PowerShell" type = "string" default = "TSQL" }
     param "step_name"    { description = "Name of the job's single step" type = "string" default = "Step 1" }
     param "database"     { description = "Database context for a TSQL step" type = "string" default = "master" }
     param "enabled"      { description = "Whether the job is enabled" type = "bool" default = true }
     param "owner"        { description = "Job owner login; empty = current login" type = "string" default = "" }
     param "description"  { description = "Job description" type = "string" default = "" }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
-  }
-
-  resource "agent_job_absent" {
-    description = "Ensure a SQL Server Agent job does not exist"
-    script = "resources/agent_job_absent.wisp"
-    concurrency = "parallel"
-    param "name"         { description = "Job name to delete" type = "string" required = true }
     param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
     param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
     param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
@@ -335,14 +298,14 @@ package "mssql" {
 
     step "drop_login" {
       description = "Drop the login pre-seeded by setup"
-      resource = "login_absent"
-      properties { name = "cw_drop_login" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      resource = "login"
+      properties { name = "cw_drop_login" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "drop_db" {
       description = "Drop the database pre-seeded by setup"
-      resource = "database_absent"
-      properties { name = "cw_drop_db" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      resource = "database"
+      properties { name = "cw_drop_db" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "job" {
@@ -353,8 +316,8 @@ package "mssql" {
 
     step "drop_job" {
       description = "Delete the Agent job pre-seeded by setup"
-      resource = "agent_job_absent"
-      properties { name = "cw_drop_job" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      resource = "agent_job"
+      properties { name = "cw_drop_job" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "cdc_db" {

@@ -12,6 +12,13 @@ fn param_int(params: Value, key: string, fallback: int) -> int {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+}
+
 fn dq(s: string) -> string { "\"" + s.replace("\"", "\"\"") + "\"" }
 fn tsql_lit(s: string) -> string { "N'" + s.replace("'", "''") + "'" }
 fn tsql_id(s: string) -> string { "[" + s.replace("]", "]]") + "]" }
@@ -69,6 +76,12 @@ fn current_collation(params: Value, name: string) -> Result[string, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
+    if !want_present(params)? {
+        let q = "SELECT CASE WHEN DB_ID(" + tsql_lit(name) + ") IS NULL THEN 'GONE' ELSE 'PRESENT' END;"
+        let r = run_scalar(params, q)?
+        if r == "GONE" { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
+    }
     let rm = norm_rm(param_str(params, "recovery_model", ""))
     let coll = param_str(params, "collation", "")
     let owner = param_str(params, "owner", "")
@@ -95,6 +108,13 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
     let id = tsql_id(name)
+    if !want_present(params)? {
+        let batch = "IF DB_ID(" + tsql_lit(name) + ") IS NOT NULL BEGIN " +
+            "ALTER DATABASE " + id + " SET SINGLE_USER WITH ROLLBACK IMMEDIATE; " +
+            "DROP DATABASE " + id + "; END;"
+        run_exec(params, batch)?
+        return Ok(ApplyResult::Success)
+    }
     let coll = param_str(params, "collation", "")
     let coll_clause = if coll != "" { " COLLATE " + coll } else { "" }
     let create = "IF DB_ID(" + tsql_lit(name) + ") IS NULL CREATE DATABASE " + id + coll_clause + "; "
