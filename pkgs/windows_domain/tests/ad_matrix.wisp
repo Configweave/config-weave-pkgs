@@ -4,10 +4,16 @@
 // defined in tests/ad-lab/vmlab.wcl; here we just bring each up by name and
 // configure it.
 //
-//   dc01     forest root for corp.example.com, serves DNS  (windows_domain.forest)
-//   member01 member server joining corp.example.com        (windows_domain.domain_member)
-//   dc02     additional DC replicated into corp.example.com (windows_domain.domain_controller)
-//   dc-alt   a second, independent forest alt.test          (windows_domain.forest)
+//   dc01     forest root for corp.example.com, serves DNS   (domain_controller, first DC)
+//   member01 member server joining corp.example.com, then    (domain_member,
+//            leaving it for a workgroup                       workgroup_member)
+//   dc02     additional DC replicated into corp.example.com, (domain_controller,
+//            then demoted again                               ensure = "absent")
+//   dc-alt   a second, independent forest alt.test           (domain_controller, first DC)
+//
+// The same domain_controller resource serves every DC stage: promotion
+// discovers whether the domain answers (first DC vs additional DC) and
+// ensure = "absent" demotes.
 //
 // Credentials: the windows-server-2025 template's built-in Administrator is
 // `vmlab123!`; after dc01 promotes, that account becomes CORP\Administrator.
@@ -82,7 +88,7 @@ fn run(lab: Lab) -> Result[bool, string] {
     lab.log("bringing up dc01 (forest root, DNS server)")
     let dc1 = lab.machine("dc01")?
     install_role(dc1)?
-    promote(dc1, "windows_domain.forest",
+    promote(dc1, "windows_domain.domain_controller",
         Value::Map(#{
             "domain_name": s("corp.example.com"),
             "safe_mode_password": s("P@ssw0rd-DSRM!"),
@@ -132,7 +138,7 @@ fn run(lab: Lab) -> Result[bool, string] {
     lab.log("bringing up dc-alt (second forest)")
     let alt = lab.machine("dc-alt")?
     install_role(alt)?
-    promote(alt, "windows_domain.forest",
+    promote(alt, "windows_domain.domain_controller",
         Value::Map(#{
             "domain_name": s("alt.test"),
             "netbios_name": s("ALT"),
@@ -146,6 +152,36 @@ fn run(lab: Lab) -> Result[bool, string] {
         return Err("dc-alt is not a DC for alt.test: '" + da + "'")
     }
     lab.log("dc-alt is up as a DC for alt.test")
+
+    // --- dc02 again: demote (ensure = "absent") -------------------------
+    lab.log("demoting dc02 back out of corp.example.com")
+    promote(dc2, "windows_domain.domain_controller",
+        Value::Map(#{
+            "domain_name": s("corp.example.com"),
+            "ensure": s("absent"),
+            "local_admin_password": s("vmlab123!"),
+            "credential_user": s("CORP\\Administrator"),
+            "credential_password": s("vmlab123!")
+        }))?
+    let role = dc2.powershell("(Get-CimInstance Win32_ComputerSystem).DomainRole")?
+    if role.stdout.trim() == "4" || role.stdout.trim() == "5" {
+        return Err("dc02 is still a DC after demotion (DomainRole=" + role.stdout.trim() + ")")
+    }
+    lab.log("dc02 demoted (DomainRole=" + role.stdout.trim() + ")")
+
+    // --- member01 again: leave the domain for a workgroup ----------------
+    lab.log("moving member01 out of the domain into workgroup TESTWG")
+    promote(mem, "windows_domain.workgroup_member",
+        Value::Map(#{
+            "workgroup_name": s("TESTWG"),
+            "credential_user": s("CORP\\Administrator"),
+            "credential_password": s("vmlab123!")
+        }))?
+    let wg = mem.powershell("$c=Get-CimInstance Win32_ComputerSystem; \"$($c.PartOfDomain)/$($c.Workgroup)\"")?
+    if wg.stdout.trim() != "False/TESTWG" {
+        return Err("member01 did not land in TESTWG: '" + wg.stdout.trim() + "'")
+    }
+    lab.log("member01 left the domain into TESTWG")
 
     Ok(true)
 }
