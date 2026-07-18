@@ -2,12 +2,14 @@ package "linux_files" {
   description = "Manage Linux filesystem state"
 
   resource "file" {
-    description = "Ensure a file exists with exact content, or is absent"
+    description = "Ensure a file exists with exact content or fetched from a URL, or is absent"
     script = "resources/file.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "content" { description = "Desired file content" type = "string" default = "" }
+    param "content" { description = "Desired file content; mutually exclusive with url" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode)" type = "string" default = "" }
     param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
     param "owner" { description = "Optional file owner" type = "string" default = "" }
     param "group" { description = "Optional file group" type = "string" default = "" }
@@ -30,50 +32,20 @@ package "linux_files" {
     script = "resources/directory.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute directory path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" { description = "Desired state: :present or :absent (absent removes the directory and its contents)" type = "symbol" default = :present }
     param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
     param "owner" { description = "Optional directory owner" type = "string" default = "" }
     param "group" { description = "Optional directory group" type = "string" default = "" }
-    param "recursive" { description = "When ensure = :absent: allow removing the directory and its contents" type = "bool" default = false }
-  }
-
-  resource "line" {
-    description = "Ensure a line is present in or absent from a text file"
-    script = "resources/line.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "line" { description = "The exact line" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
   }
 
   resource "symlink" {
-    description = "Ensure a symlink points at a target, or is absent"
+    description = "Ensure a symbolic or hard link points at a target, or is absent"
     script = "resources/symlink.wisp"
     concurrency = "parallel"
-    param "path" { description = "Symlink path" type = "string" required = true }
+    param "path" { description = "Link path" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "target" { description = "Symlink target (required when present)" type = "string" default = "" }
-  }
-
-  resource "block" {
-    description = "Ensure a marked text block is present and up to date, or absent"
-    script = "resources/block.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "block" { description = "Block body placed between the markers (required when present)" type = "string" default = "" }
-    param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
-    param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
-  }
-
-  resource "file_substitution" {
-    description = "Replace a literal substring throughout a file"
-    script = "resources/file_substitution.wisp"
-    concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "pattern" { description = "Literal substring to replace (not a regex)" type = "string" required = true }
-    param "replacement" { description = "Replacement text; must not contain the pattern" type = "string" default = "" }
+    param "target" { description = "Link target (required when present)" type = "string" default = "" }
+    param "hard" { description = "Create a hard link instead of a symlink" type = "bool" default = false }
   }
 
   resource "archive_extracted" {
@@ -82,19 +54,6 @@ package "linux_files" {
     concurrency = "parallel"
     param "src" { description = "Local archive path (.zip, .tar.gz, .tgz)" type = "string" required = true }
     param "dest" { description = "Destination directory" type = "string" required = true }
-    param "creates" { description = "Optional path whose existence marks extraction done" type = "string" default = "" }
-  }
-
-  resource "download" {
-    description = "Download a file and optionally verify its SHA-256"
-    script = "resources/download.wisp"
-    concurrency = "parallel"
-    param "url" { description = "HTTP or HTTPS URL" type = "string" required = true }
-    param "dest" { description = "Destination file path" type = "string" required = true }
-    param "sha256" { description = "Optional expected SHA-256 digest" type = "string" default = "" }
-    param "mode" { description = "Optional octal mode" type = "string" default = "" }
-    param "owner" { description = "Optional file owner" type = "string" default = "" }
-    param "group" { description = "Optional file group" type = "string" default = "" }
   }
 
   resource "permissions" {
@@ -132,7 +91,7 @@ package "linux_files" {
     param "pattern" { description = "Glob pattern relative to the root" type = "string" default = "*" }
   }
 
-  test "file_directory_line_symlink" {
+  test "files_converge" {
     description = "Core file resources converge"
     image = "debian:12"
     group = "files"
@@ -151,18 +110,18 @@ package "linux_files" {
       properties { path = "/tmp/cw-files/a.txt" content = "alpha\n" mode = "0644" }
     }
 
-    step "line" {
-      description = "Add line"
-      resource = "line"
-      requires = ["dir"]
-      properties { path = "/tmp/cw-files/lines.txt" line = "beta" }
-    }
-
     step "link" {
       description = "Create symlink"
       resource = "symlink"
       requires = ["file"]
       properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    step "hardlink" {
+      description = "Create a hard link"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/hard.txt" target = "/tmp/cw-files/a.txt" hard = true }
     }
   }
 
@@ -188,17 +147,17 @@ TMPL
     }
   }
 
-  test "file_edits_converge" {
-    description = "Editing, removal and extraction resources converge"
+  test "removals_and_extract_converge" {
+    description = "Removal and extraction resources converge"
     image = "debian:12"
     group = "files"
-    setup = "printf 'one\\ntwo\\nthree\\n' > /tmp/cw-seed.txt; printf 'a replace-me b\\n' > /tmp/cw-subst.txt; echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
-    verify = "tests/file_edits_verify.wisp"
+    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
+    verify = "tests/removals_verify.wisp"
 
     gather "seed_stat" {
       description = "Stat the seed file created during setup"
       from = "path_stat"
-      params { path = "/tmp/cw-subst.txt" }
+      params { path = "/tmp/cw-del.txt" }
       expect { exists = true }
     }
 
@@ -209,54 +168,55 @@ TMPL
       expect { count = 1 }
     }
 
-    step "block" {
-      description = "Insert a managed block"
-      resource = "block"
-      properties { path = "/tmp/cw-block.txt" block = "hello\nworld" }
-    }
-
-    step "subst" {
-      description = "Replace a literal substring"
-      resource = "file_substitution"
-      properties { path = "/tmp/cw-subst.txt" pattern = "replace-me" replacement = "replaced" }
-    }
-
-    step "rmline" {
-      description = "Remove a line"
-      resource = "line"
-      properties { path = "/tmp/cw-seed.txt" line = "two" ensure = :absent }
-    }
-
-    step "rmpath" {
+    step "rmfile" {
       description = "Remove a file"
       resource = "file"
       properties { path = "/tmp/cw-del.txt" ensure = :absent }
     }
 
+    step "rmdir" {
+      description = "Remove a non-empty directory"
+      resource = "directory"
+      properties { path = "/tmp/cw-rmdir" ensure = :absent }
+    }
+
+    step "rmlink" {
+      description = "Remove a symlink"
+      resource = "symlink"
+      properties { path = "/tmp/cw-oldlink" ensure = :absent }
+    }
+
     step "extract" {
       description = "Extract an archive"
       resource = "archive_extracted"
-      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" creates = "/tmp/cw-extracted/inside.txt" }
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" }
     }
   }
 
-  // download needs an HTTP endpoint, so this test runs on a python image and
-  // serves a local directory — no external network.
-  test "download_and_permissions_converge" {
-    description = "download fetches over local HTTP and permissions converges a mode"
+  // file's url mode needs an HTTP endpoint, so this test runs on a python
+  // image and serves a local directory — no external network.
+  test "file_url_and_permissions_converge" {
+    description = "file fetches by url over local HTTP and permissions converges a mode"
     image = "python:3.12-slim"
     setup = "mkdir -p /srv/www && printf 'payload\\n' > /srv/www/payload.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
     verify = "tests/download_verify.wisp"
 
-    step "download" {
-      description = "Download a file from the local HTTP server"
-      resource = "download"
+    step "fetch" {
+      description = "file fetches from the local HTTP server by url"
+      resource = "file"
       properties {
+        path = "/srv/dl/payload.txt"
         url = "http://127.0.0.1:8080/payload.txt"
-        dest = "/srv/dl/payload.txt"
         sha256 = "d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b"
         mode = "0644"
       }
+    }
+
+    step "conflict" {
+      description = "url and content together are rejected"
+      resource = "file"
+      expect = "error"
+      properties { path = "/srv/dl/conflict.txt" url = "http://127.0.0.1:8080/payload.txt" content = "nope" }
     }
 
     step "perms" {

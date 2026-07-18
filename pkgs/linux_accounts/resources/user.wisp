@@ -18,10 +18,25 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
 
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+}
+
+fn user_exists(name: string) -> Result[bool, string] {
+    Ok(shell::bash("id -u " + q(name) + " >/dev/null 2>&1", Value::Null)?.success)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if !shell::bash("id -u " + q(name) + " >/dev/null 2>&1", Value::Null)?.success { return Ok(CheckResult::NotConfigured) }
+    if !want_present(params)? {
+        if user_exists(name)? { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    if !user_exists(name)? { return Ok(CheckResult::NotConfigured) }
     let group = param_str(params, "group", "")
     if group != "" && !shell::bash("id -gn " + q(name) + " | grep -Fx " + q(group) + " >/dev/null", Value::Null)?.success {
         return Ok(CheckResult::NotConfigured)
@@ -40,6 +55,18 @@ fn check(params: Value) -> Result[CheckResult, string] {
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
+    if !want_present(params)? {
+        if !user_exists(name)? { return Ok(ApplyResult::Success) }
+        let flag = if param_bool(params, "remove_home", false) { " -r" } else { "" }
+        let out = shell::bash("userdel" + flag + " " + q(name), Value::Null)?
+        if !out.success {
+            // userdel -r exits non-zero on an already-missing home or mail
+            // spool; trust the re-probe — gone means done
+            if !user_exists(name)? { return Ok(ApplyResult::Success) }
+            return Err(out.stderr.trim())
+        }
+        return Ok(ApplyResult::Success)
+    }
     let uid = param_int(params, "uid", 0)
     let group = param_str(params, "group", "")
     let home = param_str(params, "home", "")

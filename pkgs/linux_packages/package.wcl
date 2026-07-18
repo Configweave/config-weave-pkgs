@@ -79,12 +79,28 @@ package "linux_packages" {
     param "value" { description = "Answer value" type = "string" required = true }
   }
 
+  gatherer "package_manager" {
+    description = "Detect the host package manager"
+    script = "gatherers/package_manager.wisp"
+    returns "manager" { description = "Detected manager (apt, dnf, pacman, zypper, apk, ...)" type = "string" }
+    returns "known" { description = "True when a supported manager was found" type = "bool" }
+  }
+
   test "package_facts_and_existing_package" {
     description = "Package resources can detect an installed Debian package"
     image = "debian:12"
     # Shares one container with apt_repository_file (both debian:12, and
     # they touch unrelated state: an installed-package check vs. a repo file).
     group = "debian"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect {
+        manager = "apt"
+        known = true
+      }
+    }
 
     step "base-files-installed" {
       description = "base-files is already installed in Debian"

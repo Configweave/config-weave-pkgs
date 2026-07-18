@@ -9,7 +9,7 @@ playbook "Config Weave Linux Packages" {
 
   gather "pm" {
     description = "Detected package manager"
-    from = "linux_facts.package_manager"
+    from = "linux_packages.package_manager"
   }
 
   vars {

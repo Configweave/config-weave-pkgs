@@ -21,11 +21,13 @@ creates the thing — every install/remove resource takes an `ensure` param
 (`"present"`, the default, or `"absent"`) instead of a separate `*_absent`
 resource.
 
-- `linux_facts`: Linux OS, package manager, init system and network facts.
-- `linux_files`: files, directories, symlinks, downloads, line edits and modes.
-- `linux_packages`: package-manager resources for common Linux distributions.
+- `linux_facts`: Linux OS, init system, services, mounts and network facts.
+- `linux_files`: files (exact content or URL-fetched), directories,
+  symlinks/hard links, archives and modes.
+- `linux_packages`: package-manager resources for common Linux distributions,
+  plus the package-manager detection gatherer.
 - `linux_services`: service state, service enablement and systemd unit files.
-- `linux_accounts`: users, groups, SSH authorized keys and sudoers drop-ins.
+- `linux_accounts`: users, groups, SSH authorized keys and per-user sudo rules.
 - `linux_system`: sysctl, hostname, timezone, locale, cron, logrotate and fstab.
 - `linux_network`: hosts entries, SSH config snippets and firewall front-ends.
 - `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.

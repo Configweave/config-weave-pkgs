@@ -18,8 +18,7 @@ fn gather(params: Value) -> Value {
         "unknown"
     }
     Value::Map(#{
-        "init": Value::String(init),
-        "systemd": Value::Bool(init == "systemd")
+        "init": Value::String(init)
     })
 }
 

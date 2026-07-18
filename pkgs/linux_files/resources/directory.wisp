@@ -10,11 +10,6 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
 
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
 fn want_present(params: Value) -> Result[bool, string] {
     let e = param_str(params, "ensure", "present")
     if e == "present" { return Ok(true) }
@@ -72,9 +67,6 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !want_present(params)? {
         if !fs::exists(p) { return Ok(ApplyResult::Success) }
         if !fs::is_dir(p) { return Err("path is not a directory; use linux_files.file with ensure = :absent") }
-        if !param_bool(params, "recursive", false) {
-            return Err("path is a directory; set recursive = true to remove it")
-        }
         log::info("deleting directory " + p)
         fs::delete_dir(p)?
         return Ok(ApplyResult::Success)

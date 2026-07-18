@@ -2,47 +2,61 @@ package "linux_accounts" {
   description = "Manage Linux users, groups, SSH keys and sudoers drop-ins"
 
   resource "group" {
-    description = "Ensure a local group exists"
+    description = "Ensure a local group exists or is absent"
     script = "resources/group.wisp"
     concurrency = "exclusive"
     param "name" { description = "Group name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "gid" { description = "Optional numeric group id" type = "int" default = 0 }
   }
 
   resource "user" {
-    description = "Ensure a local user exists"
+    description = "Ensure a local user exists or is absent"
     script = "resources/user.wisp"
     concurrency = "exclusive"
     param "name" { description = "User name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "uid" { description = "Optional numeric user id" type = "int" default = 0 }
     param "group" { description = "Optional primary group" type = "string" default = "" }
     param "home" { description = "Optional home directory" type = "string" default = "" }
     param "shell" { description = "Optional login shell" type = "string" default = "" }
     param "system" { description = "Create a system account" type = "bool" default = false }
+    param "remove_home" { description = "When ensure = :absent: also remove the home directory and mail spool (userdel -r)" type = "bool" default = false }
   }
 
   resource "authorized_key" {
-    description = "Ensure an SSH authorized key is present"
+    description = "Ensure an SSH authorized key is present or absent"
     script = "resources/authorized_key.wisp"
     // read-modify-write on a shared authorized_keys file — parallel steps lose updates
     concurrency = "exclusive"
     param "user" { description = "Account name" type = "string" required = true }
     param "key" { description = "Authorized key line" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "home" { description = "Optional home directory override" type = "string" default = "" }
   }
 
-  resource "sudoers_dropin" {
-    description = "Ensure a sudoers.d drop-in file exists"
-    script = "resources/sudoers_dropin.wisp"
+  resource "sudoers_user" {
+    description = "Ensure a sudoers.d rule for a user exists or is absent"
+    script = "resources/sudoers_user.wisp"
     concurrency = "global"
-    param "name" { description = "Drop-in filename" type = "string" required = true }
-    param "content" { description = "sudoers content" type = "string" required = true }
+    param "user" { description = "Account the rule applies to" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "passwordless" { description = "Allow sudo without a password (NOPASSWD)" type = "bool" default = false }
+    param "commands" { description = "Command specification for the rule" type = "string" default = "ALL" }
     param "validate" { description = "Run visudo validation when available" type = "bool" default = true }
   }
 
+  // The absent steps converge on entities seeded during setup (run 1 checks
+  // every step before any apply, so they cannot target state a present step
+  // creates). Removal ordering: key while the user exists, user before its
+  // primary group.
   test "accounts_converge" {
-    description = "Group, user and authorized_key converge in a Debian container"
+    description = "Accounts create and remove converge in a Debian container"
     image = "debian:12"
+    // The seeded group is deliberately NOT named after the user: userdel
+    // removes a same-named primary group itself (USERGROUPS_ENAB), which
+    // would leave rm_group nothing to do.
+    setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && mkdir -p /home/cwold/.ssh /etc/sudoers.d && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old\\n' > /home/cwold/.ssh/authorized_keys && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
     verify = "tests/accounts_verify.wisp"
 
     step "group" {
@@ -67,6 +81,44 @@ package "linux_accounts" {
         home = "/home/cwtest"
         key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey config-weave"
       }
+    }
+
+    step "sudo" {
+      description = "Grant passwordless sudo"
+      resource = "sudoers_user"
+      requires = ["user"]
+      properties { user = "cwtest" passwordless = true }
+    }
+
+    step "rm_key" {
+      description = "Remove the seeded key line"
+      resource = "authorized_key"
+      properties {
+        user = "cwold"
+        home = "/home/cwold"
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old"
+        ensure = :absent
+      }
+    }
+
+    step "rm_sudo" {
+      description = "Remove the seeded sudoers rule"
+      resource = "sudoers_user"
+      properties { user = "cwold" ensure = :absent }
+    }
+
+    step "rm_user" {
+      description = "Remove the seeded user and its home"
+      resource = "user"
+      requires = ["rm_key"]
+      properties { name = "cwold" ensure = :absent remove_home = true }
+    }
+
+    step "rm_group" {
+      description = "Remove the seeded group once its user is gone"
+      resource = "group"
+      requires = ["rm_user"]
+      properties { name = "cwoldgrp" ensure = :absent }
     }
   }
 }
