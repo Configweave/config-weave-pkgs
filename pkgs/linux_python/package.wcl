@@ -6,7 +6,7 @@ package "linux_python" {
     script = "resources/pip_package.wisp"
     concurrency = "exclusive"
     param "name" { description = "Distribution name" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "version" { description = "Optional version to pin; empty means any version" type = "string" default = "" }
     param "virtualenv" { description = "Virtualenv path; empty uses the system interpreter" type = "string" default = "" }
     param "executable" { description = "pip executable name" type = "string" default = "pip3" }
@@ -14,7 +14,7 @@ package "linux_python" {
 
   // pip_package's install apply pulls from an index, so its converge path
   // needs the network and stays untested; state detection and the
-  // ensure = "absent" uninstall are exercised offline against a
+  // ensure = :absent uninstall are exercised offline against a
   // hand-crafted local wheel.
   test "pip_state_and_uninstall" {
     description = "pip_package detects installed packages and ensure = absent uninstalls one"
@@ -33,13 +33,13 @@ package "linux_python" {
       description = "a package that was never installed is already absent"
       resource = "pip_package"
       expect = "already_configured"
-      properties { name = "cw-not-a-package" ensure = "absent" }
+      properties { name = "cw-not-a-package" ensure = :absent }
     }
 
     step "uninstall" {
       description = "uninstall the wheel pre-seeded by setup"
       resource = "pip_package"
-      properties { name = "cwtest" ensure = "absent" }
+      properties { name = "cwtest" ensure = :absent }
     }
   }
 }

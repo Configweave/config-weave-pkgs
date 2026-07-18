@@ -17,7 +17,7 @@ fn want_present(params: Value) -> Result[bool, string] {
     let e = param_str(params, "ensure", "present")
     if e == "present" { return Ok(true) }
     if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
 fn norm_mode(mode: string) -> string {
@@ -70,7 +70,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if p == "" { return Err("missing 'path' parameter") }
     if !want_present(params)? {
         if !fs::exists(p) { return Ok(ApplyResult::Success) }
-        if fs::is_dir(p) { return Err("path is a directory; use linux_files.directory with ensure = \"absent\"") }
+        if fs::is_dir(p) { return Err("path is a directory; use linux_files.directory with ensure = :absent") }
         log::info("deleting " + p)
         fs::delete(p)?
         return Ok(ApplyResult::Success)

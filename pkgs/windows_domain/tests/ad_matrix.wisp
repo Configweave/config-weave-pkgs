@@ -8,12 +8,12 @@
 //   member01 member server joining corp.example.com, then    (domain_member,
 //            leaving it for a workgroup                       workgroup_member)
 //   dc02     additional DC replicated into corp.example.com, (domain_controller,
-//            then demoted again                               ensure = "absent")
+//            then demoted again                               ensure = :absent)
 //   dc-alt   a second, independent forest alt.test           (domain_controller, first DC)
 //
 // The same domain_controller resource serves every DC stage: promotion
 // discovers whether the domain answers (first DC vs additional DC) and
-// ensure = "absent" demotes.
+// ensure = :absent demotes.
 //
 // Credentials: the windows-server-2025 template's built-in Administrator is
 // `vmlab123!`; after dc01 promotes, that account becomes CORP\Administrator.
@@ -153,7 +153,7 @@ fn run(lab: Lab) -> Result[bool, string] {
     }
     lab.log("dc-alt is up as a DC for alt.test")
 
-    // --- dc02 again: demote (ensure = "absent") -------------------------
+    // --- dc02 again: demote (ensure = :absent) -------------------------
     lab.log("demoting dc02 back out of corp.example.com")
     promote(dc2, "windows_domain.domain_controller",
         Value::Map(#{

@@ -6,7 +6,7 @@ package "linux_packages" {
     script = "resources/package.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "version" { description = "Optional version to pin when present (apt/dnf/yum/zypper); empty means any version" type = "string" default = "" }
     param "manager" { description = "Package manager override: auto, apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg, opkg, rpm-ostree, flatpak, snap, nix, or guix" type = "string" default = "auto" }
   }
@@ -65,7 +65,7 @@ package "linux_packages" {
     script = "resources/package_hold.wisp"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: present (held) or absent (not held)" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present (held) or :absent (not held)" type = "symbol" default = :present }
     param "manager" { description = "Package manager override: auto, apt, dnf5, dnf or yum" type = "string" default = "auto" }
   }
 
@@ -179,7 +179,7 @@ package "linux_packages" {
     step "remove" {
       description = "Remove the preinstalled tzdata package (offline)"
       resource = "package"
-      properties { name = "tzdata" manager = "apt" ensure = "absent" }
+      properties { name = "tzdata" manager = "apt" ensure = :absent }
     }
 
     step "hold" {
@@ -193,7 +193,7 @@ package "linux_packages" {
       description = "Release the hold setup placed on gzip"
       resource = "package_hold"
       requires = ["hold"]
-      properties { name = "gzip" manager = "apt" ensure = "absent" }
+      properties { name = "gzip" manager = "apt" ensure = :absent }
     }
 
     step "debconf" {

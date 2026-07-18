@@ -6,7 +6,7 @@ package "windows_installers" {
     script = "resources/msi_package.wisp"
     concurrency = "exclusive"
     param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "path" { description = "Local path or HTTP(S) URL of the .msi (required when present)" type = "string" default = "" }
     param "args" { description = "Extra msiexec arguments (e.g. property assignments)" type = "string" default = "" }
   }
@@ -27,7 +27,7 @@ package "windows_installers" {
   // {23170F69-40C1-2702-VVVV-000001000000} pattern (VVVV = version). The
   // exe_installer step is fully offline: cmd.exe stands in as the
   // "installer", exercising the creates-guard, download-less path and the
-  // Start-Process argument handling. The ensure = "absent" step asserts the
+  // Start-Process argument handling. The ensure = :absent step asserts the
   // detection path against a ProductCode that was never installed (a real
   // uninstall would first need an MSI installed just to remove it).
   test "installers_converge" {
@@ -60,7 +60,7 @@ package "windows_installers" {
       description = "A never-installed ProductCode is already absent"
       resource = "msi_package"
       expect = "already_configured"
-      properties { product_id = "{00000000-0000-0000-0000-000000000000}" ensure = "absent" }
+      properties { product_id = "{00000000-0000-0000-0000-000000000000}" ensure = :absent }
     }
   }
 }

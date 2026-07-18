@@ -11,7 +11,7 @@ fn want_present(params: Value) -> Result[bool, string] {
     let e = param_str(params, "ensure", "present")
     if e == "present" { return Ok(true) }
     if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
 fn manager(params: Value) -> string {

@@ -6,7 +6,7 @@ package "linux_files" {
     script = "resources/file.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "content" { description = "Desired file content" type = "string" default = "" }
     param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
     param "owner" { description = "Optional file owner" type = "string" default = "" }
@@ -30,11 +30,11 @@ package "linux_files" {
     script = "resources/directory.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute directory path" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
     param "owner" { description = "Optional directory owner" type = "string" default = "" }
     param "group" { description = "Optional directory group" type = "string" default = "" }
-    param "recursive" { description = "When ensure = \"absent\": allow removing the directory and its contents" type = "bool" default = false }
+    param "recursive" { description = "When ensure = :absent: allow removing the directory and its contents" type = "bool" default = false }
   }
 
   resource "line" {
@@ -43,7 +43,7 @@ package "linux_files" {
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
     param "line" { description = "The exact line" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
   }
 
@@ -52,7 +52,7 @@ package "linux_files" {
     script = "resources/symlink.wisp"
     concurrency = "parallel"
     param "path" { description = "Symlink path" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "target" { description = "Symlink target (required when present)" type = "string" default = "" }
   }
 
@@ -61,7 +61,7 @@ package "linux_files" {
     script = "resources/block.wisp"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "block" { description = "Block body placed between the markers (required when present)" type = "string" default = "" }
     param "marker_label" { description = "Marker label used in the BEGIN/END comment lines" type = "string" default = "config-weave" }
     param "create" { description = "Create the file if absent (present only)" type = "bool" default = true }
@@ -212,13 +212,13 @@ TMPL
     step "rmline" {
       description = "Remove a line"
       resource = "line"
-      properties { path = "/tmp/cw-seed.txt" line = "two" ensure = "absent" }
+      properties { path = "/tmp/cw-seed.txt" line = "two" ensure = :absent }
     }
 
     step "rmpath" {
       description = "Remove a file"
       resource = "file"
-      properties { path = "/tmp/cw-del.txt" ensure = "absent" }
+      properties { path = "/tmp/cw-del.txt" ensure = :absent }
     }
 
     step "extract" {

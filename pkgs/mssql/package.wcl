@@ -9,7 +9,7 @@ package "mssql" {
     description = "Install or uninstall a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
     script = "resources/instance.wisp"
     concurrency = "global"
-    param "ensure"                { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure"                { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); also required for ensure = absent (runs the uninstall)" type = "string" default = "" }
     param "instance"              { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
     param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN; when ensure = absent: features to remove (SQLENGINE removes the whole instance)" type = "string" default = "SQLENGINE" }
@@ -50,7 +50,7 @@ package "mssql" {
     script = "resources/login.wisp"
     concurrency = "parallel"
     param "name"             { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
-    param "ensure"           { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure"           { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "auth"             { description = "Authentication type: windows or sql" type = "string" default = "windows" }
     param "password"         { description = "Password for SQL logins — plaintext; cannot be read back so drift is undetectable (see force_password)" type = "string" default = "" }
     param "default_database" { description = "Default database for the login" type = "string" default = "master" }
@@ -67,11 +67,11 @@ package "mssql" {
   resource "database" {
     description = "Ensure a database exists with the desired recovery model, owner and compatibility level, or is absent (drops after forcing SINGLE_USER)"
     script = "resources/database.wisp"
-    // the ensure = "absent" drop path forces SINGLE_USER WITH ROLLBACK
+    // the ensure = :absent drop path forces SINGLE_USER WITH ROLLBACK
     // IMMEDIATE, so distinct-database creates serialize too
     concurrency = "exclusive"
     param "name"                { description = "Database name" type = "string" required = true }
-    param "ensure"              { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure"              { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "recovery_model"      { description = "Recovery model: FULL, SIMPLE or BULK_LOGGED; empty = engine default" type = "string" default = "" }
     param "collation"           { description = "Collation set at CREATE; existing-database mismatch is reported as an error (no in-place change)" type = "string" default = "" }
     param "owner"               { description = "Login to own the database (ALTER AUTHORIZATION); empty = leave as-is" type = "string" default = "" }
@@ -203,7 +203,7 @@ package "mssql" {
     script = "resources/agent_job.wisp"
     concurrency = "parallel"
     param "name"         { description = "Job name" type = "string" required = true }
-    param "ensure"       { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure"       { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "command"      { description = "Command for the job's single step (required when present)" type = "string" default = "" }
     param "subsystem"    { description = "Job step subsystem: TSQL, CmdExec or PowerShell" type = "string" default = "TSQL" }
     param "step_name"    { description = "Name of the job's single step" type = "string" default = "Step 1" }
@@ -299,13 +299,13 @@ package "mssql" {
     step "drop_login" {
       description = "Drop the login pre-seeded by setup"
       resource = "login"
-      properties { name = "cw_drop_login" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { name = "cw_drop_login" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "drop_db" {
       description = "Drop the database pre-seeded by setup"
       resource = "database"
-      properties { name = "cw_drop_db" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { name = "cw_drop_db" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "job" {
@@ -317,7 +317,7 @@ package "mssql" {
     step "drop_job" {
       description = "Delete the Agent job pre-seeded by setup"
       resource = "agent_job"
-      properties { name = "cw_drop_job" ensure = "absent" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { name = "cw_drop_job" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "cdc_db" {

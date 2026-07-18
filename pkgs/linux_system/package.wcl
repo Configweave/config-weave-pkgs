@@ -62,7 +62,7 @@ package "linux_system" {
     script = "resources/cron_job.wisp"
     concurrency = "parallel"
     param "name" { description = "Job name (also the cron.d filename; no dots)" type = "string" required = true }
-    param "ensure" { description = "Desired state: present or absent" type = "string" default = "present" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "schedule" { description = "Cron schedule such as '*/5 * * * *' (required when present)" type = "string" default = "" }
     param "command" { description = "Command to run (required when present)" type = "string" default = "" }
     param "user" { description = "User to run as" type = "string" default = "root" }
@@ -122,7 +122,7 @@ package "linux_system" {
     step "remove" {
       description = "Remove a cron job"
       resource = "cron_job"
-      properties { name = "cw-rm-job" ensure = "absent" }
+      properties { name = "cw-rm-job" ensure = :absent }
     }
   }
 

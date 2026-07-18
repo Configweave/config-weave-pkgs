@@ -4,18 +4,18 @@ package "windows_domain" {
   // One resource for the whole DC lifecycle: promotion discovers whether the
   // domain already answers (nltest locator) — undiscoverable creates the
   // forest (first DC), discoverable joins as an additional DC — and
-  // ensure = "absent" demotes. DNS must already point at an existing DC when
+  // ensure = :absent demotes. DNS must already point at an existing DC when
   // one exists, or a same-named second forest results.
   resource "domain_controller" {
-    description = "Ensure this server is (or is not) a domain controller — creates the forest when the domain does not exist yet, joins it as an additional DC when it does, and demotes with ensure = \"absent\""
+    description = "Ensure this server is (or is not) a domain controller — creates the forest when the domain does not exist yet, joins it as an additional DC when it does, and demotes with ensure = :absent"
     script = "resources/domain_controller.wisp"
     concurrency = "global"
     param "domain_name"         { description = "Domain FQDN, e.g. corp.example.com" type = "string" required = true }
-    param "ensure"              { description = "\"present\" promotes, \"absent\" demotes" type = "string" default = "present" }
+    param "ensure"              { description = ":present promotes, :absent demotes" type = "symbol" default = :present }
     param "safe_mode_password"  { description = "DSRM (Directory Services Restore Mode) password — required for promotion; plaintext in the playbook" type = "string" default = "" }
     param "credential_user"     { description = "Domain admin (UPN or DOMAIN\\user) — required when joining an existing domain; optional for demotion" type = "string" default = "" }
     param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" default = "" }
-    param "local_admin_password" { description = "Local Administrator password after demotion — required with ensure = \"absent\"" type = "string" default = "" }
+    param "local_admin_password" { description = "Local Administrator password after demotion — required with ensure = :absent" type = "string" default = "" }
     param "last_dc_in_domain"   { description = "Demotion only: this is the domain's last DC — remove the domain, its partitions and DNS zone with it" type = "bool" default = false }
     param "force_removal"       { description = "Demotion only: force removal even when the DC cannot reach the domain (leaves stale metadata to clean up)" type = "bool" default = false }
     param "install_dns"         { description = "Install and configure the DNS Server role" type = "bool" default = true }

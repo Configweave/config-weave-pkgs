@@ -16,7 +16,7 @@ fn want_present(params: Value) -> Result[bool, string] {
     let e = param_str(params, "ensure", "present")
     if e == "present" { return Ok(true) }
     if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected \"present\" or \"absent\")")
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
@@ -128,7 +128,7 @@ fn promote_first(params: Value, domain: string, pw: string) -> Result[ApplyResul
     Ok(ApplyResult::RebootRequired)   // DC promotion always needs a reboot to finish
 }
 
-// Demote this DC (ensure = "absent").
+// Demote this DC (ensure = :absent).
 fn demote(params: Value) -> Result[ApplyResult, string] {
     let lap = param_str(params, "local_admin_password", "")
     if lap == "" { return Err("demoting a DC needs 'local_admin_password' (the machine's local Administrator password after demotion)") }
