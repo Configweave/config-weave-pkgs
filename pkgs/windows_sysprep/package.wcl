@@ -1,0 +1,110 @@
+package "windows_sysprep" {
+  description = "Generate unattend.xml answer files and generalize/reseal Windows with sysprep"
+
+  resource "unattend_file" {
+    description = "Ensure an unattend.xml answer file exists with the given oobeSystem settings (or verbatim content), or is absent"
+    script = "resources/unattend_file.wisp"
+    concurrency = "parallel"
+    param "path" { description = "Absolute path of the answer file; the default is where sysprep auto-discovers it" type = "string" default = "C:\\Windows\\System32\\Sysprep\\unattend.xml" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "content" { description = "Raw XML written verbatim; mutually exclusive with the structured params (skip_oobe_screens excepted — it is ignored in content mode)" type = "string" default = "" }
+    param "skip_oobe_screens" { description = "Emit the OOBE block that hides the EULA, local-account, OEM, online-account and wireless screens and sets ProtectYourPC=3" type = "bool" default = true }
+    param "admin_password" { description = "Local Administrator password — stored in PLAINTEXT in the generated XML" type = "string" default = "" }
+    param "autologon" { description = "Emit an AutoLogon block (requires admin_password)" type = "bool" default = false }
+    param "autologon_count" { description = "Number of automatic logons (AutoLogon LogonCount)" type = "int" default = 1 }
+    param "autologon_user" { description = "Account AutoLogon signs in as" type = "string" default = "Administrator" }
+    param "first_logon_commands" { description = "Command lines emitted as ordered FirstLogonCommands SynchronousCommand entries" type = "list" }
+    param "input_locale" { description = "InputLocale, such as 0409:00000409; empty omits" type = "string" default = "" }
+    param "system_locale" { description = "SystemLocale, such as en-US; empty omits" type = "string" default = "" }
+    param "user_locale" { description = "UserLocale, such as en-US; empty omits" type = "string" default = "" }
+    param "ui_language" { description = "UILanguage, such as en-US; empty omits" type = "string" default = "" }
+    param "timezone" { description = "Windows time zone name, such as AUS Eastern Standard Time; empty omits" type = "string" default = "" }
+  }
+
+  resource "sysprep" {
+    description = "Generalize and reseal this Windows installation with sysprep.exe — a destructive one-shot; check reads the Setup ImageState"
+    script = "resources/sysprep.wisp"
+    concurrency = "global"
+    param "generalize" { description = "Pass /generalize (strip SID, drivers and activation so the image can be cloned)" type = "bool" default = true }
+    param "mode" { description = "Reseal target: oobe or audit" type = "string" default = "oobe" }
+    param "shutdown" { description = "What sysprep does when finished: quit, shutdown or reboot" type = "string" default = "quit" }
+    param "unattend" { description = "Answer file passed as /unattend:<path>; empty still lets sysprep auto-discover C:\\Windows\\System32\\Sysprep\\unattend.xml" type = "string" default = "" }
+    param "vm" { description = "Pass /mode:vm (VM-optimized generalize; requires generalize = true and mode = oobe)" type = "bool" default = false }
+  }
+
+  // The XML builder is OS-independent, so it converges in a Linux container
+  // against a /tmp path — this is the part of the package that can run today.
+  test "unattend_generates" {
+    description = "unattend_file renders escaped oobeSystem XML, honors the content escape hatch, and converges"
+    image = "debian:12"
+    verify = "tests/unattend_verify.wisp"
+
+    step "full" {
+      description = "All structured params, including characters that need XML escaping"
+      resource = "unattend_file"
+      properties {
+        path = "/tmp/cw-unattend/unattend.xml"
+        admin_password = "P@ss<&>'\"w"
+        autologon = true
+        autologon_count = 3
+        first_logon_commands = ["cmd /c net accounts /maxpwage:unlimited", "cmd /c echo a & echo b"]
+        input_locale = "0409:00000409"
+        system_locale = "en-US"
+        user_locale = "en-US"
+        ui_language = "en-US"
+        timezone = "AUS Eastern Standard Time"
+      }
+    }
+
+    step "raw" {
+      description = "content is written verbatim"
+      resource = "unattend_file"
+      properties { path = "/tmp/cw-unattend/raw.xml" content = "<unattend xmlns=\"urn:schemas-microsoft-com:unattend\"/>\n" }
+    }
+
+    step "conflict" {
+      description = "content plus a structured param is rejected"
+      resource = "unattend_file"
+      expect = "error"
+      properties { path = "/tmp/cw-unattend/x.xml" content = "<unattend/>" admin_password = "x" }
+    }
+
+    step "ghost_absent" {
+      description = "A never-written file with ensure = absent is already configured"
+      resource = "unattend_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-unattend/ghost.xml" ensure = :absent }
+    }
+  }
+
+  // Runs on its own disposable VM — deliberately NOT group = "win2025":
+  // generalizing reseals the machine, which would wreck the shared instance.
+  // shutdown = "quit" keeps the VM up so the three-run protocol converges
+  // (run 2 reseals, the re-check reads the reseal ImageState, run 3 is
+  // already_configured). Blocked until the windows-server-2025 template boot
+  // issue clears.
+  test "sysprep_reseals" {
+    description = "unattend_file feeds sysprep, which generalizes and reseals to OOBE with /quit"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    verify = "tests/sysprep_verify.wisp"
+
+    step "answer_file" {
+      description = "Drop the answer file where sysprep auto-discovers it"
+      resource = "unattend_file"
+      properties {
+        admin_password = "vmlab123!"
+        autologon = true
+        first_logon_commands = ["cmd /c net accounts /maxpwage:unlimited"]
+        timezone = "UTC"
+      }
+    }
+
+    step "reseal" {
+      description = "Generalize and reseal to OOBE, staying up (/quit)"
+      resource = "sysprep"
+      requires = ["answer_file"]
+      properties { shutdown = "quit" unattend = "C:\\Windows\\System32\\Sysprep\\unattend.xml" vm = true }
+    }
+  }
+}

@@ -40,7 +40,8 @@ resource.
 - `linux_kde`: KDE Plasma KConfig entries.
 
 Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
-`windows_registry`, `windows_updates`, `windows_domain`, `windows_account`,
+`windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
+`windows_account`,
 `windows_service`, `windows_network`, `windows_share`, `windows_files`,
 `windows_defender`) and the cross-platform `mssql` package round out the
 library.
