@@ -18,27 +18,21 @@ package "linux_apt" {
   }
 
   resource "repository" {
-    description = "Manage an apt sources.list.d file"
+    description = "Ensure an apt sources.list.d file exists or is absent"
     script = "resources/repository.wisp"
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .list" type = "string" required = true }
-    param "content" { description = "Repository file content" type = "string" required = true }
-  }
-
-  resource "repository_deb822" {
-    description = "Manage a modern deb822 .sources file"
-    script = "resources/repository_deb822.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Repository file basename without .sources" type = "string" required = true }
-    param "content" { description = "deb822-format repository content" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
   }
 
   resource "signing_key" {
-    description = "Install an apt signing key under /etc/apt/keyrings"
+    description = "Ensure an apt signing key under /etc/apt/keyrings exists or is absent"
     script = "resources/signing_key.wisp"
     concurrency = "exclusive"
     param "name" { description = "Keyring basename" type = "string" required = true }
-    param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent (removes both .asc and .gpg)" type = "symbol" default = :present }
+    param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
     param "dearmor" { description = "Also produce a binary .gpg keyring via gpg --dearmor" type = "bool" default = true }
   }
 
@@ -75,10 +69,13 @@ package "linux_apt" {
     }
   }
 
-  test "apt_repository_file" {
-    description = "repository writes a deterministic source file"
+  // The absent steps converge on files seeded during setup (run 1 checks
+  // every step before any apply).
+  test "repositories_and_keys_converge" {
+    description = "repository and signing_key add and remove converge"
     image = "debian:12"
     group = "debian"
+    setup = "mkdir -p /etc/apt/sources.list.d /etc/apt/keyrings && echo 'deb http://stale.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-stale.list && echo stale-key > /etc/apt/keyrings/cw-stale.asc"
     verify = "tests/apt_repository_verify.wisp"
 
     step "repo" {
@@ -89,21 +86,11 @@ package "linux_apt" {
         content = "deb http://deb.debian.org/debian bookworm main\n"
       }
     }
-  }
 
-  test "apt_modern_converge" {
-    description = "deb822 repository and apt signing key converge"
-    image = "debian:12"
-    group = "debian"
-    verify = "tests/apt_modern_verify.wisp"
-
-    step "deb822" {
-      description = "Write a deb822 sources file"
-      resource = "repository_deb822"
-      properties {
-        name = "cw-modern"
-        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: main\n"
-      }
+    step "rm_repo" {
+      description = "Remove the seeded stale repository"
+      resource = "repository"
+      properties { name = "cw-stale" ensure = :absent }
     }
 
     step "key" {
@@ -114,6 +101,12 @@ package "linux_apt" {
         dearmor = false
         content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
       }
+    }
+
+    step "rm_key" {
+      description = "Remove the seeded stale key"
+      resource = "signing_key"
+      properties { name = "cw-stale" ensure = :absent }
     }
   }
 

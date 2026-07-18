@@ -7,23 +7,40 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+}
+
 fn repo_path(name: string) -> string {
     "/etc/yum.repos.d/" + name + ".repo"
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
-    let content = param_str(params, "content", "")
     if name == "" { return Err("missing 'name' parameter") }
     let p = repo_path(name)
+    if !want_present(params)? {
+        if fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    let content = param_str(params, "content", "")
+    if content == "" { return Err("missing 'content' parameter") }
     if fs::is_file(p) && fs::read(p)? == content { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
-    let content = param_str(params, "content", "")
     if name == "" { return Err("missing 'name' parameter") }
     let p = repo_path(name)
+    if !want_present(params)? {
+        if fs::is_file(p) { fs::delete(p)? }
+        return Ok(ApplyResult::Success)
+    }
+    let content = param_str(params, "content", "")
+    if content == "" { return Err("missing 'content' parameter") }
     fs::mkdir(path::parent(p))?
     fs::write(p, content)?
     Ok(ApplyResult::Success)

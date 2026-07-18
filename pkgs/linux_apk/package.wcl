@@ -16,15 +16,40 @@ package "linux_apk" {
     param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
   }
 
+  resource "repository" {
+    description = "Ensure a repository line is present in or absent from /etc/apk/repositories"
+    script = "resources/repository.wisp"
+    // read-modify-write on the shared repositories file
+    concurrency = "exclusive"
+    param "url" { description = "Repository line, such as https://dl-cdn.alpinelinux.org/alpine/v3.20/community" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
   test "apk_existing_package" {
-    description = "apk installed package checks work in Alpine"
+    description = "apk installed package checks and repository edits work in Alpine"
     image = "alpine:3.20"
+    setup = "echo 'https://stale.invalid/alpine/v3.20/testing' >> /etc/apk/repositories"
+    verify = "tests/apk_verify.wisp"
 
     step "alpine-baselayout-installed" {
       description = "alpine-baselayout is installed in Alpine"
       resource = "package"
       expect = "already_configured"
       properties { name = "alpine-baselayout" }
+    }
+
+    step "repo" {
+      // edge/testing is NOT in the image's default repositories file, so the
+      // step genuinely converges (main/community already ship enabled).
+      description = "Add a repository line"
+      resource = "repository"
+      properties { url = "https://dl-cdn.alpinelinux.org/alpine/edge/testing" }
+    }
+
+    step "rm_repo" {
+      description = "Remove the seeded stale repository line"
+      resource = "repository"
+      properties { url = "https://stale.invalid/alpine/v3.20/testing" ensure = :absent }
     }
   }
 }

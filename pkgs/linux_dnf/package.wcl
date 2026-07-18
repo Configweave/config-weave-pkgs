@@ -11,26 +11,28 @@ package "linux_dnf" {
   }
 
   resource "cache_updated" {
-    description = "Run makecache once per marker (dnf5, dnf, microdnf or yum)"
+    description = "Run makecache when the last refresh is older than max_age (dnf5, dnf, microdnf or yum)"
     script = "resources/cache_updated.wisp"
     concurrency = "exclusive"
-    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+    param "max_age" { description = "Refresh when the last update is older than this span, such as 30m, 24h or 7d" type = "string" default = "24h" }
   }
 
   resource "repository" {
-    description = "Manage a yum/dnf .repo file"
+    description = "Ensure a yum/dnf .repo file exists or is absent"
     script = "resources/repository.wisp"
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .repo" type = "string" required = true }
-    param "content" { description = "Repository file content" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
   }
 
   resource "gpg_key" {
-    description = "Install and import an RPM GPG key"
+    description = "Ensure an RPM GPG key file exists (imported) or is absent"
     script = "resources/gpg_key.wisp"
     concurrency = "exclusive"
     param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
-    param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent (removes the key file; an already-imported rpmdb key stays)" type = "symbol" default = :present }
+    param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
   }
 
   resource "hold" {
@@ -59,10 +61,14 @@ package "linux_dnf" {
     }
   }
 
+  // The absent steps converge on files seeded during setup (run 1 checks
+  // every step before any apply). gpg_key's absent leg only deletes the key
+  // file, so it converges offline unlike its rpm --import present path.
   test "yum_repo_file" {
-    description = "repository writes a deterministic .repo file"
+    description = "repository and gpg_key add and remove converge"
     image = "fedora:latest"
     group = "fedora"
+    setup = "mkdir -p /etc/yum.repos.d /etc/pki/rpm-gpg && printf '[cw-stale]\\nenabled=0\\n' > /etc/yum.repos.d/cw-stale.repo && echo stale-key > /etc/pki/rpm-gpg/cw-stale.asc"
     verify = "tests/yum_repository_verify.wisp"
 
     step "repo" {
@@ -72,6 +78,18 @@ package "linux_dnf" {
         name = "cw-test"
         content = "[cw-test]\nname=Config Weave Test\nbaseurl=https://example.invalid/repo\nenabled=0\n"
       }
+    }
+
+    step "rm_repo" {
+      description = "Remove the seeded stale .repo file"
+      resource = "repository"
+      properties { name = "cw-stale" ensure = :absent }
+    }
+
+    step "rm_key" {
+      description = "Remove the seeded stale GPG key file"
+      resource = "gpg_key"
+      properties { name = "cw-stale" ensure = :absent }
     }
   }
 }
