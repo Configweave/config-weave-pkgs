@@ -4,36 +4,61 @@ package "linux_facts" {
   gatherer "os_release" {
     description = "Read /etc/os-release and kernel facts"
     script = "gatherers/os_release.wisp"
+    returns "family" { description = "OS family (linux, windows, macos)" type = "string" }
+    returns "name" { description = "OS name" type = "string" }
+    returns "version" { description = "OS version" type = "string" }
+    returns "kernel" { description = "Kernel version" type = "string" }
+    returns "arch" { description = "CPU architecture" type = "string" }
+    returns "id" { description = "os-release ID (debian, arch, ...)" type = "string" }
+    returns "version_id" { description = "os-release VERSION_ID" type = "string" }
+    returns "pretty_name" { description = "os-release PRETTY_NAME" type = "string" }
   }
 
   gatherer "package_manager" {
     description = "Detect the host package manager"
     script = "gatherers/package_manager.wisp"
+    returns "manager" { description = "Detected manager (apt, dnf, pacman, zypper, apk, ...)" type = "string" }
+    returns "known" { description = "True when a supported manager was found" type = "bool" }
   }
 
   gatherer "init_system" {
     description = "Detect the init/service manager"
     script = "gatherers/init_system.wisp"
+    returns "init" { description = "Detected init system (systemd, openrc, sysvinit, ...)" type = "string" }
+    returns "systemd" { description = "True when systemd is the init system" type = "bool" }
   }
 
   gatherer "network" {
     description = "Collect hostname and basic address information"
     script = "gatherers/network.wisp"
+    returns "hostname" { description = "Short hostname" type = "string" }
+    returns "fqdn" { description = "Fully qualified domain name" type = "string" }
+    returns "default_ipv4" { description = "IPv4 address of the default route interface" type = "string" }
   }
 
   gatherer "services" {
     description = "List systemd services and their active state"
     script = "gatherers/services.wisp"
+    returns "available" { description = "True when systemctl was available to query" type = "bool" }
+    returns "count" { description = "Number of services listed" type = "int" }
+    returns "services" { description = "Unit name to { active, sub } state strings" type = "map" }
   }
 
   gatherer "mounts" {
     description = "List mounted filesystems from /proc/mounts"
     script = "gatherers/mounts.wisp"
+    returns "count" { description = "Number of mounted filesystems" type = "int" }
+    returns "has_root" { description = "True when / is among the mounts" type = "bool" }
+    returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount" type = "list" }
   }
 
   gatherer "getent" {
     description = "Look up an entry in a system database via getent"
     script = "gatherers/getent.wisp"
+    returns "database" { description = "The database that was queried" type = "string" }
+    returns "key" { description = "The key that was looked up (empty for enumeration)" type = "string" }
+    returns "found" { description = "True when the lookup returned at least one entry" type = "bool" }
+    returns "value" { description = "First matching getent line" type = "string" }
     param "database" { description = "Database such as passwd, group, hosts or services" type = "string" required = true }
     param "key" { description = "Optional key to look up; empty enumerates the database" type = "string" default = "" }
   }

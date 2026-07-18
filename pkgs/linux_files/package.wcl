@@ -110,12 +110,24 @@ package "linux_files" {
   gatherer "path_stat" {
     description = "Report a path's existence, type, size and mode"
     script = "gatherers/path_stat.wisp"
+    returns "path" { description = "The path that was examined" type = "string" }
+    returns "exists" { description = "True when the path exists" type = "bool" }
+    returns "size" { description = "Size in bytes (only when exists)" type = "int" }
+    returns "is_file" { description = "True for a regular file (only when exists)" type = "bool" }
+    returns "is_dir" { description = "True for a directory (only when exists)" type = "bool" }
+    returns "is_symlink" { description = "True for a symlink (only when exists)" type = "bool" }
+    returns "mode" { description = "Unix permission bits (only when exists)" type = "int" }
+    returns "modified" { description = "mtime as a unix timestamp (only when exists)" type = "int" }
     param "path" { description = "Target path" type = "string" required = true }
   }
 
   gatherer "paths_matching" {
     description = "List files under a root matching a glob pattern"
     script = "gatherers/paths_matching.wisp"
+    returns "root" { description = "The root the glob ran under" type = "string" }
+    returns "pattern" { description = "The glob pattern" type = "string" }
+    returns "count" { description = "Number of matches" type = "int" }
+    returns "matches" { description = "Matching paths as strings" type = "list" }
     param "path" { description = "Root directory" type = "string" required = true }
     param "pattern" { description = "Glob pattern relative to the root" type = "string" default = "*" }
   }

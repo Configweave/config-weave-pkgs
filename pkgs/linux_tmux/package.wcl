@@ -4,12 +4,18 @@ package "linux_tmux" {
   gatherer "tmux_paths" {
     description = "Report tmux configuration paths for a target home directory"
     script = "gatherers/tmux_paths.wisp"
+    returns "home" { description = "Resolved home directory" type = "string" }
+    returns "config" { description = "Path of the tmux.conf in effect" type = "string" }
+    returns "tmuxinator_dir" { description = "tmuxinator layouts directory" type = "string" }
+    returns "teamocil_dir" { description = "teamocil layouts directory" type = "string" }
     param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
   }
 
   gatherer "tmux_version" {
     description = "Detect the tmux binary and version"
     script = "gatherers/tmux_version.wisp"
+    returns "installed" { description = "True when the tmux binary is on PATH" type = "bool" }
+    returns "version" { description = "tmux version string (empty when not installed)" type = "string" }
   }
 
   resource "tmux_conf" {

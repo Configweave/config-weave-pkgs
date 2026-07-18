@@ -242,6 +242,13 @@ package "mssql" {
   gatherer "instance_info" {
     description = "Report SQL Server version, edition, collation and HADR state from SERVERPROPERTY"
     script = "gatherers/instance_info.wisp"
+    returns "version" { description = "SERVERPROPERTY ProductVersion" type = "string" }
+    returns "edition" { description = "SERVERPROPERTY Edition" type = "string" }
+    returns "product_level" { description = "SERVERPROPERTY ProductLevel (RTM, SPn)" type = "string" }
+    returns "engine_edition" { description = "SERVERPROPERTY EngineEdition code" type = "string" }
+    returns "hadr_enabled" { description = "SERVERPROPERTY IsHadrEnabled (1/0)" type = "string" }
+    returns "collation" { description = "Server collation" type = "string" }
+    returns "machine" { description = "SERVERPROPERTY MachineName" type = "string" }
     param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
     param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
     param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }

@@ -58,6 +58,8 @@ package "windows_packages" {
   gatherer "winget_packages" {
     description = "Enumerate installed winget packages (id, name, version)"
     script = "gatherers/winget_packages.wisp"
+    returns "count" { description = "Number of installed packages listed" type = "int" }
+    returns "packages" { description = "One { name, id, version } map per installed package" type = "list" }
   }
 
   // The vmlab guests have NAT internet (the mssql win_install scenario

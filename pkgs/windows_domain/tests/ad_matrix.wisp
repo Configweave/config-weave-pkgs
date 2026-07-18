@@ -25,6 +25,26 @@ use value
 fn s(v: string) -> Value { Value::String(v) }
 fn b(v: bool) -> Value { Value::Bool(v) }
 
+// Readers over the windows_domain.membership gatherer's value.
+fn gv_str(m: Value, key: string) -> string {
+    if let Some(v) = m.get(key) { if let Some(x) = v.as_string() { return x } }
+    ""
+}
+fn gv_bool(m: Value, key: string) -> bool {
+    if let Some(v) = m.get(key) { if let Some(x) = v.as_bool() { return x } }
+    false
+}
+fn gv_count(m: Value, key: string) -> int {
+    if let Some(v) = m.get(key) { if let Some(l) = v.as_list() { return l.len() } }
+    0
+}
+
+// The membership facts for a machine, via the package's own gatherer —
+// the scenario asserts through the same lens playbooks will use.
+fn membership(m: Machine) -> Result[Value, string] {
+    m.gather("windows_domain.membership", Value::Null)
+}
+
 // The AD-DS role install, applied before any promotion (the promotion
 // cmdlets ship with this role).
 fn role() -> Value {
@@ -98,7 +118,16 @@ fn run(lab: Lab) -> Result[bool, string] {
     if d1 != "corp.example.com" {
         return Err("dc01 is not a DC for corp.example.com: '" + d1 + "'")
     }
-    lab.log("dc01 is up as a DC for corp.example.com")
+    // The forest root holds every FSMO role — assert through the gatherer.
+    let m1 = membership(dc1)?
+    if !gv_bool(m1, "is_dc") || gv_str(m1, "domain") != "corp.example.com" {
+        return Err("membership gatherer disagrees on dc01: domain '" + gv_str(m1, "domain") + "'")
+    }
+    let fsmo = gv_count(m1, "fsmo_roles")
+    if fsmo != 5 {
+        return Err("dc01 should hold all 5 FSMO roles, gatherer reports {fsmo}")
+    }
+    lab.log("dc01 is up as a DC for corp.example.com (FSMO x5)")
 
     // --- member01: join the domain --------------------------------------
     lab.log("bringing up member01 (member server)")
@@ -110,11 +139,11 @@ fn run(lab: Lab) -> Result[bool, string] {
             "credential_user": s("CORP\\Administrator"),
             "credential_password": s("vmlab123!")
         }))?
-    let pm = mem.powershell("(Get-CimInstance Win32_ComputerSystem).PartOfDomain")?
-    if pm.stdout.trim() != "True" {
-        return Err("member01 did not join the domain: '" + pm.stdout.trim() + "'")
+    let pm = membership(mem)?
+    if !gv_bool(pm, "part_of_domain") || gv_str(pm, "role") != "member_server" {
+        return Err("member01 did not join as a member server (role '" + gv_str(pm, "role") + "')")
     }
-    lab.log("member01 joined corp.example.com")
+    lab.log("member01 joined corp.example.com as " + gv_str(pm, "role"))
 
     // --- dc02: additional DC into the existing domain -------------------
     lab.log("bringing up dc02 (additional DC)")
@@ -163,11 +192,14 @@ fn run(lab: Lab) -> Result[bool, string] {
             "credential_user": s("CORP\\Administrator"),
             "credential_password": s("vmlab123!")
         }))?
-    let role = dc2.powershell("(Get-CimInstance Win32_ComputerSystem).DomainRole")?
-    if role.stdout.trim() == "4" || role.stdout.trim() == "5" {
-        return Err("dc02 is still a DC after demotion (DomainRole=" + role.stdout.trim() + ")")
+    let m2 = membership(dc2)?
+    if gv_bool(m2, "is_dc") {
+        return Err("dc02 is still a DC after demotion (role '" + gv_str(m2, "role") + "')")
     }
-    lab.log("dc02 demoted (DomainRole=" + role.stdout.trim() + ")")
+    if gv_count(m2, "fsmo_roles") != 0 {
+        return Err("demoted dc02 still reports FSMO roles")
+    }
+    lab.log("dc02 demoted (role '" + gv_str(m2, "role") + "')")
 
     // --- member01 again: leave the domain for a workgroup ----------------
     lab.log("moving member01 out of the domain into workgroup TESTWG")
@@ -177,9 +209,9 @@ fn run(lab: Lab) -> Result[bool, string] {
             "credential_user": s("CORP\\Administrator"),
             "credential_password": s("vmlab123!")
         }))?
-    let wg = mem.powershell("$c=Get-CimInstance Win32_ComputerSystem; \"$($c.PartOfDomain)/$($c.Workgroup)\"")?
-    if wg.stdout.trim() != "False/TESTWG" {
-        return Err("member01 did not land in TESTWG: '" + wg.stdout.trim() + "'")
+    let wg = membership(mem)?
+    if gv_bool(wg, "part_of_domain") || gv_str(wg, "workgroup") != "TESTWG" {
+        return Err("member01 did not land in TESTWG (workgroup '" + gv_str(wg, "workgroup") + "')")
     }
     lab.log("member01 left the domain into TESTWG")
 

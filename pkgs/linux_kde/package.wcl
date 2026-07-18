@@ -4,12 +4,21 @@ package "linux_kde" {
   gatherer "kde_paths" {
     description = "Report KDE user configuration and data paths"
     script = "gatherers/kde_paths.wisp"
+    returns "home" { description = "Resolved home directory" type = "string" }
+    returns "config_dir" { description = "KDE config directory (~/.config)" type = "string" }
+    returns "local_share_dir" { description = "KDE data directory (~/.local/share)" type = "string" }
+    returns "has_kreadconfig6" { description = "True when kreadconfig6 is on PATH" type = "bool" }
+    returns "has_kwriteconfig6" { description = "True when kwriteconfig6 is on PATH" type = "bool" }
+    returns "has_plasma_apply_colorscheme" { description = "True when plasma-apply-colorscheme is on PATH" type = "bool" }
     param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
   }
 
   gatherer "kde_version" {
     description = "Detect available KDE Plasma configuration tools"
     script = "gatherers/kde_version.wisp"
+    returns "plasma_major" { description = "Plasma major version (0 when undetected)" type = "int" }
+    returns "has_kreadconfig6" { description = "True when the Plasma 6 kconfig tools are present" type = "bool" }
+    returns "has_legacy_kconfig_tools" { description = "True when only the Plasma 5 kconfig tools are present" type = "bool" }
   }
 
   resource "kconfig_entry" {

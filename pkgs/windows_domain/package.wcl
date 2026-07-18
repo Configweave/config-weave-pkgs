@@ -1,6 +1,22 @@
 package "windows_domain" {
   description = "Promote domain controllers and join machines to Active Directory"
 
+  // Membership facts for conditions and reporting: domain vs workgroup, the
+  // names involved, the machine's role, and — on a DC — the FSMO roles it
+  // holds (see the returns declarations).
+  gatherer "membership" {
+    description = "Report this machine's domain or workgroup membership, its names and role, and the FSMO roles it holds when it is a DC"
+    script = "gatherers/membership.wisp"
+    returns "computer_name" { description = "This machine's computer name" type = "string" }
+    returns "part_of_domain" { description = "True when domain-joined" type = "bool" }
+    returns "domain" { description = "Domain FQDN when joined; empty in a workgroup" type = "string" }
+    returns "workgroup" { description = "Workgroup name when not joined; empty in a domain" type = "string" }
+    returns "netbios_name" { description = "NetBIOS domain name (resolved on DCs; empty otherwise)" type = "string" }
+    returns "role" { description = "standalone_workstation | member_workstation | standalone_server | member_server | backup_dc | primary_dc" type = "string" }
+    returns "is_dc" { description = "True when this machine is a domain controller" type = "bool" }
+    returns "fsmo_roles" { description = "FSMO roles this DC holds (PDCEmulator, RIDMaster, InfrastructureMaster, SchemaMaster, DomainNamingMaster); empty on non-DCs" type = "list" }
+  }
+
   // One resource for the whole DC lifecycle: promotion discovers whether the
   // domain already answers (nltest locator) — undiscoverable creates the
   // forest (first DC), discoverable joins as an additional DC — and

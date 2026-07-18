@@ -26,9 +26,11 @@ test filter='':
 	{{CONFIG_WEAVE}} test . {{filter}}
 
 # Regenerate the HTML docs into docs/ (packages only — the harness
-# playbook's play/vars/gathers are not part of the public surface)
+# playbook's play/vars/gathers are not part of the public surface).
+# Clean first: the renderer never deletes, so removed pages linger.
 [group('docs')]
 docs:
+	rm -rf docs
 	{{CONFIG_WEAVE}} docs . docs --pkg-only
 
 # Regenerate weave.wispi for editor/LSP support
@@ -40,6 +42,7 @@ wispi:
 # server (live reload). Needs `wcl` on PATH.
 [group('docs'), doc("Rebuild + serve the package docs with live reload (needs wcl)")]
 docs-serve:
+	rm -rf docs
 	{{CONFIG_WEAVE}} docs . docs --pkg-only --serve --addr {{DOCS_ADDR}}
 
 # Serve the package docs and open them in the browser once the server responds
