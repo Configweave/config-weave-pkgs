@@ -1,0 +1,77 @@
+package "windows_service" {
+  description = "Manage Windows service installation, state and startup"
+
+  resource "service_installed" {
+    description = "Ensure a Windows service is registered with the SCM, or is removed"
+    script = "resources/service_installed.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name (the SCM key, not the display name)" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "path" { description = "Binary path the service runs (may include arguments); required when present, create-only" type = "string" default = "" }
+    param "display_name" { description = "Display name shown in the services console; create-only, empty defaults to the service name" type = "string" default = "" }
+    param "description" { description = "Service description; create-only" type = "string" default = "" }
+    param "startup" { description = "Startup type at create time: automatic, manual or disabled (drift is managed by service_startup)" type = "string" default = "automatic" }
+    param "user" { description = "Account the service runs as; create-only, empty uses LocalSystem" type = "string" default = "" }
+    param "password" { description = "Password for the service account; create-only, leave empty for built-in accounts" type = "string" default = "" }
+  }
+
+  resource "service_state" {
+    description = "Ensure a Windows service is running or stopped"
+    script = "resources/service_state.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+  }
+
+  resource "service_startup" {
+    description = "Ensure a Windows service has the desired startup type"
+    script = "resources/service_startup.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "startup" { description = "Desired startup type: automatic, manual or disabled" type = "string" required = true }
+  }
+
+  // service_installed converges by registering a service that never has to
+  // start (svchost with a real group is a valid, inert BinaryPathName), so no
+  // extra payload is needed. State/startup coverage uses the Print Spooler,
+  // which ships running with automatic startup on Server 2025 — stopping it
+  // and switching it to manual are both real converges that stay put.
+  test "service_management_converges" {
+    description = "Service registration, state and startup type converge"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/service_verify.wisp"
+
+    step "register_test_service" {
+      description = "Register the weave-testsvc service"
+      resource = "service_installed"
+      properties {
+        name = "weave-testsvc"
+        path = "C:\\Windows\\System32\\svchost.exe -k netsvcs"
+        display_name = "Weave Test Service"
+        description = "config-weave testlab service"
+        startup = "manual"
+      }
+    }
+
+    step "spooler_stopped" {
+      description = "Stop the Print Spooler"
+      resource = "service_state"
+      properties { name = "Spooler" state = "stopped" }
+    }
+
+    step "spooler_manual" {
+      description = "Switch the Print Spooler to manual startup"
+      resource = "service_startup"
+      properties { name = "Spooler" startup = "manual" }
+    }
+
+    step "ghost_service_absent" {
+      description = "A never-registered service with ensure = absent is already configured"
+      resource = "service_installed"
+      expect = "already_configured"
+      properties { name = "weave-ghost-svc" ensure = :absent }
+    }
+  }
+}

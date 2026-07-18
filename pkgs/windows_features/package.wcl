@@ -6,7 +6,7 @@ package "windows_features" {
     script = "resources/windows_optional_feature.wisp"
     concurrency = "exclusive"
     param "name" { description = "Feature name such as Microsoft-Hyper-V or NetFx3" type = "string" required = true }
-    param "enabled" { description = "Whether the feature should be enabled" type = "bool" default = true }
+    param "ensure" { description = "Desired state: :present (enabled) or :absent (disabled)" type = "symbol" default = :present }
   }
 
   resource "windows_capability" {

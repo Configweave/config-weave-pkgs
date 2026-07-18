@@ -10,31 +10,70 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn product_present(product_id: string) -> Result[bool, string] {
-    let base = "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
-    let wow = "\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
-    if registry::key_exists("HKLM" + base + product_id)? { return Ok(true) }
-    Ok(registry::key_exists("HKLM" + wow + product_id)?)
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
-// Idempotence guard: a `creates` path, or a product_id uninstall key.
-fn done(params: Value) -> Result[bool, string] {
-    let creates = param_str(params, "creates", "")
-    if creates != "" { return Ok(fs::exists(creates)) }
-    let product_id = param_str(params, "product_id", "")
-    if product_id != "" { return product_present(product_id) }
-    Err("exe_installer needs an idempotence guard: set 'creates' or 'product_id'")
+fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
+
+// Installed when every configured marker is satisfied: an install_path that
+// exists and/or an install_reg key that exists. At least one must be set.
+fn installed(params: Value) -> Result[bool, string] {
+    let install_path = param_str(params, "install_path", "")
+    let install_reg = param_str(params, "install_reg", "")
+    if install_path == "" && install_reg == "" {
+        return Err("exe_installer needs a detection marker: set 'install_path' or 'install_reg'")
+    }
+    if install_path != "" && !fs::exists(install_path) { return Ok(false) }
+    if install_reg != "" && !registry::key_exists(install_reg)? { return Ok(false) }
+    Ok(true)
+}
+
+// DisplayVersion under install_reg matches the wanted version. Only
+// meaningful when both 'version' and 'install_reg' are set.
+fn version_matches(params: Value) -> Result[bool, string] {
+    let want = param_str(params, "version", "")
+    let install_reg = param_str(params, "install_reg", "")
+    if want == "" || install_reg == "" { return Ok(true) }
+    if let Some(have) = registry::read(install_reg, "DisplayVersion")? {
+        return Ok(have.as_string().unwrap_or("") == want)
+    }
+    Ok(false)
+}
+
+// Start-Process an installer/uninstaller and map its exit code.
+fn run_installer(exe: string, args: string, what: string) -> Result[ApplyResult, string] {
+    let alist = if args != "" { " -ArgumentList " + ps_q(args) } else { "" }
+    let script = "$c = (Start-Process -FilePath " + ps_q(exe) + alist + " -Wait -PassThru).ExitCode; exit $c"
+    let out = shell::powershell(script, Value::Null)?
+    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
+    if !out.success { return Err(what + " exited " + str(out.code) + ": " + out.stderr.trim()) }
+    Ok(ApplyResult::Success)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    if done(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let is_in = installed(params)?
+    if !want_present(params)? {
+        if is_in { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    if !is_in { return Ok(CheckResult::NotConfigured) }
+    // Installed but at the wrong version: re-run the installer to upgrade.
+    if !version_matches(params)? { return Ok(CheckResult::NotConfigured) }
+    Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    if !want_present(params)? {
+        if !installed(params)? { return Ok(ApplyResult::Success) }
+        let un = param_str(params, "uninstall_path", "")
+        if un == "" { return Err("ensure = :absent needs 'uninstall_path' to remove the install") }
+        return run_installer(un, param_str(params, "uninstall_args", ""), "uninstaller")
+    }
     let src = param_str(params, "path", "")
-    let args = param_str(params, "args", "")
     if src == "" { return Err("missing 'path' parameter") }
     let local = if src.starts_with("http") {
         let f = path::join(fs::temp_dir()?, "config-weave-installer.exe")
@@ -43,10 +82,5 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         src
     }
-    let alist = if args != "" { " -ArgumentList " + ps_q(args) } else { "" }
-    let script = "$c = (Start-Process -FilePath " + ps_q(local) + alist + " -Wait -PassThru).ExitCode; exit $c"
-    let out = shell::powershell(script, Value::Null)?
-    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err("installer exited " + str(out.code) + ": " + out.stderr.trim()) }
-    Ok(ApplyResult::Success)
+    run_installer(local, param_str(params, "args", ""), "installer")
 }

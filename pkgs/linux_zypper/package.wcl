@@ -1,0 +1,33 @@
+package "linux_zypper" {
+  description = "Manage packages on zypper/SUSE systems"
+
+  resource "package" {
+    description = "Ensure an rpm package is installed or absent via zypper"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+  }
+
+  resource "cache_updated" {
+    description = "Run zypper refresh once per marker"
+    script = "resources/cache_updated.wisp"
+    concurrency = "exclusive"
+    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+  }
+
+  // Check-only test: installing/refreshing needs the network, so the
+  // existence probe on a base package is the honest offline test.
+  test "zypper_existing_package" {
+    description = "zypper/rpm installed package checks work in openSUSE"
+    image = "opensuse/leap:15.6"
+
+    step "filesystem-installed" {
+      description = "filesystem is installed in openSUSE"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "filesystem" }
+    }
+  }
+}

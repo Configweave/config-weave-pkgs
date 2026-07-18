@@ -1,0 +1,48 @@
+package "git" {
+  description = "Manage git configuration"
+
+  resource "config_entry" {
+    description = "Ensure a git config entry is present in or absent from the global or system config"
+    script = "resources/config_entry.wisp"
+    // read-modify-write on a shared gitconfig — parallel steps lose updates
+    concurrency = "exclusive"
+    param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase" type = "string" required = true }
+    param "value" { description = "Desired value (required when present)" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "scope" { description = "Config scope: global (~/.gitconfig) or system (/etc/gitconfig)" type = "string" default = "global" }
+    param "home" { description = "Home directory for global scope; defaults to the current user home" type = "string" default = "" }
+  }
+
+  // The file is written directly in git's INI dialect, so the resource needs
+  // no git binary and converges in a bare container.
+  test "git_config_converges" {
+    description = "Global git config entries converge in a Debian container"
+    image = "debian:12"
+    setup = "printf '[user]\\n\\tname = Old Name\\n[color]\\n\\tui = never\\n' > /root/.gitconfig"
+    verify = "tests/git_config_verify.wisp"
+
+    step "name" {
+      description = "Update the seeded user.name"
+      resource = "config_entry"
+      properties { key = "user.name" value = "Config Weave" home = "/root" }
+    }
+
+    step "email" {
+      description = "Add user.email"
+      resource = "config_entry"
+      properties { key = "user.email" value = "cw@example.invalid" home = "/root" }
+    }
+
+    step "subsection" {
+      description = "Add a subsectioned key"
+      resource = "config_entry"
+      properties { key = "branch.main.rebase" value = "true" home = "/root" }
+    }
+
+    step "rm_color" {
+      description = "Remove the seeded color.ui key"
+      resource = "config_entry"
+      properties { key = "color.ui" ensure = :absent home = "/root" }
+    }
+  }
+}

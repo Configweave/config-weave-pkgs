@@ -9,6 +9,13 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+}
+
 fn desired(data: string, kind: string) -> Result[Value, string] {
     if kind == "dword" || kind == "qword" {
         if let Some(i) = data.parse_int() {
@@ -37,6 +44,12 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let key = param_str(params, "key", "")
     let name = param_str(params, "name", "")
     if key == "" || name == "" { return Err("missing 'key' or 'name' parameter") }
+    if !want_present(params)? {
+        // A missing key means the value is absent too — don't let read error.
+        if !registry::key_exists(key)? { return Ok(CheckResult::AlreadyConfigured) }
+        if registry::read(key, name)?.is_some() { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
     let want = desired(param_str(params, "data", ""), param_str(params, "kind", "sz"))?
     if let Some(have) = registry::read(key, name)? {
         if matches(have, want) { return Ok(CheckResult::AlreadyConfigured) }
@@ -48,6 +61,16 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let key = param_str(params, "key", "")
     let name = param_str(params, "name", "")
     if key == "" || name == "" { return Err("missing 'key' or 'name' parameter") }
+    if !want_present(params)? {
+        // Tolerate an already-gone key or value.
+        if registry::key_exists(key)? {
+            if registry::read(key, name)?.is_some() {
+                log::info("deleting registry value " + key + "\\" + name)
+                registry::delete_value(key, name)?
+            }
+        }
+        return Ok(ApplyResult::Success)
+    }
     let kind = param_str(params, "kind", "sz")
     let want = desired(param_str(params, "data", ""), kind)?
     log::info("writing registry value " + key + "\\" + name)

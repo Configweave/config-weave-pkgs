@@ -1,0 +1,30 @@
+package "linux_apk" {
+  description = "Manage packages on apk/Alpine systems"
+
+  resource "package" {
+    description = "Ensure an apk package is installed or absent"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  resource "cache_updated" {
+    description = "Run apk update once per marker"
+    script = "resources/cache_updated.wisp"
+    concurrency = "exclusive"
+    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+  }
+
+  test "apk_existing_package" {
+    description = "apk installed package checks work in Alpine"
+    image = "alpine:3.20"
+
+    step "alpine-baselayout-installed" {
+      description = "alpine-baselayout is installed in Alpine"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "alpine-baselayout" }
+    }
+  }
+}

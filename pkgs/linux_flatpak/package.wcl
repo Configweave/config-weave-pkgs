@@ -1,0 +1,25 @@
+package "linux_flatpak" {
+  description = "Manage Flatpak applications and remotes"
+
+  resource "package" {
+    description = "Ensure a Flatpak application is installed or absent"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "id" { description = "Application id (e.g. org.mozilla.firefox)" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "remote" { description = "Remote to install from" type = "string" default = "flathub" }
+  }
+
+  resource "remote" {
+    description = "Ensure a Flatpak remote is configured or absent"
+    script = "resources/remote.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Remote name" type = "string" required = true }
+    param "url" { description = "Remote URL (required when :present)" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  // No container tests by design: installing a Flatpak needs the network and
+  // a configured remote (flathub), so nothing converges honestly in an
+  // offline container.
+}

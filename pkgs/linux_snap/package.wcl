@@ -1,0 +1,17 @@
+package "linux_snap" {
+  description = "Manage snap packages"
+
+  resource "package" {
+    description = "Ensure a snap package is installed or absent"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Snap name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "classic" { description = "Install with classic confinement" type = "bool" default = false }
+    param "channel" { description = "Channel to install from (e.g. latest/stable); empty means the default" type = "string" default = "" }
+  }
+
+  // No container tests by design: snapd needs systemd running to do
+  // anything, and installing a snap needs the network — neither converges
+  // honestly in an offline container.
+}

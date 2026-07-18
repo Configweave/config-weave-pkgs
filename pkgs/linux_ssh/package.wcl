@@ -1,0 +1,102 @@
+package "linux_ssh" {
+  description = "Manage SSH keys, known hosts and client/daemon configuration"
+
+  resource "authorized_key" {
+    description = "Ensure an SSH authorized key is present or absent"
+    script = "resources/authorized_key.wisp"
+    // read-modify-write on a shared authorized_keys file — parallel steps lose updates
+    concurrency = "exclusive"
+    param "user" { description = "Account name" type = "string" required = true }
+    param "key" { description = "Authorized key line" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "home" { description = "Optional home directory override" type = "string" default = "" }
+  }
+
+  resource "known_host" {
+    description = "Ensure a known_hosts entry is present"
+    script = "resources/known_host.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Host name the entry is for (informational)" type = "string" default = "" }
+    param "key" { description = "Full known_hosts line" type = "string" required = true }
+    param "home" { description = "Home directory owning ~/.ssh/known_hosts; defaults to the current user home" type = "string" default = "" }
+    param "path" { description = "Explicit known_hosts path override" type = "string" default = "" }
+  }
+
+  resource "ssh_config_setting" {
+    description = "Ensure an ssh client option is set via an ssh_config.d drop-in"
+    script = "resources/ssh_config_setting.wisp"
+    concurrency = "parallel"
+    param "key" { description = "ssh_config option name, such as StrictHostKeyChecking" type = "string" required = true }
+    param "value" { description = "Option value (required when present)" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "host" { description = "Host pattern the option applies to" type = "string" default = "*" }
+  }
+
+  resource "sshd_config_setting" {
+    description = "Ensure an sshd option is set via an sshd_config.d drop-in"
+    script = "resources/sshd_config_setting.wisp"
+    concurrency = "exclusive"
+    param "key" { description = "sshd_config option name, such as PasswordAuthentication" type = "string" required = true }
+    param "value" { description = "Option value (required when present)" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "validate" { description = "Run sshd -t validation when sshd is available" type = "bool" default = true }
+  }
+
+  // The absent steps converge on files seeded during setup (run 1 checks every
+  // step before any apply).
+  test "ssh_converges" {
+    description = "Keys, known hosts and config drop-ins converge in a Debian container"
+    image = "debian:12"
+    setup = "mkdir -p /root/.ssh /etc/ssh/sshd_config.d && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old\\n' > /root/.ssh/authorized_keys && printf 'X11Forwarding yes\\n' > /etc/ssh/sshd_config.d/50-config-weave-x11forwarding.conf"
+    verify = "tests/ssh_verify.wisp"
+
+    step "key" {
+      description = "Install an authorized key for root"
+      resource = "authorized_key"
+      properties {
+        user = "root"
+        home = "/root"
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey config-weave"
+      }
+    }
+
+    step "rm_key" {
+      description = "Remove the seeded key line"
+      resource = "authorized_key"
+      requires = ["key"]
+      properties {
+        user = "root"
+        home = "/root"
+        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old"
+        ensure = :absent
+      }
+    }
+
+    step "known" {
+      description = "Add a known_hosts entry"
+      resource = "known_host"
+      properties {
+        name = "cw-test.example"
+        key = "cw-test.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey"
+      }
+    }
+
+    step "client" {
+      description = "Set a client option"
+      resource = "ssh_config_setting"
+      properties { key = "StrictHostKeyChecking" value = "no" }
+    }
+
+    step "daemon" {
+      description = "Set a daemon option"
+      resource = "sshd_config_setting"
+      properties { key = "PasswordAuthentication" value = "no" }
+    }
+
+    step "rm_daemon" {
+      description = "Remove the seeded daemon drop-in"
+      resource = "sshd_config_setting"
+      properties { key = "X11Forwarding" ensure = :absent }
+    }
+  }
+}

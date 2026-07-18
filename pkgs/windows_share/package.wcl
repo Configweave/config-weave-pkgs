@@ -1,0 +1,42 @@
+package "windows_share" {
+  description = "Manage SMB shares"
+
+  resource "share" {
+    description = "Ensure an SMB share exists with the given path and access grants, or is absent"
+    script = "resources/share.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Share name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "path" { description = "Directory backing the share (created when missing); required when present" type = "string" default = "" }
+    param "description" { description = "Share description; empty leaves it unmanaged" type = "string" default = "" }
+    param "full_access" { description = "Accounts granted Full access; matched by exact name or the name after the domain/computer prefix" type = "list" }
+    param "change_access" { description = "Accounts granted Change access" type = "list" }
+    param "read_access" { description = "Accounts granted Read access" type = "list" }
+  }
+
+  test "share_converges" {
+    description = "An SMB share converges and absent detection works"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/share_verify.wisp"
+
+    step "data_share" {
+      description = "Share C:\\weave-share-test as weave-data"
+      resource = "share"
+      properties {
+        name = "weave-data"
+        path = "C:\\weave-share-test"
+        description = "config-weave test share"
+        full_access = ["Administrators"]
+      }
+    }
+
+    step "ghost_share_absent" {
+      description = "A never-created share with ensure = absent is already configured"
+      resource = "share"
+      expect = "already_configured"
+      properties { name = "weave-ghost-share" ensure = :absent }
+    }
+  }
+}

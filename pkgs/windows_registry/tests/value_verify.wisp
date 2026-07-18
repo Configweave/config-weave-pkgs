@@ -14,5 +14,6 @@ fn verify(facts: Value) -> Result[bool, string] {
     } else {
         return Ok(false)
     }
-    Ok(true)
+    if registry::read("HKLM\\Software\\ConfigWeaveTest", "never-written")?.is_some() { return Ok(false) }
+    Ok(registry::key_exists("HKLM\\Software\\ConfigWeaveTest\\Sub")?)
 }

@@ -1,0 +1,77 @@
+package "linux_dnf" {
+  description = "Manage packages on dnf/yum systems"
+
+  resource "package" {
+    description = "Ensure an rpm package is installed or absent via the dnf family"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+  }
+
+  resource "cache_updated" {
+    description = "Run makecache once per marker (dnf5, dnf, microdnf or yum)"
+    script = "resources/cache_updated.wisp"
+    concurrency = "exclusive"
+    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+  }
+
+  resource "repository" {
+    description = "Manage a yum/dnf .repo file"
+    script = "resources/repository.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Repository file basename without .repo" type = "string" required = true }
+    param "content" { description = "Repository file content" type = "string" required = true }
+  }
+
+  resource "gpg_key" {
+    description = "Install and import an RPM GPG key"
+    script = "resources/gpg_key.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
+    param "content" { description = "ASCII-armored GPG public key" type = "string" required = true }
+  }
+
+  resource "hold" {
+    description = "Ensure a versionlock on a package is present or absent"
+    script = "resources/hold.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present (held) or :absent (not held)" type = "symbol" default = :present }
+  }
+
+  // Untested by design: cache_updated hits the network (makecache), gpg_key
+  // runs `rpm --import` which rejects anything but a real key, and hold
+  // needs the versionlock plugin installed — none converge honestly in an
+  // offline container.
+
+  test "dnf_existing_package" {
+    description = "DNF-family installed package checks work in Fedora"
+    image = "fedora:latest"
+    group = "fedora"
+
+    step "filesystem-installed" {
+      description = "filesystem is installed in Fedora"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "filesystem" }
+    }
+  }
+
+  test "yum_repo_file" {
+    description = "repository writes a deterministic .repo file"
+    image = "fedora:latest"
+    group = "fedora"
+    verify = "tests/yum_repository_verify.wisp"
+
+    step "repo" {
+      description = "Write a .repo file"
+      resource = "repository"
+      properties {
+        name = "cw-test"
+        content = "[cw-test]\nname=Config Weave Test\nbaseurl=https://example.invalid/repo\nenabled=0\n"
+      }
+    }
+  }
+}

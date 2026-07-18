@@ -1,0 +1,112 @@
+package "windows_account" {
+  description = "Manage local and Active Directory users and groups"
+
+  resource "local_user" {
+    description = "Ensure a local user account exists with the desired attributes, or is absent"
+    script = "resources/local_user.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Local account name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "password" { description = "Plaintext password, set at create time; Windows cannot read it back so drift is undetectable (see force_password). Empty creates the account with no password" type = "string" default = "" }
+    param "force_password" { description = "Re-set the password whenever apply runs (use when rotating passwords, since password drift can't be detected)" type = "bool" default = false }
+    param "full_name" { description = "Full (display) name; empty leaves it unmanaged" type = "string" default = "" }
+    param "description" { description = "Account description; empty leaves it unmanaged" type = "string" default = "" }
+    param "disabled" { description = "Whether the account should be disabled" type = "bool" default = false }
+  }
+
+  resource "local_group" {
+    description = "Ensure a local group exists, or is absent"
+    script = "resources/local_group.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Local group name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "description" { description = "Group description; empty leaves it unmanaged" type = "string" default = "" }
+  }
+
+  resource "local_group_member" {
+    description = "Ensure an account is (or is not) a member of a local group"
+    script = "resources/local_group_member.wisp"
+    concurrency = "exclusive"
+    param "group" { description = "Local group name" type = "string" required = true }
+    param "member" { description = "Member account; matched by exact name or by the name after the domain/computer prefix" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  resource "ad_user" {
+    description = "Ensure an Active Directory user exists with the desired attributes, or is absent (requires the ActiveDirectory PowerShell module)"
+    script = "resources/ad_user.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "SamAccountName of the user" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "password" { description = "Plaintext account password, set at create time; AD cannot read it back so drift is undetectable (see force_password). Required in practice to create an enabled account" type = "string" default = "" }
+    param "force_password" { description = "Reset the password whenever apply runs (use when rotating passwords, since password drift can't be detected)" type = "bool" default = false }
+    param "upn" { description = "UserPrincipalName; empty leaves it unmanaged" type = "string" default = "" }
+    param "display_name" { description = "DisplayName; empty leaves it unmanaged" type = "string" default = "" }
+    param "ou_path" { description = "Distinguished name of the OU the user is created in; create-only (an existing user is never moved)" type = "string" default = "" }
+    param "enabled" { description = "Whether the account should be enabled" type = "bool" default = true }
+  }
+
+  resource "ad_group" {
+    description = "Ensure an Active Directory group exists with the desired scope and category, or is absent (requires the ActiveDirectory PowerShell module)"
+    script = "resources/ad_group.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "SamAccountName of the group" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "scope" { description = "Group scope: Global, Universal or DomainLocal" type = "string" default = "Global" }
+    param "category" { description = "Group category: Security or Distribution" type = "string" default = "Security" }
+    param "ou_path" { description = "Distinguished name of the OU the group is created in; create-only (an existing group is never moved)" type = "string" default = "" }
+  }
+
+  resource "ad_group_member" {
+    description = "Ensure a principal is (or is not) a member of an Active Directory group (requires the ActiveDirectory PowerShell module)"
+    script = "resources/ad_group_member.wisp"
+    concurrency = "exclusive"
+    param "group" { description = "SamAccountName of the group" type = "string" required = true }
+    param "member" { description = "Member principal; matched by SamAccountName or Name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  // The win2025 instance is a plain workgroup server, so the local account
+  // resources get real converge coverage while the AD resources assert their
+  // module guard: without RSAT the ActiveDirectory module is absent, so both
+  // check and apply raise the documented error.
+  test "local_accounts_converge" {
+    description = "Local user, group and membership converge; ad_user guards on the missing AD module"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/accounts_verify.wisp"
+
+    step "ops_group" {
+      description = "Create the weave-ops local group"
+      resource = "local_group"
+      properties { name = "weave-ops" description = "config-weave test group" }
+    }
+
+    step "svc_user" {
+      description = "Create the weave-svc local user"
+      resource = "local_user"
+      properties { name = "weave-svc" password = "Weave-Test-2026!" full_name = "Weave Service" description = "config-weave test account" }
+    }
+
+    step "svc_in_ops" {
+      description = "Put weave-svc into weave-ops"
+      resource = "local_group_member"
+      properties { group = "weave-ops" member = "weave-svc" }
+    }
+
+    step "ghost_user_absent" {
+      description = "A never-created user with ensure = absent is already configured"
+      resource = "local_user"
+      expect = "already_configured"
+      properties { name = "weave-ghost" ensure = :absent }
+    }
+
+    step "ad_needs_module" {
+      description = "ad_user errors when the ActiveDirectory module is unavailable"
+      resource = "ad_user"
+      expect = "error"
+      properties { name = "weave-ad-user" password = "Weave-Test-2026!" }
+    }
+  }
+}

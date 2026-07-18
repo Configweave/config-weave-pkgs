@@ -1,0 +1,63 @@
+package "linux_systemd" {
+  description = "Manage systemd services and unit files"
+
+  resource "service_state" {
+    description = "Ensure a systemd service is running or stopped"
+    script = "resources/service_state.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+  }
+
+  resource "service_enabled" {
+    description = "Ensure a systemd service starts at boot"
+    script = "resources/service_enabled.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "enabled" { description = "Start at boot" type = "bool" required = true }
+  }
+
+  resource "unit_file" {
+    description = "Ensure a systemd unit file under /etc/systemd/system"
+    script = "resources/unit_file.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Unit filename such as example.service" type = "string" required = true }
+    param "content" { description = "Unit file content" type = "string" required = true }
+    param "daemon_reload" { description = "Run systemctl daemon-reload after writing" type = "bool" default = false }
+  }
+
+  test "unit_file_converges" {
+    description = "Unit files converge in a container (no live systemd needed)"
+    image = "debian:12"
+    verify = "tests/unit_file_verify.wisp"
+
+    step "unit" {
+      description = "Write a unit file"
+      resource = "unit_file"
+      properties {
+        name = "config-weave-test.service"
+        content = "[Unit]\nDescription=Config Weave Test\n"
+      }
+    }
+  }
+
+  // service_state / service_enabled need live systemd — covered by vmlab.
+  test "service_control_converges" {
+    description = "Service state and enablement converge against live systemd"
+    backend = "vmlab"
+    image = "x86_64/ubuntu-24.04"
+
+    step "disable" {
+      description = "Disable systemd-timesyncd at boot"
+      resource = "service_enabled"
+      properties { name = "systemd-timesyncd" enabled = false }
+    }
+
+    step "stop" {
+      description = "Stop systemd-timesyncd"
+      resource = "service_state"
+      requires = ["disable"]
+      properties { name = "systemd-timesyncd" state = "stopped" }
+    }
+  }
+}

@@ -1,100 +1,85 @@
 package "linux_network" {
-  description = "Manage Linux host networking configuration files and firewalls"
+  description = "Manage Linux network configuration and firewalls"
 
   resource "hosts_entry" {
-    description = "Ensure an /etc/hosts entry"
+    description = "Ensure an /etc/hosts entry maps an address to a set of names"
     script = "resources/hosts_entry.wisp"
     // read-modify-write on the shared /etc/hosts — parallel steps lose updates
     concurrency = "exclusive"
     param "ip" { description = "IP address" type = "string" required = true }
-    param "names" { description = "Whitespace-separated hostnames" type = "string" required = true }
+    param "names" { description = "Host names for the address (first is canonical)" type = "list" required = true }
   }
 
-  resource "ssh_config_setting" {
-    description = "Ensure a client SSH config drop-in"
-    script = "resources/ssh_config_setting.wisp"
-    concurrency = "parallel"
-    param "name" { description = "Drop-in filename" type = "string" required = true }
-    param "content" { description = "SSH config content" type = "string" required = true }
-  }
-
-  resource "sshd_config_setting" {
-    description = "Ensure an sshd_config.d drop-in and optionally validate it"
-    script = "resources/sshd_config_setting.wisp"
-    concurrency = "exclusive"
-    param "name" { description = "Drop-in filename" type = "string" required = true }
-    param "content" { description = "sshd config content" type = "string" required = true }
-    param "validate" { description = "Run sshd -t when available" type = "bool" default = true }
-  }
-
-  resource "nftables_ruleset" {
-    description = "Ensure /etc/nftables.conf and optionally reload nftables"
-    script = "resources/nftables_ruleset.wisp"
+  resource "firewalld_rule" {
+    description = "Ensure a firewalld rule (service, port, source or rich rule) is present or absent"
+    script = "resources/firewalld_rule.wisp"
     concurrency = "global"
-    param "content" { description = "nftables.conf content" type = "string" required = true }
-    param "reload" { description = "Run nft -f after writing" type = "bool" default = false }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "zone" { description = "Zone to operate on; empty uses the default zone" type = "string" default = "" }
+    param "permanent" { description = "Operate on the permanent configuration" type = "bool" default = true }
+    param "service" { description = "Named service to allow, such as https" type = "string" default = "" }
+    param "port" { description = "Port rule such as 8080/tcp" type = "string" default = "" }
+    param "source" { description = "Source address or CIDR bound to the zone" type = "string" default = "" }
+    param "rich_rule" { description = "Full firewalld rich rule text" type = "string" default = "" }
   }
 
-  resource "firewalld_service" {
-    description = "Ensure a firewalld service is enabled or disabled"
-    script = "resources/firewalld_service.wisp"
+  resource "ufw_rule" {
+    description = "Ensure a ufw rule is present or absent"
+    script = "resources/ufw_rule.wisp"
     concurrency = "global"
-    param "service" { description = "firewalld service name" type = "string" required = true }
-    param "enabled" { description = "Whether service should be enabled" type = "bool" required = true }
-    param "zone" { description = "Optional firewalld zone" type = "string" default = "" }
-    param "permanent" { description = "Use permanent firewalld configuration" type = "bool" default = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "action" { description = "Rule action: allow, deny, reject or limit" type = "string" default = "allow" }
+    param "port" { description = "Port (with optional protocol) such as 22/tcp, or an application profile name" type = "string" required = true }
+    param "from" { description = "Optional source address or CIDR" type = "string" default = "" }
   }
 
-  resource "known_host" {
-    description = "Ensure an entry in an SSH known_hosts file"
-    script = "resources/known_host.wisp"
-    // read-modify-write on a shared known_hosts file — parallel steps lose updates
-    concurrency = "exclusive"
-    param "name" { description = "Host the key belongs to (descriptive)" type = "string" default = "" }
-    param "key" { description = "Full known_hosts line (host keytype keydata)" type = "string" required = true }
-    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
-    param "path" { description = "Explicit known_hosts path; overrides home" type = "string" default = "" }
+  resource "nftables_table" {
+    description = "Ensure an nftables table exists or is absent"
+    script = "resources/nftables_table.wisp"
+    concurrency = "global"
+    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
+    param "name" { description = "Table name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
   }
 
+  resource "nftables_chain" {
+    description = "Ensure an nftables chain exists or is absent (base chain when type/hook are set)"
+    script = "resources/nftables_chain.wisp"
+    concurrency = "global"
+    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
+    param "table" { description = "Owning table name" type = "string" required = true }
+    param "name" { description = "Chain name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "type" { description = "Base chain type: filter, nat or route (empty for a regular chain)" type = "string" default = "" }
+    param "hook" { description = "Base chain hook: input, output, forward, prerouting or postrouting" type = "string" default = "" }
+    param "priority" { description = "Base chain priority" type = "int" default = 0 }
+    param "policy" { description = "Base chain policy: accept or drop (empty leaves the default)" type = "string" default = "" }
+  }
+
+  resource "nftables_rule" {
+    description = "Ensure an nftables rule is present in or absent from a chain"
+    script = "resources/nftables_rule.wisp"
+    concurrency = "global"
+    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
+    param "table" { description = "Owning table name" type = "string" required = true }
+    param "chain" { description = "Owning chain name" type = "string" required = true }
+    param "rule" { description = "Rule expression as nft prints it, such as 'tcp dport 22 accept'" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  // The firewall resources are untested in containers by design: firewalld and
+  // ufw are not present in the base images (installing them needs the network),
+  // and nft needs NET_ADMIN, which unprivileged containers do not have.
   test "network_files_converge" {
-    description = "Network configuration file resources converge"
+    description = "hosts entries converge in a Debian container"
     image = "debian:12"
     group = "network"
     verify = "tests/network_verify.wisp"
 
     step "hosts" {
-      description = "Add hosts entry"
+      description = "Add a hosts entry"
       resource = "hosts_entry"
-      properties { ip = "192.0.2.10" names = "cw-test.local cw-test" }
-    }
-
-    step "ssh-client" {
-      description = "Write SSH client drop-in"
-      resource = "ssh_config_setting"
-      properties { name = "99-config-weave-test.conf" content = "Host cw-test\n  StrictHostKeyChecking no\n" }
-    }
-
-    step "sshd" {
-      description = "Write sshd drop-in"
-      resource = "sshd_config_setting"
-      properties { name = "99-config-weave-test.conf" content = "PasswordAuthentication no\n" validate = false }
-    }
-  }
-
-  test "known_host_converge" {
-    description = "known_host adds an SSH host key entry"
-    image = "debian:12"
-    group = "network"
-    verify = "tests/known_host_verify.wisp"
-
-    step "add" {
-      description = "Add a known host entry"
-      resource = "known_host"
-      properties {
-        name = "cw-test.example"
-        key = "cw-test.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICONFIGWEAVEexamplekeydata"
-      }
+      properties { ip = "192.0.2.10" names = ["cw-test.local", "cw-test"] }
     }
   }
 }
-

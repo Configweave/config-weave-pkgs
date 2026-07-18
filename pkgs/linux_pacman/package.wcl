@@ -1,0 +1,43 @@
+package "linux_pacman" {
+  description = "Manage packages on pacman/Arch systems"
+
+  resource "package" {
+    description = "Ensure a pacman package is installed or absent"
+    script = "resources/package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  resource "cache_updated" {
+    description = "Run pacman -Sy once per marker"
+    script = "resources/cache_updated.wisp"
+    concurrency = "exclusive"
+    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+  }
+
+  resource "aur_package" {
+    description = "Ensure an AUR package is installed or absent via yay/paru"
+    script = "resources/aur_package.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "AUR package name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "helper" { description = "AUR helper: auto (detect yay then paru), yay or paru" type = "string" default = "auto" }
+    param "user" { description = "Non-root user to build/install as (AUR builds cannot run as root)" type = "string" required = true }
+  }
+
+  // Check-only test: installing anything needs the network, and aur_package
+  // additionally needs an AUR helper and a build user. The existence probe
+  // on a base package is the honest offline test.
+  test "pacman_existing_package" {
+    description = "pacman installed package checks work in Arch"
+    image = "archlinux:latest"
+
+    step "filesystem-installed" {
+      description = "filesystem is installed in Arch"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "filesystem" }
+    }
+  }
+}

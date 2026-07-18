@@ -62,6 +62,20 @@ package "windows_packages" {
     returns "packages" { description = "One { name, id, version } map per installed package" type = "list" }
   }
 
+  gatherer "chocolatey_packages" {
+    description = "Enumerate installed Chocolatey packages (name, version)"
+    script = "gatherers/chocolatey_packages.wisp"
+    returns "count" { description = "Number of installed packages listed; 0 without Chocolatey" type = "int" }
+    returns "packages" { description = "One { name, version } map per installed package" type = "list" }
+  }
+
+  gatherer "scoop_packages" {
+    description = "Enumerate installed Scoop apps (name, version) for the current user"
+    script = "gatherers/scoop_packages.wisp"
+    returns "count" { description = "Number of installed apps listed; 0 without Scoop" type = "int" }
+    returns "packages" { description = "One { name, version } map per installed app" type = "list" }
+  }
+
   // The vmlab guests have NAT internet (the mssql win_install scenario
   // installs sqlcmd guest-side), so setup bootstraps Chocolatey from the
   // community repo. The bootstrap edits the machine PATH, but resource execs

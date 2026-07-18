@@ -8,17 +8,24 @@ package "windows_installers" {
     param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "path" { description = "Local path or HTTP(S) URL of the .msi (required when present)" type = "string" default = "" }
-    param "args" { description = "Extra msiexec arguments (e.g. property assignments)" type = "string" default = "" }
+    param "transforms" { description = "MST transform paths or HTTP(S) URLs applied via TRANSFORMS=" type = "list" }
+    param "properties" { description = "KEY=VALUE property assignments appended to the msiexec line" type = "list" }
+    param "version" { description = "Expected DisplayVersion; a mismatch re-runs /i with the msi (upgrade)" type = "string" default = "" }
+    param "package_code" { description = "Alternate GUID some installers register their uninstall key under" type = "string" default = "" }
   }
 
   resource "exe_installer" {
-    description = "Run an EXE installer once, guarded by a creates path or product_id"
+    description = "Install or uninstall software via an EXE installer, detected by a path or uninstall key"
     script = "resources/exe_installer.wisp"
     concurrency = "exclusive"
-    param "path" { description = "Local path or HTTP(S) URL of the .exe" type = "string" required = true }
+    param "path" { description = "Local path or HTTP(S) URL of the installer .exe" type = "string" required = true }
     param "args" { description = "Silent-install arguments passed to the installer" type = "string" default = "" }
-    param "creates" { description = "Path whose existence means the install is done" type = "string" default = "" }
-    param "product_id" { description = "Uninstall-key GUID whose presence means the install is done" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "install_path" { description = "Path whose existence means the install is done (one of install_path/install_reg required)" type = "string" default = "" }
+    param "install_reg" { description = "Hive-prefixed registry key (e.g. the uninstall key) whose existence means the install is done" type = "string" default = "" }
+    param "version" { description = "Expected DisplayVersion under install_reg; a mismatch re-runs the installer (upgrade)" type = "string" default = "" }
+    param "uninstall_path" { description = "Command/exe run to remove the install when ensure = :absent" type = "string" default = "" }
+    param "uninstall_args" { description = "Arguments passed to uninstall_path" type = "string" default = "" }
   }
 
   // The msi_package step downloads the small (~2 MB) 7-Zip MSI guest-side —
@@ -26,8 +33,8 @@ package "windows_installers" {
   // installs sqlcmd the same way); 7-Zip MSI ProductCodes follow the stable
   // {23170F69-40C1-2702-VVVV-000001000000} pattern (VVVV = version). The
   // exe_installer step is fully offline: cmd.exe stands in as the
-  // "installer", exercising the creates-guard, download-less path and the
-  // Start-Process argument handling. The ensure = :absent step asserts the
+  // "installer", exercising the install_path marker, download-less path and
+  // the Start-Process argument handling. The ensure = :absent step asserts the
   // detection path against a ProductCode that was never installed (a real
   // uninstall would first need an MSI installed just to remove it).
   test "installers_converge" {
@@ -47,12 +54,12 @@ package "windows_installers" {
     }
 
     step "exe_marker" {
-      description = "Run an EXE installer once, guarded by its creates path"
+      description = "Run an EXE installer once, detected by its install_path marker"
       resource = "exe_installer"
       properties {
         path = "C:\\Windows\\System32\\cmd.exe"
         args = "/C echo done > C:\\weave-exe-marker.txt"
-        creates = "C:\\weave-exe-marker.txt"
+        install_path = "C:\\weave-exe-marker.txt"
       }
     }
 

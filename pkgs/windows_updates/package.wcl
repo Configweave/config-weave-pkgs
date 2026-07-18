@@ -1,19 +1,11 @@
 package "windows_updates" {
-  description = "Apply Windows Updates and individual hotfixes"
+  description = "Apply Windows Updates and manage update policy"
 
   resource "windows_update" {
     description = "Install applicable Windows Updates via the Windows Update Agent"
     script = "resources/windows_update.wisp"
     concurrency = "global"
     param "query" { description = "Update search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
-  }
-
-  resource "hotfix_installed" {
-    description = "Ensure a specific KB hotfix is installed"
-    script = "resources/hotfix_installed.wisp"
-    concurrency = "global"
-    param "kb" { description = "KB identifier such as KB5031234" type = "string" required = true }
-    param "path" { description = "Local path or HTTP(S) URL of the .msu to install when missing" type = "string" default = "" }
   }
 
   resource "automatic_updates" {
@@ -23,24 +15,12 @@ package "windows_updates" {
     param "enabled" { description = "Whether automatic updates are allowed (false sets NoAutoUpdate=1)" type = "bool" default = true }
   }
 
-  resource "windows_update_service" {
-    description = "Enable or disable the Windows Update service (wuauserv)"
-    script = "resources/windows_update_service.wisp"
-    concurrency = "global"
-    param "enabled" { description = "Whether wuauserv may run (false stops it and sets startup to disabled)" type = "bool" default = true }
-  }
-
-  // automatic_updates and windows_update_service manage pure local state (an
-  // AU policy registry value and the wuauserv startup type), so both converge
-  // fully offline. windows_update itself is untested here: a WUA
-  // search/install is network-bound, very slow, and its check needs the very
-  // update service another step disables — scenario territory. A real
-  // hotfix_installed install would need an .msu matching the exact guest
-  // build, so the step below covers its detection path plus the
-  // missing-'path' error branch instead (an absent KB with no media errors
-  // on apply; Get-HotFix itself does not need wuauserv).
+  // automatic_updates manages pure local state (an AU policy registry
+  // value), so it converges fully offline. windows_update itself is
+  // untested here: a WUA search/install is network-bound, very slow, and
+  // needs the update service running — scenario territory.
   test "update_policy_converges" {
-    description = "Update policy and service resources converge; hotfix detection works"
+    description = "The automatic-updates policy resource converges"
     backend = "vmlab"
     image = "x86_64/windows-server-2025"
     group = "win2025"
@@ -50,19 +30,6 @@ package "windows_updates" {
       description = "Set the NoAutoUpdate AU policy"
       resource = "automatic_updates"
       properties { enabled = false }
-    }
-
-    step "disable_wu_service" {
-      description = "Disable and stop wuauserv"
-      resource = "windows_update_service"
-      properties { enabled = false }
-    }
-
-    step "hotfix_needs_path" {
-      description = "A missing KB with no .msu path errors on apply"
-      resource = "hotfix_installed"
-      expect = "error"
-      properties { kb = "KB9999999" }
     }
   }
 }

@@ -24,17 +24,6 @@ package "linux_accounts" {
     param "remove_home" { description = "When ensure = :absent: also remove the home directory and mail spool (userdel -r)" type = "bool" default = false }
   }
 
-  resource "authorized_key" {
-    description = "Ensure an SSH authorized key is present or absent"
-    script = "resources/authorized_key.wisp"
-    // read-modify-write on a shared authorized_keys file — parallel steps lose updates
-    concurrency = "exclusive"
-    param "user" { description = "Account name" type = "string" required = true }
-    param "key" { description = "Authorized key line" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "home" { description = "Optional home directory override" type = "string" default = "" }
-  }
-
   resource "sudoers_user" {
     description = "Ensure a sudoers.d rule for a user exists or is absent"
     script = "resources/sudoers_user.wisp"
@@ -48,15 +37,14 @@ package "linux_accounts" {
 
   // The absent steps converge on entities seeded during setup (run 1 checks
   // every step before any apply, so they cannot target state a present step
-  // creates). Removal ordering: key while the user exists, user before its
-  // primary group.
+  // creates). Removal ordering: user before its primary group.
   test "accounts_converge" {
     description = "Accounts create and remove converge in a Debian container"
     image = "debian:12"
     // The seeded group is deliberately NOT named after the user: userdel
     // removes a same-named primary group itself (USERGROUPS_ENAB), which
     // would leave rm_group nothing to do.
-    setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && mkdir -p /home/cwold/.ssh /etc/sudoers.d && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old\\n' > /home/cwold/.ssh/authorized_keys && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
+    setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && mkdir -p /etc/sudoers.d && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
     verify = "tests/accounts_verify.wisp"
 
     step "group" {
@@ -72,33 +60,11 @@ package "linux_accounts" {
       properties { name = "cwtest" group = "cwtest" home = "/home/cwtest" shell = "/bin/sh" }
     }
 
-    step "key" {
-      description = "Install key"
-      resource = "authorized_key"
-      requires = ["user"]
-      properties {
-        user = "cwtest"
-        home = "/home/cwtest"
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey config-weave"
-      }
-    }
-
     step "sudo" {
       description = "Grant passwordless sudo"
       resource = "sudoers_user"
       requires = ["user"]
       properties { user = "cwtest" passwordless = true }
-    }
-
-    step "rm_key" {
-      description = "Remove the seeded key line"
-      resource = "authorized_key"
-      properties {
-        user = "cwold"
-        home = "/home/cwold"
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old"
-        ensure = :absent
-      }
     }
 
     step "rm_sudo" {
@@ -110,7 +76,6 @@ package "linux_accounts" {
     step "rm_user" {
       description = "Remove the seeded user and its home"
       resource = "user"
-      requires = ["rm_key"]
       properties { name = "cwold" ensure = :absent remove_home = true }
     }
 

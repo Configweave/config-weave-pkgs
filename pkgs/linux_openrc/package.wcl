@@ -1,0 +1,23 @@
+package "linux_openrc" {
+  description = "Manage OpenRC services (Alpine, Gentoo)"
+
+  resource "service_state" {
+    description = "Ensure an OpenRC service is running or stopped"
+    script = "resources/service_state.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+  }
+
+  resource "service_enabled" {
+    description = "Ensure an OpenRC service is added to a runlevel"
+    script = "resources/service_enabled.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "enabled" { description = "Add to the runlevel" type = "bool" required = true }
+    param "runlevel" { description = "Runlevel to manage" type = "string" default = "default" }
+  }
+
+  // Untested in containers by design: the base images do not ship OpenRC and
+  // its rc commands need a live OpenRC init to act on.
+}

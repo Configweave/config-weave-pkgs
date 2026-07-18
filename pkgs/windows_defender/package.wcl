@@ -1,0 +1,61 @@
+package "windows_defender" {
+  description = "Manage Microsoft Defender antivirus settings"
+
+  // All three resources rewrite the machine-wide MpPreference store, so they
+  // run as global singletons.
+  resource "realtime_protection" {
+    description = "Enable or disable Defender real-time monitoring. Note that Tamper Protection, when active, can silently override a disable"
+    script = "resources/realtime_protection.wisp"
+    concurrency = "global"
+    param "enabled" { description = "Whether real-time monitoring should be on" type = "bool" required = true }
+  }
+
+  resource "exclusion" {
+    description = "Ensure a Defender scan exclusion exists, or is absent"
+    script = "resources/exclusion.wisp"
+    concurrency = "global"
+    param "kind" { description = "Exclusion kind: path, extension or process" type = "string" required = true }
+    param "value" { description = "The excluded path, extension or process name" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  resource "preference" {
+    description = "Ensure a single Set-MpPreference setting holds the given value (compared string-wise against Get-MpPreference)"
+    script = "resources/preference.wisp"
+    concurrency = "global"
+    param "name" { description = "Set-MpPreference parameter name, e.g. ScanScheduleDay" type = "string" required = true }
+    param "value" { description = "Desired value as a string; $true, $false and numbers pass through unquoted, everything else is single-quoted" type = "string" required = true }
+  }
+
+  // Adding and removing an exclusion is harmless fleet hygiene, so it gets
+  // real converge coverage; realtime_protection asserts the detection path
+  // against the Server 2025 default (real-time monitoring on) instead of
+  // toggling AV off on a shared instance.
+  test "defender_exclusion_converges" {
+    description = "A path exclusion converges; real-time protection detection works"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/defender_verify.wisp"
+
+    step "exclude_test_dir" {
+      description = "Exclude C:\\weave-defender-test from scans"
+      resource = "exclusion"
+      properties { kind = "path" value = "C:\\weave-defender-test" }
+    }
+
+    step "ghost_exclusion_absent" {
+      description = "A never-added extension exclusion with ensure = absent is already configured"
+      resource = "exclusion"
+      expect = "already_configured"
+      properties { kind = "extension" value = ".weaveghost" ensure = :absent }
+    }
+
+    step "realtime_on" {
+      description = "Real-time monitoring ships enabled on Server 2025"
+      resource = "realtime_protection"
+      expect = "already_configured"
+      properties { enabled = true }
+    }
+  }
+}

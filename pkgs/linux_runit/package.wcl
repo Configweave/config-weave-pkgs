@@ -1,0 +1,25 @@
+package "linux_runit" {
+  description = "Manage runit services (Void)"
+
+  resource "service_state" {
+    description = "Ensure a runit service is running or stopped"
+    script = "resources/service_state.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name under the service directory" type = "string" required = true }
+    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+    param "service_dir" { description = "Active service directory" type = "string" default = "/var/service" }
+  }
+
+  resource "service_enabled" {
+    description = "Ensure a runit service is linked into the active service directory"
+    script = "resources/service_enabled.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Service name" type = "string" required = true }
+    param "enabled" { description = "Link the service into the active service directory" type = "bool" required = true }
+    param "sv_dir" { description = "Service definition directory" type = "string" default = "/etc/sv" }
+    param "service_dir" { description = "Active service directory" type = "string" default = "/var/service" }
+  }
+
+  // Untested in containers by design: sv needs a live runsvdir supervisor,
+  // which the base images do not run.
+}

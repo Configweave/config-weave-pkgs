@@ -2,19 +2,31 @@ package "windows_registry" {
   description = "Manage Windows registry state"
 
   resource "value" {
-    description = "Ensure a registry value exists with the given data"
+    description = "Ensure a registry value exists with the given data, or is absent"
     script = "resources/value.wisp"
     concurrency = "parallel"
     param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
     param "name" { description = "Value name" type = "string" required = true }
-    param "data" { description = "Desired data (decimal string for dword/qword)" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "data" { description = "Desired data (decimal string for dword/qword); used when present" type = "string" default = "" }
     param "kind" { description = "Value kind: sz, expand_sz, dword or qword" type = "string" default = "sz" }
   }
 
-  test "value_converges" {
-    description = "Registry values converge on a Windows VM"
+  resource "key" {
+    description = "Ensure a registry key exists (optionally owned/ACLed) or is absent (subtree delete)"
+    script = "resources/key.wisp"
+    concurrency = "exclusive"
+    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "owner" { description = "NT account name that should own the key, e.g. BUILTIN\\Administrators" type = "string" default = "" }
+    param "permissions" { description = "Allow rules as \"identity:rights\" strings, rights a RegistryRights name, e.g. \"BUILTIN\\Users:ReadKey\"" type = "list" }
+  }
+
+  test "registry_converges" {
+    description = "Registry values and keys converge on a Windows VM"
     backend = "vmlab"
     image = "x86_64/windows-server-2025"
+    group = "win2025"
     verify = "tests/value_verify.wisp"
 
     step "greeting" {
@@ -27,6 +39,19 @@ package "windows_registry" {
       description = "Write a dword value"
       resource = "value"
       properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "answer" data = "42" kind = "dword" }
+    }
+
+    step "ghost_value_absent" {
+      description = "A never-written value with ensure = absent is already configured"
+      resource = "value"
+      expect = "already_configured"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "never-written" ensure = :absent }
+    }
+
+    step "subkey" {
+      description = "Create a key"
+      resource = "key"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest\\Sub" }
     }
   }
 }

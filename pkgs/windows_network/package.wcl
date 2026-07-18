@@ -1,0 +1,62 @@
+package "windows_network" {
+  description = "Manage Windows network configuration and firewall rules"
+
+  resource "static_ip" {
+    description = "Ensure an interface has a static IPv4 address (absent returns it to DHCP)"
+    script = "resources/static_ip.wisp"
+    concurrency = "exclusive"
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
+    param "ip" { description = "IPv4 address the interface should hold" type = "string" required = true }
+    param "prefix_length" { description = "Subnet prefix length, e.g. 24" type = "int" required = true }
+    param "gateway" { description = "Default gateway; empty leaves the default route unmanaged" type = "string" default = "" }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+  }
+
+  resource "dns_servers" {
+    description = "Ensure an interface uses exactly the given IPv4 DNS servers (an empty list resets to DHCP-assigned)"
+    script = "resources/dns_servers.wisp"
+    concurrency = "exclusive"
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
+    param "servers" { description = "DNS server addresses in preference order; compared order-sensitively" type = "list" required = true }
+  }
+
+  resource "firewall_rule" {
+    description = "Ensure a Windows Firewall rule exists (enabled state, direction and action are reconciled; port, address and profile are applied on every converge but not probed for drift)"
+    script = "resources/firewall_rule.wisp"
+    concurrency = "exclusive"
+    param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
+    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "direction" { description = "Traffic direction: Inbound or Outbound" type = "string" default = "Inbound" }
+    param "action" { description = "Rule action: Allow or Block" type = "string" default = "Allow" }
+    param "protocol" { description = "Protocol: TCP, UDP, ICMPv4, ..." type = "string" default = "TCP" }
+    param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any" type = "string" default = "" }
+    param "remote_address" { description = "Remote address filter, e.g. 10.0.0.0/8; empty means any" type = "string" default = "" }
+    param "profile" { description = "Firewall profile: Any, Domain, Private, Public or a comma list" type = "string" default = "Any" }
+    param "enabled" { description = "Whether the rule is enabled" type = "bool" default = true }
+  }
+
+  // Reconfiguring the test VM's only adapter (static_ip / dns_servers) would
+  // cut the testlab's own connection, so the vmlab test sticks to firewall
+  // rules: adding one is safe, and the ghost rule exercises the absent
+  // detection path.
+  test "firewall_rule_converges" {
+    description = "A firewall rule converges and absent detection works"
+    backend = "vmlab"
+    image = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/network_verify.wisp"
+
+    step "allow_8443" {
+      description = "Allow inbound TCP 8443"
+      resource = "firewall_rule"
+      properties { name = "weave-test-8443" direction = "Inbound" action = "Allow" protocol = "TCP" local_port = "8443" }
+    }
+
+    step "ghost_rule_absent" {
+      description = "A never-created rule with ensure = absent is already configured"
+      resource = "firewall_rule"
+      expect = "already_configured"
+      properties { name = "weave-ghost-rule" ensure = :absent }
+    }
+  }
+}

@@ -24,20 +24,26 @@ resource.
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
 - `linux_files`: files (exact content or URL-fetched), directories,
   symlinks/hard links, archives and modes.
-- `linux_packages`: package-manager resources for common Linux distributions,
-  plus the package-manager detection gatherer.
-- `linux_services`: service state, service enablement and systemd unit files.
-- `linux_accounts`: users, groups, SSH authorized keys and per-user sudo rules.
-- `linux_system`: sysctl, hostname, timezone, locale, cron, logrotate and fstab.
-- `linux_network`: hosts entries, SSH config snippets and firewall front-ends.
-- `linux_kde`: KDE Plasma 6 configuration files, themes and autostart entries.
-- `linux_tmux`: tmux configuration, options, key bindings, plugins and session files.
-- `linux_python`: pip packages, system-wide or in a virtualenv.
-- `linux_scm`: git and subversion checkouts.
+- `linux_packages`: the package-manager detection gatherer.
+- `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper` /
+  `linux_flatpak` / `linux_snap`: one package per package manager — install,
+  cache refresh and, where the manager supports them, repositories, keys and
+  holds (`linux_pacman` also installs AUR packages via yay/paru).
+- `linux_systemd` / `linux_openrc` / `linux_runit` / `linux_sysvinit`: service
+  state and enablement per init system (systemd also manages unit files).
+- `linux_accounts`: users, groups and per-user sudo rules.
+- `linux_ssh`: authorized keys, known hosts and ssh/sshd config drop-ins.
+- `git`: global and system git config entries.
+- `linux_system`: sysctl, hostname, timezone, locales, cron and fstab.
+- `linux_network`: hosts entries, firewalld/ufw rules and nftables
+  tables/chains/rules.
+- `linux_kde`: KDE Plasma KConfig entries.
 
 Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
-`windows_registry`, `windows_updates`, `windows_domain`) and the cross-platform
-`mssql` package round out the library.
+`windows_registry`, `windows_updates`, `windows_domain`, `windows_account`,
+`windows_service`, `windows_network`, `windows_share`, `windows_files`,
+`windows_defender`) and the cross-platform `mssql` package round out the
+library.
 
 ### `mssql`
 

@@ -6,9 +6,11 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
     fallback
 }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
@@ -24,15 +26,14 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
     let st = state(name)?
-    let enabled = param_bool(params, "enabled", true)
     let is_on = st == "Enabled" || st == "EnablePending"
-    if is_on == enabled { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if is_on == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    let cmdlet = if param_bool(params, "enabled", true) {
+    let cmdlet = if want_present(params)? {
         "Enable-WindowsOptionalFeature -Online -All -NoRestart -FeatureName " + ps_q(name)
     } else {
         "Disable-WindowsOptionalFeature -Online -NoRestart -FeatureName " + ps_q(name)
