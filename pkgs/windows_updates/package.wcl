@@ -25,10 +25,13 @@ package "windows_updates" {
     group = "win2025"
     verify = "tests/updates_verify.wisp"
 
-    step "disable_auto_updates" {
-      description = "Set the NoAutoUpdate AU policy"
+    // The Server 2025 image already ships NoAutoUpdate = 1, so disabling
+    // is a no-op there — converge the other way to prove the resource
+    // actually writes the policy.
+    step "enable_auto_updates" {
+      description = "Clear the NoAutoUpdate AU policy"
       resource = "automatic_updates"
-      properties { enabled = false }
+      properties { enabled = true }
     }
   }
 }

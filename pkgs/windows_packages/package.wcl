@@ -86,7 +86,13 @@ package "windows_packages" {
     description = "Chocolatey package presence, absence and source management converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol=3072; irm https://community.chocolatey.org/install.ps1 | iex; Set-Content -Path C:\\Windows\\System32\\choco.cmd -Value '@C:\\ProgramData\\chocolatey\\choco.exe %*'\""
+    // Windows setup runs under `cmd /C`, which eats nested double quotes
+    // and would treat `|` as its own pipe — the previous one-liner silently
+    // did nothing and left chocolatey uninstalled. So: no inner quotes, no
+    // pipe, and the shim written by cmd's own echo. The shim is needed
+    // because the installer's PATH change is invisible to the already
+    // running guest agent, while System32 is always on PATH.
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $s=irm https://community.chocolatey.org/install.ps1; iex $s && echo @C:\\ProgramData\\chocolatey\\choco.exe %* > C:\\Windows\\System32\\choco.cmd"
     verify = "tests/chocolatey_verify.wisp"
 
     step "self_installed" {

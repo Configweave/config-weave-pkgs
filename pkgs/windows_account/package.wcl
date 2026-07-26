@@ -82,15 +82,19 @@ package "windows_account" {
       properties { name = "weave-ops" description = "config-weave test group" }
     }
 
+    // The password must not embed the account name or full name: Windows
+    // complexity rules reject any run of 3+ characters from either, so
+    // "Weave-..." for user "weave-svc" fails with InvalidPasswordException.
     step "svc_user" {
       description = "Create the weave-svc local user"
       resource = "local_user"
-      properties { name = "weave-svc" password = "Weave-Test-2026!" full_name = "Weave Service" description = "config-weave test account" }
+      properties { name = "weave-svc" password = "Qx7!vTr9pLm2#Zk4" full_name = "Weave Service" description = "config-weave test account" }
     }
 
     step "svc_in_ops" {
       description = "Put weave-svc into weave-ops"
       resource = "local_group_member"
+      requires = ["ops_group", "svc_user"]
       properties { group = "weave-ops" member = "weave-svc" }
     }
 
@@ -105,7 +109,7 @@ package "windows_account" {
       description = "ad_user errors when the ActiveDirectory module is unavailable"
       resource = "ad_user"
       expect = "error"
-      properties { name = "weave-ad-user" password = "Weave-Test-2026!" }
+      properties { name = "weave-ad-user" password = "Qx7!vTr9pLm2#Zk4" }
     }
   }
 }
