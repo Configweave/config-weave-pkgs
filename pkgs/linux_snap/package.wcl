@@ -6,7 +6,14 @@ package "linux_snap" {
     script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Snap name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the snap" }
+      symbol "absent"  { description = "Remove the snap" }
+    }
     param "classic" { description = "Install with classic confinement" type = "bool" default = false }
     param "channel" { description = "Channel to install from (e.g. latest/stable); empty means the default" type = "string" default = "" }
   }

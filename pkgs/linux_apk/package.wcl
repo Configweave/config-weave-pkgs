@@ -6,7 +6,14 @@ package "linux_apk" {
     script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Remove the package" }
+    }
   }
 
   resource "cache_updated" {
@@ -22,7 +29,14 @@ package "linux_apk" {
     // read-modify-write on the shared repositories file
     concurrency = "exclusive"
     param "url" { description = "Repository line, such as https://dl-cdn.alpinelinux.org/alpine/v3.20/community" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the repository line" }
+      symbol "absent"  { description = "Remove the repository line" }
+    }
   }
 
   // A real install over the container's NAT: `tree` is tiny and lives in

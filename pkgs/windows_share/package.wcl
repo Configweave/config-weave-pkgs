@@ -6,7 +6,14 @@ package "windows_share" {
     script = "resources/share.ws"
     concurrency = "exclusive"
     param "name" { description = "Share name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the share" }
+      symbol "absent"  { description = "Delete the share" }
+    }
     param "path" { description = "Directory backing the share (created when missing); required when present" type = "string" default = "" }
     param "description" { description = "Share description; empty leaves it unmanaged" type = "string" default = "" }
     param "full_access" { description = "Accounts granted Full access; matched by exact name or the name after the domain/computer prefix" type = "list" }

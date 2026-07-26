@@ -7,7 +7,14 @@ package "windows_registry" {
     concurrency = "parallel"
     param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
     param "name" { description = "Value name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the value with the given data" }
+      symbol "absent"  { description = "Delete the value" }
+    }
     param "data" { description = "Desired data (decimal string for dword/qword); used when present" type = "string" default = "" }
     param "kind" { description = "Value kind: sz, expand_sz, dword or qword" type = "string" default = "sz" }
   }
@@ -17,7 +24,14 @@ package "windows_registry" {
     script = "resources/key.ws"
     concurrency = "exclusive"
     param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the key" }
+      symbol "absent"  { description = "Delete the key and its subtree" }
+    }
     param "owner" { description = "NT account name that should own the key, e.g. BUILTIN\\Administrators" type = "string" default = "" }
     param "permissions" { description = "Allow rules as \"identity:rights\" strings, rights a RegistryRights name, e.g. \"BUILTIN\\Users:ReadKey\"" type = "list" }
   }

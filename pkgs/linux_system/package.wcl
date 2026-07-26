@@ -30,7 +30,14 @@ package "linux_system" {
     concurrency = "exclusive"
     param "name" { description = "Locale name such as en_AU.UTF-8" type = "string" required = true }
     param "charset" { description = "Charset column in locale.gen" type = "string" default = "UTF-8" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Enable the locale and generate it" }
+      symbol "absent"  { description = "Disable the locale" }
+    }
   }
 
   resource "cron_job" {
@@ -38,7 +45,14 @@ package "linux_system" {
     script = "resources/cron_job.ws"
     concurrency = "parallel"
     param "name" { description = "Job name (also the cron.d filename; no dots)" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the cron.d entry" }
+      symbol "absent"  { description = "Remove the cron.d entry" }
+    }
     param "schedule" { description = "Cron schedule such as '*/5 * * * *' (required when present)" type = "string" default = "" }
     param "command" { description = "Command to run (required when present)" type = "string" default = "" }
     param "user" { description = "User to run as" type = "string" default = "root" }

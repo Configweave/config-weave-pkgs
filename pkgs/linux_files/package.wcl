@@ -6,7 +6,14 @@ package "linux_files" {
     script = "resources/file.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the file and converge its content" }
+      symbol "absent"  { description = "Delete the file" }
+    }
     param "content" { description = "Desired file content; mutually exclusive with url" type = "string" default = "" }
     param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content" type = "string" default = "" }
     param "sha256" { description = "Optional expected SHA-256 digest (url mode)" type = "string" default = "" }
@@ -32,7 +39,14 @@ package "linux_files" {
     script = "resources/directory.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute directory path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent (absent removes the directory and its contents)" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent (absent removes the directory and its contents)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the directory" }
+      symbol "absent"  { description = "Delete the directory and its contents" }
+    }
     param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
     param "owner" { description = "Optional directory owner" type = "string" default = "" }
     param "group" { description = "Optional directory group" type = "string" default = "" }
@@ -43,7 +57,14 @@ package "linux_files" {
     script = "resources/symlink.ws"
     concurrency = "parallel"
     param "path" { description = "Link path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the link" }
+      symbol "absent"  { description = "Delete the link" }
+    }
     param "target" { description = "Link target (required when present)" type = "string" default = "" }
     param "hard" { description = "Create a hard link instead of a symlink" type = "bool" default = false }
   }

@@ -6,7 +6,14 @@ package "windows_service" {
     script = "resources/service_installed.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name (the SCM key, not the display name)" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Register the service with the SCM" }
+      symbol "absent"  { description = "Delete the service" }
+    }
     param "path" { description = "Binary path the service runs (may include arguments); required when present, create-only" type = "string" default = "" }
     param "display_name" { description = "Display name shown in the services console; create-only, empty defaults to the service name" type = "string" default = "" }
     param "description" { description = "Service description; create-only" type = "string" default = "" }

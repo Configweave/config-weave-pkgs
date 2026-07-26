@@ -6,7 +6,14 @@ package "windows_installers" {
     script = "resources/msi_package.ws"
     concurrency = "exclusive"
     param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the MSI" }
+      symbol "absent"  { description = "Uninstall the MSI" }
+    }
     param "path" { description = "Local path or HTTP(S) URL of the .msi (required when present)" type = "string" default = "" }
     param "transforms" { description = "MST transform paths or HTTP(S) URLs applied via TRANSFORMS=" type = "list" }
     param "properties" { description = "KEY=VALUE property assignments appended to the msiexec line" type = "list" }
@@ -20,7 +27,14 @@ package "windows_installers" {
     concurrency = "exclusive"
     param "path" { description = "Local path or HTTP(S) URL of the installer .exe" type = "string" required = true }
     param "args" { description = "Silent-install arguments passed to the installer" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Run the installer" }
+      symbol "absent"  { description = "Run the uninstaller" }
+    }
     param "install_path" { description = "Path whose existence means the install is done (one of install_path/install_reg required)" type = "string" default = "" }
     param "install_reg" { description = "Hive-prefixed registry key (e.g. the uninstall key) whose existence means the install is done" type = "string" default = "" }
     param "version" { description = "Expected DisplayVersion under install_reg; a mismatch re-runs the installer (upgrade)" type = "string" default = "" }

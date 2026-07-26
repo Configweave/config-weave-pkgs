@@ -6,7 +6,14 @@ package "linux_accounts" {
     script = "resources/group.ws"
     concurrency = "exclusive"
     param "name" { description = "Group name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the group" }
+      symbol "absent"  { description = "Delete the group" }
+    }
     param "gid" { description = "Optional numeric group id" type = "int" default = 0 }
   }
 
@@ -15,7 +22,14 @@ package "linux_accounts" {
     script = "resources/user.ws"
     concurrency = "exclusive"
     param "name" { description = "User name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the user" }
+      symbol "absent"  { description = "Delete the user" }
+    }
     param "uid" { description = "Optional numeric user id" type = "int" default = 0 }
     param "group" { description = "Optional primary group" type = "string" default = "" }
     param "home" { description = "Optional home directory" type = "string" default = "" }
@@ -29,7 +43,14 @@ package "linux_accounts" {
     script = "resources/sudoers_user.ws"
     concurrency = "global"
     param "user" { description = "Account the rule applies to" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the sudoers.d rule" }
+      symbol "absent"  { description = "Remove the sudoers.d rule" }
+    }
     param "passwordless" { description = "Allow sudo without a password (NOPASSWD)" type = "bool" default = false }
     param "commands" { description = "Command specification for the rule" type = "string" default = "ALL" }
     param "validate" { description = "Run visudo validation when available" type = "bool" default = true }

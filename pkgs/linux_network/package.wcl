@@ -14,7 +14,14 @@ package "linux_network" {
     description = "Ensure a firewalld rule (service, port, source or rich rule) is present or absent"
     script = "resources/firewalld_rule.ws"
     concurrency = "global"
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the rule" }
+      symbol "absent"  { description = "Remove the rule" }
+    }
     param "zone" { description = "Zone to operate on; empty uses the default zone" type = "string" default = "" }
     param "permanent" { description = "Operate on the permanent configuration" type = "bool" default = true }
     param "service" { description = "Named service to allow, such as https" type = "string" default = "" }
@@ -27,7 +34,14 @@ package "linux_network" {
     description = "Ensure a ufw rule is present or absent"
     script = "resources/ufw_rule.ws"
     concurrency = "global"
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the rule" }
+      symbol "absent"  { description = "Delete the rule" }
+    }
     param "action" { description = "Rule action: allow, deny, reject or limit" type = "string" default = "allow" }
     param "port" { description = "Port (with optional protocol) such as 22/tcp, or an application profile name" type = "string" required = true }
     param "from" { description = "Optional source address or CIDR" type = "string" default = "" }
@@ -39,7 +53,14 @@ package "linux_network" {
     concurrency = "global"
     param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
     param "name" { description = "Table name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the table" }
+      symbol "absent"  { description = "Delete the table and everything in it" }
+    }
   }
 
   resource "nftables_chain" {
@@ -49,7 +70,14 @@ package "linux_network" {
     param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
     param "table" { description = "Owning table name" type = "string" required = true }
     param "name" { description = "Chain name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the chain" }
+      symbol "absent"  { description = "Delete the chain" }
+    }
     param "type" { description = "Base chain type: filter, nat or route (empty for a regular chain)" type = "string" default = "" }
     param "hook" { description = "Base chain hook: input, output, forward, prerouting or postrouting" type = "string" default = "" }
     param "priority" { description = "Base chain priority" type = "int" default = 0 }
@@ -64,7 +92,14 @@ package "linux_network" {
     param "table" { description = "Owning table name" type = "string" required = true }
     param "chain" { description = "Owning chain name" type = "string" required = true }
     param "rule" { description = "Rule expression as nft prints it, such as 'tcp dport 22 accept'" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the rule to the chain" }
+      symbol "absent"  { description = "Delete the rule from the chain" }
+    }
   }
 
   test "network_files_converge" {

@@ -6,7 +6,14 @@ package "linux_dnf" {
     script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Remove the package" }
+    }
     param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
   }
 
@@ -22,7 +29,14 @@ package "linux_dnf" {
     script = "resources/repository.ws"
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .repo" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the .repo file" }
+      symbol "absent"  { description = "Remove the .repo file" }
+    }
     param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
   }
 
@@ -31,7 +45,14 @@ package "linux_dnf" {
     script = "resources/gpg_key.ws"
     concurrency = "exclusive"
     param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent (removes the key file; an already-imported rpmdb key stays)" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent (removes the key file; an already-imported rpmdb key stays)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the key file and import it" }
+      symbol "absent"  { description = "Remove the key file; an already-imported rpmdb key stays" }
+    }
     param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
   }
 
@@ -40,7 +61,14 @@ package "linux_dnf" {
     script = "resources/hold.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present (held) or :absent (not held)" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present (held) or :absent (not held)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Lock the package version" }
+      symbol "absent"  { description = "Release the version lock" }
+    }
   }
 
   // Untested by design: cache_updated hits the network (makecache), gpg_key

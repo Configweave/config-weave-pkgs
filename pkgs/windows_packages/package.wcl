@@ -6,7 +6,14 @@ package "windows_packages" {
     script = "resources/chocolatey_package.ws"
     concurrency = "exclusive"
     param "name" { description = "Chocolatey package id" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Uninstall the package" }
+    }
     param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
     param "source" { description = "Optional source name or URL" type = "string" default = "" }
   }
@@ -24,7 +31,14 @@ package "windows_packages" {
     script = "resources/scoop_package.ws"
     concurrency = "exclusive"
     param "name" { description = "Scoop app name, optionally bucket/name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the app" }
+      symbol "absent"  { description = "Uninstall the app" }
+    }
   }
 
   resource "scoop_bucket" {
@@ -40,7 +54,14 @@ package "windows_packages" {
     script = "resources/winget_package.ws"
     concurrency = "exclusive"
     param "id" { description = "winget package identifier (exact)" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Uninstall the package" }
+    }
     param "version" { description = "Optional version to install" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
   }
@@ -50,7 +71,14 @@ package "windows_packages" {
     script = "resources/winget_source.ws"
     concurrency = "exclusive"
     param "name" { description = "Source name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Register the source" }
+      symbol "absent"  { description = "Remove the source" }
+    }
     param "url" { description = "Source argument/URL (required when present)" type = "string" default = "" }
     param "type" { description = "Optional source type, e.g. Microsoft.Rest" type = "string" default = "" }
   }

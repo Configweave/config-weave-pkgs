@@ -30,7 +30,14 @@ package "linux_kde" {
     param "group" { description = "KConfig group name" type = "string" required = true }
     param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
     param "key" { description = "KConfig key name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the key" }
+      symbol "absent"  { description = "Remove the key" }
+    }
     param "value" { description = "Desired string value (required when present)" type = "string" default = "" }
   }
 

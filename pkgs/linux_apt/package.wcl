@@ -6,7 +6,14 @@ package "linux_apt" {
     script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Remove the package" }
+    }
     param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
   }
 
@@ -22,7 +29,14 @@ package "linux_apt" {
     script = "resources/repository.ws"
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .list" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the sources.list.d file" }
+      symbol "absent"  { description = "Remove the sources.list.d file" }
+    }
     param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
   }
 
@@ -31,7 +45,14 @@ package "linux_apt" {
     script = "resources/signing_key.ws"
     concurrency = "exclusive"
     param "name" { description = "Keyring basename" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent (removes both .asc and .gpg)" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent (removes both .asc and .gpg)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the signing key" }
+      symbol "absent"  { description = "Remove the key, both .asc and .gpg" }
+    }
     param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
     param "dearmor" { description = "Also produce a binary .gpg keyring via gpg --dearmor" type = "bool" default = true }
   }
@@ -41,7 +62,14 @@ package "linux_apt" {
     script = "resources/hold.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present (held) or :absent (not held)" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present (held) or :absent (not held)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Hold the package at its current version" }
+      symbol "absent"  { description = "Release the hold" }
+    }
   }
 
   resource "debconf_selection" {

@@ -126,18 +126,12 @@ fn keys() -> List[string] {
      "recurseSubmodules", "useForceIfIncludes", "negotiate"]
 }
 
-fn allowed() -> Map[string, List[string]] {
-    #{
-        "default": ["nothing", "matching", "upstream", "tracking", "simple", "current"],
-        "gpgSign": ["true", "false", "if-asked"],
-        "recurseSubmodules": ["check", "on-demand", "only", "no"],
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Section-resource machinery — also byte-identical across the section
 // scripts. Each of those declares only `keys()` (git's canonical spelling)
-// and `allowed()` (the legal values of its symbol params).
+// and `hyphenated()` (the keys whose symbol values carry a hyphen). The
+// legal values themselves live in package.wcl, where config-weave
+// validates them and the docs list them.
 // ---------------------------------------------------------------------------
 
 // A typed param rendered as the text git stores. None = the step omitted
@@ -169,16 +163,13 @@ fn snake(k: string) -> string {
     out
 }
 
-// WCL symbols cannot contain hyphens — the lexer stops at [A-Za-z0-9_] — so
-// git's "on-demand" is written :on_demand and translated back here. The
-// literal string "on-demand" is accepted too, because a `symbol` param
-// validates exactly like a string.
-fn resolve_symbol(name: string, raw: string, allowed: List[string]) -> Result[string, string] {
-    if allowed.contains(raw) { return Ok(raw) }
-    let hyphenated = raw.replace("_", "-")
-    if allowed.contains(hyphenated) { return Ok(hyphenated) }
-    Err("invalid '" + name + "' value '" + raw + "' (expected one of: " + allowed.join(", ") + ")")
-}
+// config-weave validates a symbol param against the `symbol` values the
+// package declares, so all that is left here is spelling: WCL symbols
+// cannot contain hyphens — the lexer stops at [A-Za-z0-9_] — so git's
+// "on-demand" is declared :on_demand and the hyphen put back here. No
+// legal value of these keys contains an underscore, so the substitution
+// is unambiguous.
+fn hyphenated() -> List[string] { ["gpgSign", "recurseSubmodules"] }
 
 // The [git key, desired text] pairs this step actually asks for. Params the
 // step omitted are absent from `params` and so are skipped entirely.
@@ -188,7 +179,7 @@ fn desired_pairs(params: Value) -> Result[List[List[string]], string] {
         let name = snake(key)
         if let Some(raw) = to_cfg(params, name) {
             let value = raw
-            if let Some(a) = allowed().get(key) { value = resolve_symbol(name, raw, a)? }
+            if hyphenated().contains(key) { value = raw.replace("_", "-") }
             out.push([section() + "." + key, value])
         }
     }

@@ -6,7 +6,14 @@ package "windows_sysprep" {
     script = "resources/unattend_file.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute path of the answer file; the default is where sysprep auto-discovers it" type = "string" default = "C:\\Windows\\System32\\Sysprep\\unattend.xml" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the answer file" }
+      symbol "absent"  { description = "Delete the answer file" }
+    }
     param "content" { description = "Raw XML written verbatim; mutually exclusive with the structured params (skip_oobe_screens excepted — it is ignored in content mode)" type = "string" default = "" }
     param "skip_oobe_screens" { description = "Emit the OOBE block that hides the EULA, local-account, OEM, online-account and wireless screens and sets ProtectYourPC=3" type = "bool" default = true }
     param "admin_password" { description = "Local Administrator password — stored in PLAINTEXT in the generated XML" type = "string" default = "" }

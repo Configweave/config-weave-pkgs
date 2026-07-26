@@ -10,9 +10,12 @@
 //     0". They therefore cannot *remove* a key; use git.config_entry with
 //     ensure = :absent for that.
 //
-//   * Symbol params list git's own values. WCL symbols cannot contain
-//     hyphens, so git's "on-demand" is written :on_demand and translated
-//     back by the script; the literal string "on-demand" works too.
+//   * Symbol params enumerate git's own values with `symbol` blocks, so
+//     config-weave validates them and the generated docs list them. WCL
+//     symbols cannot contain hyphens, so git's "on-demand" is declared
+//     :on_demand and the script substitutes the hyphen back. That is the
+//     only accepted spelling: the literal string "on-demand" used to work
+//     and is now a validation error.
 //
 // Everything shells out to the `git config` binary, so git must be
 // installed on the target. git owns the quoting rules, multi-valued keys
@@ -45,7 +48,14 @@ package "git" {
     param "email" { description = "user.email: email recorded in the author and committer fields" type = "string" }
     param "signing_key" { description = "user.signingKey: key id or path used to sign commits and tags" type = "string" }
     param "use_config_only" { description = "user.useConfigOnly: refuse to guess an identity from the environment" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -55,9 +65,30 @@ package "git" {
     concurrency = "global"
     param "editor" { description = "core.editor: editor invoked for commit messages and interactive commands" type = "string" }
     param "pager" { description = "core.pager: pager used for paginated output" type = "string" }
-    param "autocrlf" { description = "core.autocrlf: line-ending conversion on checkout and commit" type = "symbol" }
-    param "eol" { description = "core.eol: line endings for text files in the working directory" type = "symbol" }
-    param "safecrlf" { description = "core.safecrlf: how to react to an irreversible line-ending conversion" type = "symbol" }
+    param "autocrlf" {
+      description = "core.autocrlf: line-ending conversion on checkout and commit"
+      type = "symbol"
+
+      symbol "true"  { description = "Convert CRLF to LF on commit and back on checkout" }
+      symbol "false" { description = "No conversion" }
+      symbol "input" { description = "Convert CRLF to LF on commit, leave checkout alone" }
+    }
+    param "eol" {
+      description = "core.eol: line endings for text files in the working directory"
+      type = "symbol"
+
+      symbol "lf"     { description = "LF in the working directory" }
+      symbol "crlf"   { description = "CRLF in the working directory" }
+      symbol "native" { description = "The platform's own line ending" }
+    }
+    param "safecrlf" {
+      description = "core.safecrlf: how to react to an irreversible line-ending conversion"
+      type = "symbol"
+
+      symbol "true"  { description = "Reject an irreversible conversion" }
+      symbol "false" { description = "Allow it silently" }
+      symbol "warn"  { description = "Allow it, but warn" }
+    }
     param "excludes_file" { description = "core.excludesFile: path to the personal ignore file" type = "string" }
     param "attributes_file" { description = "core.attributesFile: path to the personal gitattributes file" type = "string" }
     param "hooks_path" { description = "core.hooksPath: directory searched for hooks instead of $GIT_DIR/hooks" type = "string" }
@@ -75,9 +106,30 @@ package "git" {
     param "compression" { description = "core.compression: zlib level, -1 (zlib default) to 9" type = "int" }
     param "big_file_threshold" { description = "core.bigFileThreshold: size above which files are stored undeltified, such as 512m" type = "string" }
     param "fsmonitor" { description = "core.fsmonitor: true for the built-in monitor, or a hook path" type = "string" }
-    param "untracked_cache" { description = "core.untrackedCache: keep the untracked cache in the index" type = "symbol" }
-    param "log_all_ref_updates" { description = "core.logAllRefUpdates: record ref updates in the reflog" type = "symbol" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "untracked_cache" {
+      description = "core.untrackedCache: keep the untracked cache in the index"
+      type = "symbol"
+
+      symbol "true"  { description = "Keep the untracked cache" }
+      symbol "false" { description = "Do not keep it" }
+      symbol "keep"  { description = "Leave an existing cache in place without creating one" }
+    }
+    param "log_all_ref_updates" {
+      description = "core.logAllRefUpdates: record ref updates in the reflog"
+      type = "symbol"
+
+      symbol "true"   { description = "Log updates to branches, remotes and notes" }
+      symbol "false"  { description = "Log nothing" }
+      symbol "always" { description = "Log updates to every ref" }
+    }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -87,9 +139,28 @@ package "git" {
     concurrency = "global"
     param "default_branch" { description = "init.defaultBranch: branch created by git init, such as main" type = "string" }
     param "template_dir" { description = "init.templateDir: directory copied into new repositories" type = "string" }
-    param "default_object_format" { description = "init.defaultObjectFormat: hash algorithm for new repositories" type = "symbol" }
-    param "default_ref_format" { description = "init.defaultRefFormat: ref storage backend for new repositories" type = "symbol" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "default_object_format" {
+      description = "init.defaultObjectFormat: hash algorithm for new repositories"
+      type = "symbol"
+
+      symbol "sha1"   { description = "SHA-1 object names" }
+      symbol "sha256" { description = "SHA-256 object names" }
+    }
+    param "default_ref_format" {
+      description = "init.defaultRefFormat: ref storage backend for new repositories"
+      type = "symbol"
+
+      symbol "files"    { description = "One file per ref, the classic backend" }
+      symbol "reftable" { description = "The reftable binary backend" }
+    }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -102,11 +173,27 @@ package "git" {
     script = "resources/commit.ws"
     concurrency = "global"
     param "gpg_sign" { description = "commit.gpgSign: sign every commit" type = "bool" }
-    param "cleanup" { description = "commit.cleanup: how the commit message is cleaned up" type = "symbol" }
+    param "cleanup" {
+      description = "commit.cleanup: how the commit message is cleaned up"
+      type = "symbol"
+
+      symbol "strip"      { description = "Strip comments and trailing whitespace" }
+      symbol "whitespace" { description = "Strip trailing whitespace only" }
+      symbol "verbatim"   { description = "Leave the message exactly as given" }
+      symbol "scissors"   { description = "Strip everything below the scissors line" }
+      symbol "default"    { description = "strip for an edited message, whitespace otherwise" }
+    }
     param "status" { description = "commit.status: include the status output in the commit message template" type = "bool" }
     param "template" { description = "commit.template: file used as the commit message template" type = "string" }
     param "verbose" { description = "commit.verbose: true/false, or a verbosity level such as 2" type = "string" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -114,14 +201,46 @@ package "git" {
     description = "Ensure push settings (push.*) in the global or system config"
     script = "resources/push.ws"
     concurrency = "global"
-    param "default" { description = "push.default: which refs a bare git push sends" type = "symbol" }
+    param "default" {
+      description = "push.default: which refs a bare git push sends"
+      type = "symbol"
+
+      symbol "nothing"  { description = "Push nothing unless a refspec is given" }
+      symbol "matching" { description = "Push every branch with a same-named branch upstream" }
+      symbol "upstream" { description = "Push the current branch to its upstream" }
+      symbol "tracking" { description = "A deprecated alias for upstream" }
+      symbol "simple"   { description = "Push the current branch to its same-named upstream" }
+      symbol "current"  { description = "Push the current branch to a same-named branch" }
+    }
     param "auto_setup_remote" { description = "push.autoSetupRemote: set upstream automatically on the first push" type = "bool" }
     param "follow_tags" { description = "push.followTags: also push reachable annotated tags" type = "bool" }
-    param "gpg_sign" { description = "push.gpgSign: sign pushes (:true, :false or :if_asked)" type = "symbol" }
-    param "recurse_submodules" { description = "push.recurseSubmodules: how submodule commits are pushed (:check, :on_demand, :only, :no)" type = "symbol" }
+    param "gpg_sign" {
+      description = "push.gpgSign: sign pushes (:true, :false or :if_asked)"
+      type = "symbol"
+
+      symbol "true"     { description = "Always sign" }
+      symbol "false"    { description = "Never sign" }
+      symbol "if_asked" { description = "Sign only when the server asks" }
+    }
+    param "recurse_submodules" {
+      description = "push.recurseSubmodules: how submodule commits are pushed (:check, :on_demand, :only, :no)"
+      type = "symbol"
+
+      symbol "check"     { description = "Fail if a submodule commit is not pushed" }
+      symbol "on_demand" { description = "Push the needed submodule commits first" }
+      symbol "only"      { description = "Push the submodules and not the superproject" }
+      symbol "no"        { description = "Ignore submodules" }
+    }
     param "use_force_if_includes" { description = "push.useForceIfIncludes: guard forced pushes against unseen upstream work" type = "bool" }
     param "negotiate" { description = "push.negotiate: negotiate a common ancestor before pushing" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -129,12 +248,34 @@ package "git" {
     description = "Ensure pull settings (pull.*) in the global or system config"
     script = "resources/pull.ws"
     concurrency = "global"
-    param "rebase" { description = "pull.rebase: rebase instead of merging (:true, :false, :merges or :interactive)" type = "symbol" }
-    param "ff" { description = "pull.ff: fast-forward behaviour (:true, :false or :only)" type = "symbol" }
+    param "rebase" {
+      description = "pull.rebase: rebase instead of merging (:true, :false, :merges or :interactive)"
+      type = "symbol"
+
+      symbol "true"        { description = "Rebase onto the fetched branch" }
+      symbol "false"       { description = "Merge the fetched branch" }
+      symbol "merges"      { description = "Rebase, recreating merge commits" }
+      symbol "interactive" { description = "Rebase interactively" }
+    }
+    param "ff" {
+      description = "pull.ff: fast-forward behaviour (:true, :false or :only)"
+      type = "symbol"
+
+      symbol "true"  { description = "Fast-forward when possible" }
+      symbol "false" { description = "Always create a merge commit" }
+      symbol "only"  { description = "Fast-forward or fail" }
+    }
     param "auto_stash" { description = "pull.autoStash: stash and reapply local changes around the pull" type = "bool" }
     param "octopus" { description = "pull.octopus: default merge strategy for more than two heads" type = "string" }
     param "twohead" { description = "pull.twohead: default merge strategy for a single branch" type = "string" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -145,15 +286,43 @@ package "git" {
     param "prune" { description = "fetch.prune: delete remote-tracking refs that no longer exist upstream" type = "bool" }
     param "prune_tags" { description = "fetch.pruneTags: also prune local tags that no longer exist upstream" type = "bool" }
     param "parallel" { description = "fetch.parallel: number of parallel submodule fetches (0 = pick a sensible default)" type = "int" }
-    param "recurse_submodules" { description = "fetch.recurseSubmodules: whether to fetch submodules (:yes, :on_demand or :no)" type = "symbol" }
+    param "recurse_submodules" {
+      description = "fetch.recurseSubmodules: whether to fetch submodules (:yes, :on_demand or :no)"
+      type = "symbol"
+
+      symbol "yes"       { description = "Always fetch submodules" }
+      symbol "on_demand" { description = "Fetch a submodule when its superproject records a new commit" }
+      symbol "no"        { description = "Never fetch submodules" }
+    }
     param "all" { description = "fetch.all: fetch every remote by default" type = "bool" }
-    param "output" { description = "fetch.output: ref update output format (:full or :compact)" type = "symbol" }
+    param "output" {
+      description = "fetch.output: ref update output format (:full or :compact)"
+      type = "symbol"
+
+      symbol "full"    { description = "One line per ref" }
+      symbol "compact" { description = "Elide the common prefix of the ref names" }
+    }
     param "show_forced_updates" { description = "fetch.showForcedUpdates: report forced updates on fetched branches" type = "bool" }
     param "write_commit_graph" { description = "fetch.writeCommitGraph: write a commit-graph after fetching" type = "bool" }
-    param "negotiation_algorithm" { description = "fetch.negotiationAlgorithm: how common commits are negotiated" type = "symbol" }
+    param "negotiation_algorithm" {
+      description = "fetch.negotiationAlgorithm: how common commits are negotiated"
+      type = "symbol"
+
+      symbol "consecutive" { description = "Walk every commit back from the tips" }
+      symbol "skipping"    { description = "Skip commits to converge faster" }
+      symbol "noop"        { description = "Send no have lines at all" }
+      symbol "default"     { description = "Whatever git's built-in default is" }
+    }
     param "fsck_objects" { description = "fetch.fsckObjects: check fetched objects for corruption" type = "bool" }
     param "unpack_limit" { description = "fetch.unpackLimit: object count below which a fetch is unpacked into loose objects" type = "int" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -163,19 +332,54 @@ package "git" {
     concurrency = "global"
     param "tool" { description = "merge.tool: merge tool used by git mergetool" type = "string" }
     param "guitool" { description = "merge.guitool: merge tool used by git mergetool --gui" type = "string" }
-    param "conflict_style" { description = "merge.conflictStyle: conflict marker style (:merge, :diff3 or :zdiff3)" type = "symbol" }
-    param "ff" { description = "merge.ff: fast-forward behaviour (:true, :false or :only)" type = "symbol" }
+    param "conflict_style" {
+      description = "merge.conflictStyle: conflict marker style (:merge, :diff3 or :zdiff3)"
+      type = "symbol"
+
+      symbol "merge"  { description = "The classic <<<< ==== >>>> markers" }
+      symbol "diff3"  { description = "Add a ||||||| section showing the merge base" }
+      symbol "zdiff3" { description = "diff3 with the common lines hoisted out of the conflict" }
+    }
+    param "ff" {
+      description = "merge.ff: fast-forward behaviour (:true, :false or :only)"
+      type = "symbol"
+
+      symbol "true"  { description = "Fast-forward when possible" }
+      symbol "false" { description = "Always create a merge commit" }
+      symbol "only"  { description = "Fast-forward or fail" }
+    }
     param "auto_stash" { description = "merge.autoStash: stash and reapply local changes around the merge" type = "bool" }
-    param "renames" { description = "merge.renames: rename detection during a merge (:true, :false or :copies)" type = "symbol" }
+    param "renames" {
+      description = "merge.renames: rename detection during a merge (:true, :false or :copies)"
+      type = "symbol"
+
+      symbol "true"   { description = "Detect renames" }
+      symbol "false"  { description = "Detect nothing" }
+      symbol "copies" { description = "Detect renames and copies" }
+    }
     param "rename_limit" { description = "merge.renameLimit: files to consider during rename detection" type = "int" }
     param "renormalize" { description = "merge.renormalize: renormalise line endings before merging" type = "bool" }
     param "log" { description = "merge.log: true/false, or the number of shortlog entries in the merge message" type = "string" }
     param "stat" { description = "merge.stat: print a diffstat at the end of a merge" type = "bool" }
     param "verbosity" { description = "merge.verbosity: merge strategy chatter, 0 to 5" type = "int" }
     param "default_to_upstream" { description = "merge.defaultToUpstream: merge the upstream branch when given no argument" type = "bool" }
-    param "directory_renames" { description = "merge.directoryRenames: directory rename detection (:true, :false or :conflict)" type = "symbol" }
+    param "directory_renames" {
+      description = "merge.directoryRenames: directory rename detection (:true, :false or :conflict)"
+      type = "symbol"
+
+      symbol "true"     { description = "Detect directory renames" }
+      symbol "false"    { description = "Detect nothing" }
+      symbol "conflict" { description = "Detect them, but report a conflict instead of applying" }
+    }
     param "verify_signatures" { description = "merge.verifySignatures: refuse to merge a commit without a good signature" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -185,16 +389,44 @@ package "git" {
     concurrency = "global"
     param "auto_squash" { description = "rebase.autoSquash: honour fixup! and squash! commits automatically" type = "bool" }
     param "auto_stash" { description = "rebase.autoStash: stash and reapply local changes around the rebase" type = "bool" }
-    param "backend" { description = "rebase.backend: rebase implementation (:apply or :merge)" type = "symbol" }
+    param "backend" {
+      description = "rebase.backend: rebase implementation (:apply or :merge)"
+      type = "symbol"
+
+      symbol "apply" { description = "The patch-application backend" }
+      symbol "merge" { description = "The merge backend, git's default" }
+    }
     param "fork_point" { description = "rebase.forkPoint: use the reflog to find a better common ancestor" type = "bool" }
-    param "rebase_merges" { description = "rebase.rebaseMerges: recreate merges (:true, :false, :rebase_cousins or :no_rebase_cousins)" type = "symbol" }
+    param "rebase_merges" {
+      description = "rebase.rebaseMerges: recreate merges (:true, :false, :rebase_cousins or :no_rebase_cousins)"
+      type = "symbol"
+
+      symbol "true"              { description = "Recreate merges, rebasing onto the new base" }
+      symbol "false"             { description = "Flatten merges away" }
+      symbol "rebase_cousins"    { description = "Also rebase commits that do not descend from the base" }
+      symbol "no_rebase_cousins" { description = "Leave cousins on their original base" }
+    }
     param "update_refs" { description = "rebase.updateRefs: move branches pointing at rebased commits" type = "bool" }
     param "stat" { description = "rebase.stat: show a diffstat of what changed upstream" type = "bool" }
     param "abbreviate_commands" { description = "rebase.abbreviateCommands: write the todo list with abbreviated commands" type = "bool" }
     param "instruction_format" { description = "rebase.instructionFormat: log format used for todo list entries" type = "string" }
-    param "missing_commits_check" { description = "rebase.missingCommitsCheck: reaction to dropped commits (:ignore, :warn or :error)" type = "symbol" }
+    param "missing_commits_check" {
+      description = "rebase.missingCommitsCheck: reaction to dropped commits (:ignore, :warn or :error)"
+      type = "symbol"
+
+      symbol "ignore" { description = "Say nothing" }
+      symbol "warn"   { description = "Warn and continue" }
+      symbol "error"  { description = "Stop the rebase" }
+    }
     param "reschedule_failed_exec" { description = "rebase.rescheduleFailedExec: retry a failed exec command automatically" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -208,12 +440,37 @@ package "git" {
     concurrency = "global"
     param "tool" { description = "diff.tool: diff tool used by git difftool" type = "string" }
     param "guitool" { description = "diff.guitool: diff tool used by git difftool --gui" type = "string" }
-    param "algorithm" { description = "diff.algorithm: diff algorithm (:myers, :minimal, :patience or :histogram)" type = "symbol" }
-    param "color_moved" { description = "diff.colorMoved: how moved lines are coloured (:no, :zebra, :dimmed_zebra, …)" type = "symbol" }
+    param "algorithm" {
+      description = "diff.algorithm: diff algorithm (:myers, :minimal, :patience or :histogram)"
+      type = "symbol"
+
+      symbol "myers"     { description = "git's default greedy algorithm" }
+      symbol "minimal"   { description = "Myers, spending extra time for the smallest diff" }
+      symbol "patience"  { description = "Match only unique lines, for more readable hunks" }
+      symbol "histogram" { description = "patience with an occurrence heuristic; usually the best output" }
+    }
+    param "color_moved" {
+      description = "diff.colorMoved: how moved lines are coloured (:no, :zebra, :dimmed_zebra, …)"
+      type = "symbol"
+
+      symbol "no"           { description = "Do not detect moved lines" }
+      symbol "default"      { description = "The same as zebra" }
+      symbol "plain"        { description = "Colour any moved line, without pairing" }
+      symbol "blocks"       { description = "Colour moved blocks of at least 20 alphanumeric characters" }
+      symbol "zebra"        { description = "blocks, alternating the shade between adjacent blocks" }
+      symbol "dimmed_zebra" { description = "zebra, dimming the uninteresting parts of a moved block" }
+    }
     param "color_moved_ws" { description = "diff.colorMovedWS: comma-separated whitespace modes for moved-line colouring" type = "string" }
     param "context" { description = "diff.context: lines of context shown around each hunk" type = "int" }
     param "inter_hunk_context" { description = "diff.interHunkContext: context lines that fuse adjacent hunks" type = "int" }
-    param "renames" { description = "diff.renames: rename detection (:true, :false or :copies)" type = "symbol" }
+    param "renames" {
+      description = "diff.renames: rename detection (:true, :false or :copies)"
+      type = "symbol"
+
+      symbol "true"   { description = "Detect renames" }
+      symbol "false"  { description = "Detect nothing" }
+      symbol "copies" { description = "Detect renames and copies" }
+    }
     param "rename_limit" { description = "diff.renameLimit: files to consider during rename detection" type = "int" }
     param "external" { description = "diff.external: command run instead of the internal diff" type = "string" }
     param "indent_heuristic" { description = "diff.indentHeuristic: shift hunk boundaries to make diffs read better" type = "bool" }
@@ -221,7 +478,14 @@ package "git" {
     param "no_prefix" { description = "diff.noPrefix: omit the source and destination prefixes entirely" type = "bool" }
     param "order_file" { description = "diff.orderFile: file of glob patterns setting the output order" type = "string" }
     param "relative" { description = "diff.relative: true/false, or a directory paths are shown relative to" type = "string" }
-    param "submodule" { description = "diff.submodule: how submodule differences are shown (:short, :log or :diff)" type = "symbol" }
+    param "submodule" {
+      description = "diff.submodule: how submodule differences are shown (:short, :log or :diff)"
+      type = "symbol"
+
+      symbol "short" { description = "The commit names either side" }
+      symbol "log"   { description = "A summary of the commits between them" }
+      symbol "diff"  { description = "An inline diff of the submodule's own changes" }
+    }
     param "word_regex" { description = "diff.wordRegex: regex describing a word for word diffs" type = "string" }
     param "ws_error_highlight" { description = "diff.wsErrorHighlight: comma-separated lines to check for whitespace errors" type = "string" }
     param "dirstat" { description = "diff.dirstat: comma-separated --dirstat defaults" type = "string" }
@@ -229,9 +493,24 @@ package "git" {
     param "stat_name_width" { description = "diff.statNameWidth: width of the filename part of a diffstat" type = "int" }
     param "src_prefix" { description = "diff.srcPrefix: source prefix instead of a/" type = "string" }
     param "dst_prefix" { description = "diff.dstPrefix: destination prefix instead of b/" type = "string" }
-    param "ignore_submodules" { description = "diff.ignoreSubmodules: which submodule changes to ignore (:none, :untracked, :dirty or :all)" type = "symbol" }
+    param "ignore_submodules" {
+      description = "diff.ignoreSubmodules: which submodule changes to ignore (:none, :untracked, :dirty or :all)"
+      type = "symbol"
+
+      symbol "none"      { description = "Ignore nothing" }
+      symbol "untracked" { description = "Ignore untracked files in submodules" }
+      symbol "dirty"     { description = "Ignore all working-tree changes in submodules" }
+      symbol "all"       { description = "Ignore submodules entirely" }
+    }
     param "trust_exit_code" { description = "diff.trustExitCode: trust the exit code of the external diff command" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -242,14 +521,35 @@ package "git" {
     param "short" { description = "status.short: use short-format output by default" type = "bool" }
     param "branch" { description = "status.branch: show branch and tracking info in short format" type = "bool" }
     param "show_stash" { description = "status.showStash: report how many entries are stashed" type = "bool" }
-    param "show_untracked_files" { description = "status.showUntrackedFiles: how much untracked detail to show (:no, :normal or :all)" type = "symbol" }
+    param "show_untracked_files" {
+      description = "status.showUntrackedFiles: how much untracked detail to show (:no, :normal or :all)"
+      type = "symbol"
+
+      symbol "no"     { description = "Show none" }
+      symbol "normal" { description = "Show untracked files and directories" }
+      symbol "all"    { description = "Show every file in an untracked directory" }
+    }
     param "submodule_summary" { description = "status.submoduleSummary: true/false, or the number of summary lines" type = "string" }
     param "ahead_behind" { description = "status.aheadBehind: compute ahead/behind counts against the upstream" type = "bool" }
     param "relative_paths" { description = "status.relativePaths: report paths relative to the current directory" type = "bool" }
-    param "renames" { description = "status.renames: rename detection in status output (:true, :false or :copies)" type = "symbol" }
+    param "renames" {
+      description = "status.renames: rename detection in status output (:true, :false or :copies)"
+      type = "symbol"
+
+      symbol "true"   { description = "Detect renames" }
+      symbol "false"  { description = "Detect nothing" }
+      symbol "copies" { description = "Detect renames and copies" }
+    }
     param "rename_limit" { description = "status.renameLimit: files to consider during rename detection" type = "int" }
     param "display_comment_prefix" { description = "status.displayCommentPrefix: prefix status lines with the comment character" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -258,15 +558,42 @@ package "git" {
     script = "resources/log.ws"
     concurrency = "global"
     param "date" { description = "log.date: default date format, such as relative, iso or short" type = "string" }
-    param "decorate" { description = "log.decorate: ref decoration detail (:short, :full, :auto or :no)" type = "symbol" }
+    param "decorate" {
+      description = "log.decorate: ref decoration detail (:short, :full, :auto or :no)"
+      type = "symbol"
+
+      symbol "short" { description = "Ref names without their refs/ prefix" }
+      symbol "full"  { description = "Ref names with their full path" }
+      symbol "auto"  { description = "short when writing to a terminal, otherwise none" }
+      symbol "no"    { description = "No decoration" }
+    }
     param "follow" { description = "log.follow: follow renames when given a single path" type = "bool" }
     param "abbrev_commit" { description = "log.abbrevCommit: abbreviate commit ids by default" type = "bool" }
     param "show_signature" { description = "log.showSignature: verify and show signatures on signed commits" type = "bool" }
     param "mailmap" { description = "log.mailmap: apply .mailmap to reported names and emails" type = "bool" }
     param "graph_colors" { description = "log.graphColors: comma-separated colours used by --graph" type = "string" }
-    param "diff_merges" { description = "log.diffMerges: how merge commits are diffed (:off, :first_parent, :remerge, …)" type = "symbol" }
+    param "diff_merges" {
+      description = "log.diffMerges: how merge commits are diffed (:off, :first_parent, :remerge, …)"
+      type = "symbol"
+
+      symbol "off"            { description = "No diff for merge commits" }
+      symbol "none"           { description = "The same as off" }
+      symbol "on"             { description = "The default format, currently separate" }
+      symbol "first_parent"   { description = "Diff against the first parent only" }
+      symbol "separate"       { description = "One diff per parent" }
+      symbol "combined"       { description = "A single combined diff against every parent" }
+      symbol "dense_combined" { description = "combined, omitting uninteresting hunks" }
+      symbol "remerge"        { description = "Diff against a fresh remerge of the parents" }
+    }
     param "show_root" { description = "log.showRoot: show the root commit as a diff against the empty tree" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -276,19 +603,125 @@ package "git" {
     concurrency = "global"
     // Individual colour slots (color.diff.meta and friends) are not
     // enumerated here — reach them with git.config_entry.
-    param "ui" { description = "color.ui: master colour switch (:true, :false, :auto, :always or :never)" type = "symbol" }
-    param "branch" { description = "color.branch: colour git branch output" type = "symbol" }
-    param "diff" { description = "color.diff: colour diff output" type = "symbol" }
-    param "status" { description = "color.status: colour git status output" type = "symbol" }
-    param "grep" { description = "color.grep: colour git grep output" type = "symbol" }
-    param "interactive" { description = "color.interactive: colour interactive prompts and help" type = "symbol" }
-    param "push" { description = "color.push: colour push error messages" type = "symbol" }
-    param "remote" { description = "color.remote: colour remote-side status lines" type = "symbol" }
-    param "show_branch" { description = "color.showBranch: colour git show-branch output" type = "symbol" }
-    param "advice" { description = "color.advice: colour advice hints" type = "symbol" }
-    param "transport" { description = "color.transport: colour transport rejection messages" type = "symbol" }
+    param "ui" {
+      description = "color.ui: master colour switch (:true, :false, :auto, :always or :never)"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "branch" {
+      description = "color.branch: colour git branch output"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "diff" {
+      description = "color.diff: colour diff output"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "status" {
+      description = "color.status: colour git status output"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "grep" {
+      description = "color.grep: colour git grep output"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "interactive" {
+      description = "color.interactive: colour interactive prompts and help"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "push" {
+      description = "color.push: colour push error messages"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "remote" {
+      description = "color.remote: colour remote-side status lines"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "show_branch" {
+      description = "color.showBranch: colour git show-branch output"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "advice" {
+      description = "color.advice: colour advice hints"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
+    param "transport" {
+      description = "color.transport: colour transport rejection messages"
+      type = "symbol"
+
+      symbol "true"   { description = "Always colour" }
+      symbol "false"  { description = "Never colour" }
+      symbol "auto"   { description = "Colour when writing to a terminal" }
+      symbol "always" { description = "Colour even when piped" }
+      symbol "never"  { description = "Never colour" }
+    }
     param "pager" { description = "color.pager: feed coloured output through the pager" type = "bool" }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -302,8 +735,22 @@ package "git" {
     concurrency = "global"
     param "name" { description = "Alias name, as in git <name>" type = "string" required = true }
     param "command" { description = "Command the alias expands to; prefix with ! for a shell command (required when present)" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Define the alias" }
+      symbol "absent"  { description = "Remove the alias" }
+    }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -314,8 +761,22 @@ package "git" {
     // safe.directory is multi-valued, so this adds and removes single
     // entries and leaves any siblings alone.
     param "path" { description = "Repository path to trust, or the literal * to trust every path" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the directory to safe.directory" }
+      symbol "absent"  { description = "Remove the directory from safe.directory" }
+    }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -327,8 +788,22 @@ package "git" {
     // and the only way to remove a key a section resource can set.
     param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase" type = "string" required = true }
     param "value" { description = "Desired value (required when present); when absent, removes just this occurrence of a multi-valued key" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
-    param "scope" { description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)" type = "symbol" default = :global }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the key to the given value" }
+      symbol "absent"  { description = "Remove the key" }
+    }
+    param "scope" {
+      description = "Config scope: :global (~/.gitconfig) or :system (/etc/gitconfig)"
+      type = "symbol"
+      default = :global
+
+      symbol "global" { description = "The user's own config, ~/.gitconfig" }
+      symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
+    }
     param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
   }
 
@@ -676,25 +1151,17 @@ package "git" {
   // tested here: those fail plan-time validation, which would abort the
   // whole run rather than erroring one step. Nothing may `require` these —
   // dependents of an errored step come back not_run.
+  //
+  // Symbols outside a declared set are in that same category now that the
+  // params enumerate their values: `autocrlf = :bogus` and `scope =
+  // :nonsense` are rejected by validation before the run starts, so they
+  // can no longer be expressed as erroring steps. config-weave's own suite
+  // covers that check.
   test "invalid_input_errors" {
-    description = "Bad symbols, missing values and a bad scope are rejected"
+    description = "Missing values are rejected"
     image = "debian:12"
     group = "git"
     setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/errors"
-
-    step "bad_symbol" {
-      description = "A symbol value outside the allowed set"
-      resource = "core"
-      expect = "error"
-      properties { autocrlf = :bogus home = "/root/errors" }
-    }
-
-    step "bad_scope" {
-      description = "A scope that is neither :global nor :system"
-      resource = "user"
-      expect = "error"
-      properties { name = "nobody" scope = :nonsense home = "/root/errors" }
-    }
 
     step "alias_without_command" {
       description = "An alias with ensure = :present and no command"

@@ -31,10 +31,12 @@ upgrade.
 
 ## Packages
 
-Removal is expressed with `ensure = "absent"` on the same resource that
+Removal is expressed with `ensure = :absent` on the same resource that
 creates the thing — every install/remove resource takes an `ensure` param
-(`"present"`, the default, or `"absent"`) instead of a separate `*_absent`
-resource.
+(`:present`, the default, or `:absent`) instead of a separate `*_absent`
+resource. `ensure` is a symbol, so it must be written `:absent`; the string
+spelling `"absent"` is a validation error. Each resource's page lists the
+legal values under **Symbol values**.
 
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
 - `linux_files`: files (exact content or URL-fetched), directories,
@@ -71,14 +73,14 @@ Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
 and **Linux** (the Microsoft repo plus `mssql-conf`), then converge a broad set
 of T-SQL-driven settings via `sqlcmd`:
 
-- `instance` — silent install/uninstall (`ensure = present|absent`), feature
+- `instance` — silent install/uninstall (`ensure = :present|:absent`), feature
   selection, edition, collation, service accounts, TCP and a
   `ConfigurationFile.ini` passthrough on Windows.
 - `server_setting` — any `sp_configure` value (compares the running
   `value_in_use`).
 - `login`, `database`, `database_user` — principals, databases (recovery
   model, owner, compatibility level) and role membership; `login` and
-  `database` drop via `ensure = "absent"`.
+  `database` drop via `ensure = :absent`.
 - `database_cdc`, `cdc_table` — Change Data Capture at the database and table
   level.
 - `tcp` — the TCP/IP protocol and static port (registry on Windows, `mssql-conf`
@@ -86,7 +88,7 @@ of T-SQL-driven settings via `sqlcmd`:
 - `replication_distributor`, `replication_publisher` — distributor setup and
   enabling a database for transactional or merge replication.
 - `database_mail`, `agent_job` — Database Mail profiles and SQL Agent jobs
-  (`agent_job` deletes via `ensure = "absent"`).
+  (`agent_job` deletes via `ensure = :absent`).
 - `availability_group` — enable Always On HADR and create an availability group
   on the primary (multi-node joins are a scenario concern).
 - `instance_info` gatherer — version, edition, collation and HADR state.

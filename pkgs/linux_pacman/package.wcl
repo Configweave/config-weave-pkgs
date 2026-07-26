@@ -6,7 +6,14 @@ package "linux_pacman" {
     script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the package" }
+      symbol "absent"  { description = "Remove the package" }
+    }
   }
 
   resource "cache_updated" {
@@ -21,7 +28,14 @@ package "linux_pacman" {
     script = "resources/aur_package.ws"
     concurrency = "exclusive"
     param "name" { description = "AUR package name" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Build and install the AUR package" }
+      symbol "absent"  { description = "Remove the package" }
+    }
     param "helper" { description = "AUR helper: auto (detect yay then paru), yay or paru" type = "string" default = "auto" }
     param "user" { description = "Non-root user to build/install as (AUR builds cannot run as root)" type = "string" required = true }
   }

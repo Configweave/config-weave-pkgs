@@ -6,7 +6,14 @@ package "windows_files" {
     script = "resources/file.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the file and converge its content" }
+      symbol "absent"  { description = "Delete the file" }
+    }
     param "content" { description = "Exact file content; used when present" type = "string" default = "" }
   }
 
@@ -15,7 +22,14 @@ package "windows_files" {
     script = "resources/directory.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the directory" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the directory and its parents" }
+      symbol "absent"  { description = "Delete the directory recursively" }
+    }
   }
 
   resource "permissions" {

@@ -9,7 +9,14 @@ package "windows_network" {
     param "ip" { description = "IPv4 address the interface should hold" type = "string" required = true }
     param "prefix_length" { description = "Subnet prefix length, e.g. 24" type = "int" required = true }
     param "gateway" { description = "Default gateway; empty leaves the default route unmanaged" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the static address" }
+      symbol "absent"  { description = "Return the interface to DHCP" }
+    }
   }
 
   resource "dns_servers" {
@@ -25,7 +32,14 @@ package "windows_network" {
     script = "resources/firewall_rule.ws"
     concurrency = "exclusive"
     param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the rule" }
+      symbol "absent"  { description = "Delete the rule" }
+    }
     param "direction" { description = "Traffic direction: Inbound or Outbound" type = "string" default = "Inbound" }
     param "action" { description = "Rule action: Allow or Block" type = "string" default = "Allow" }
     param "protocol" { description = "Protocol: TCP, UDP, ICMPv4, ..." type = "string" default = "TCP" }

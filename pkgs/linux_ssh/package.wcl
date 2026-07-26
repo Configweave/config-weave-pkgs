@@ -8,7 +8,14 @@ package "linux_ssh" {
     concurrency = "exclusive"
     param "user" { description = "Account name" type = "string" required = true }
     param "key" { description = "Authorized key line" type = "string" required = true }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the key to authorized_keys" }
+      symbol "absent"  { description = "Remove the key from authorized_keys" }
+    }
     param "home" { description = "Optional home directory override" type = "string" default = "" }
   }
 
@@ -28,7 +35,14 @@ package "linux_ssh" {
     concurrency = "parallel"
     param "key" { description = "ssh_config option name, such as StrictHostKeyChecking" type = "string" required = true }
     param "value" { description = "Option value (required when present)" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the ssh_config.d drop-in" }
+      symbol "absent"  { description = "Remove the drop-in" }
+    }
     param "host" { description = "Host pattern the option applies to" type = "string" default = "*" }
   }
 
@@ -38,7 +52,14 @@ package "linux_ssh" {
     concurrency = "exclusive"
     param "key" { description = "sshd_config option name, such as PasswordAuthentication" type = "string" required = true }
     param "value" { description = "Option value (required when present)" type = "string" default = "" }
-    param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the sshd_config.d drop-in" }
+      symbol "absent"  { description = "Remove the drop-in" }
+    }
     param "validate" { description = "Run sshd -t validation when sshd is available" type = "bool" default = true }
   }
 
