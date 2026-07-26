@@ -3,7 +3,7 @@ package "linux_packages" {
 
   gatherer "package_manager" {
     description = "Detect the host package manager"
-    script = "gatherers/package_manager.wisp"
+    script = "gatherers/package_manager.ws"
     returns "manager" { description = "Detected manager (apt, dnf, pacman, zypper, apk, ...)" type = "string" }
     returns "known" { description = "True when a supported manager was found" type = "bool" }
   }

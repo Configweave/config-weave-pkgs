@@ -3,7 +3,7 @@ package "windows_packages" {
 
   resource "chocolatey_package" {
     description = "Ensure a Chocolatey package is installed or absent"
-    script = "resources/chocolatey_package.wisp"
+    script = "resources/chocolatey_package.ws"
     concurrency = "exclusive"
     param "name" { description = "Chocolatey package id" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -13,7 +13,7 @@ package "windows_packages" {
 
   resource "chocolatey_source" {
     description = "Ensure a Chocolatey source is registered"
-    script = "resources/chocolatey_source.wisp"
+    script = "resources/chocolatey_source.ws"
     concurrency = "exclusive"
     param "name" { description = "Source name" type = "string" required = true }
     param "url" { description = "Source URL" type = "string" required = true }
@@ -21,7 +21,7 @@ package "windows_packages" {
 
   resource "scoop_package" {
     description = "Ensure a Scoop app is installed (per-user) or absent"
-    script = "resources/scoop_package.wisp"
+    script = "resources/scoop_package.ws"
     concurrency = "exclusive"
     param "name" { description = "Scoop app name, optionally bucket/name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -29,7 +29,7 @@ package "windows_packages" {
 
   resource "scoop_bucket" {
     description = "Ensure a Scoop bucket is added"
-    script = "resources/scoop_bucket.wisp"
+    script = "resources/scoop_bucket.ws"
     concurrency = "exclusive"
     param "name" { description = "Bucket name" type = "string" required = true }
     param "url" { description = "Optional bucket repository URL" type = "string" default = "" }
@@ -37,7 +37,7 @@ package "windows_packages" {
 
   resource "winget_package" {
     description = "Ensure a winget package is installed or removed"
-    script = "resources/winget_package.wisp"
+    script = "resources/winget_package.ws"
     concurrency = "exclusive"
     param "id" { description = "winget package identifier (exact)" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -47,7 +47,7 @@ package "windows_packages" {
 
   resource "winget_source" {
     description = "Ensure a winget source is registered (or removed)"
-    script = "resources/winget_source.wisp"
+    script = "resources/winget_source.ws"
     concurrency = "exclusive"
     param "name" { description = "Source name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -57,21 +57,21 @@ package "windows_packages" {
 
   gatherer "winget_packages" {
     description = "Enumerate installed winget packages (id, name, version)"
-    script = "gatherers/winget_packages.wisp"
+    script = "gatherers/winget_packages.ws"
     returns "count" { description = "Number of installed packages listed" type = "int" }
     returns "packages" { description = "One { name, id, version } map per installed package" type = "list" }
   }
 
   gatherer "chocolatey_packages" {
     description = "Enumerate installed Chocolatey packages (name, version)"
-    script = "gatherers/chocolatey_packages.wisp"
+    script = "gatherers/chocolatey_packages.ws"
     returns "count" { description = "Number of installed packages listed; 0 without Chocolatey" type = "int" }
     returns "packages" { description = "One { name, version } map per installed package" type = "list" }
   }
 
   gatherer "scoop_packages" {
     description = "Enumerate installed Scoop apps (name, version) for the current user"
-    script = "gatherers/scoop_packages.wisp"
+    script = "gatherers/scoop_packages.ws"
     returns "count" { description = "Number of installed apps listed; 0 without Scoop" type = "int" }
     returns "packages" { description = "One { name, version } map per installed app" type = "list" }
   }
@@ -93,7 +93,7 @@ package "windows_packages" {
     // because the installer's PATH change is invisible to the already
     // running guest agent, while System32 is always on PATH.
     setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $s=irm https://community.chocolatey.org/install.ps1; iex $s && echo @C:\\ProgramData\\chocolatey\\choco.exe %* > C:\\Windows\\System32\\choco.cmd"
-    verify = "tests/chocolatey_verify.wisp"
+    verify = "tests/chocolatey_verify.ws"
 
     step "self_installed" {
       description = "Chocolatey lists itself as installed after the bootstrap"

@@ -3,7 +3,7 @@ package "linux_ssh" {
 
   resource "authorized_key" {
     description = "Ensure an SSH authorized key is present or absent"
-    script = "resources/authorized_key.wisp"
+    script = "resources/authorized_key.ws"
     // read-modify-write on a shared authorized_keys file — parallel steps lose updates
     concurrency = "exclusive"
     param "user" { description = "Account name" type = "string" required = true }
@@ -14,7 +14,7 @@ package "linux_ssh" {
 
   resource "known_host" {
     description = "Ensure a known_hosts entry is present"
-    script = "resources/known_host.wisp"
+    script = "resources/known_host.ws"
     concurrency = "exclusive"
     param "name" { description = "Host name the entry is for (informational)" type = "string" default = "" }
     param "key" { description = "Full known_hosts line" type = "string" required = true }
@@ -24,7 +24,7 @@ package "linux_ssh" {
 
   resource "ssh_config_setting" {
     description = "Ensure an ssh client option is set via an ssh_config.d drop-in"
-    script = "resources/ssh_config_setting.wisp"
+    script = "resources/ssh_config_setting.ws"
     concurrency = "parallel"
     param "key" { description = "ssh_config option name, such as StrictHostKeyChecking" type = "string" required = true }
     param "value" { description = "Option value (required when present)" type = "string" default = "" }
@@ -34,7 +34,7 @@ package "linux_ssh" {
 
   resource "sshd_config_setting" {
     description = "Ensure an sshd option is set via an sshd_config.d drop-in"
-    script = "resources/sshd_config_setting.wisp"
+    script = "resources/sshd_config_setting.ws"
     concurrency = "exclusive"
     param "key" { description = "sshd_config option name, such as PasswordAuthentication" type = "string" required = true }
     param "value" { description = "Option value (required when present)" type = "string" default = "" }
@@ -48,7 +48,7 @@ package "linux_ssh" {
     description = "Keys, known hosts and config drop-ins converge in a Debian container"
     image = "debian:12"
     setup = "mkdir -p /root/.ssh /etc/ssh/sshd_config.d && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old\\n' > /root/.ssh/authorized_keys && printf 'X11Forwarding yes\\n' > /etc/ssh/sshd_config.d/50-config-weave-x11forwarding.conf"
-    verify = "tests/ssh_verify.wisp"
+    verify = "tests/ssh_verify.ws"
 
     step "key" {
       description = "Install an authorized key for root"

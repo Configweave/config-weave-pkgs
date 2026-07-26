@@ -3,7 +3,7 @@ package "windows_service" {
 
   resource "service_installed" {
     description = "Ensure a Windows service is registered with the SCM, or is removed"
-    script = "resources/service_installed.wisp"
+    script = "resources/service_installed.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name (the SCM key, not the display name)" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -17,7 +17,7 @@ package "windows_service" {
 
   resource "service_state" {
     description = "Ensure a Windows service is running or stopped"
-    script = "resources/service_state.wisp"
+    script = "resources/service_state.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "state" { description = "Desired state: running or stopped" type = "string" required = true }
@@ -25,7 +25,7 @@ package "windows_service" {
 
   resource "service_startup" {
     description = "Ensure a Windows service has the desired startup type"
-    script = "resources/service_startup.wisp"
+    script = "resources/service_startup.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "startup" { description = "Desired startup type: automatic, manual or disabled" type = "string" required = true }
@@ -40,7 +40,7 @@ package "windows_service" {
     description = "Service registration, state and startup type converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/service_verify.wisp"
+    verify = "tests/service_verify.ws"
 
     step "register_test_service" {
       description = "Register the weave-testsvc service"

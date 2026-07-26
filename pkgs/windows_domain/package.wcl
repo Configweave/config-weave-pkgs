@@ -6,7 +6,7 @@ package "windows_domain" {
   // holds (see the returns declarations).
   gatherer "membership" {
     description = "Report this machine's domain or workgroup membership, its names and role, and the FSMO roles it holds when it is a DC"
-    script = "gatherers/membership.wisp"
+    script = "gatherers/membership.ws"
     returns "computer_name" { description = "This machine's computer name" type = "string" }
     returns "part_of_domain" { description = "True when domain-joined" type = "bool" }
     returns "domain" { description = "Domain FQDN when joined; empty in a workgroup" type = "string" }
@@ -24,7 +24,7 @@ package "windows_domain" {
   // one exists, or a same-named second forest results.
   resource "domain_controller" {
     description = "Ensure this server is (or is not) a domain controller — creates the forest when the domain does not exist yet, joins it as an additional DC when it does, and demotes with ensure = :absent"
-    script = "resources/domain_controller.wisp"
+    script = "resources/domain_controller.ws"
     concurrency = "global"
     param "domain_name"         { description = "Domain FQDN, e.g. corp.example.com" type = "string" required = true }
     param "ensure"              { description = ":present promotes, :absent demotes" type = "symbol" default = :present }
@@ -46,7 +46,7 @@ package "windows_domain" {
 
   resource "domain_member" {
     description = "Join this computer to an existing Active Directory domain"
-    script = "resources/domain_member.wisp"
+    script = "resources/domain_member.ws"
     concurrency = "global"
     param "domain_name"         { description = "Domain FQDN to join" type = "string" required = true }
     param "credential_user"     { description = "Account with join rights (UPN or DOMAIN\\user)" type = "string" required = true }
@@ -59,7 +59,7 @@ package "windows_domain" {
   // so leaving a domain (or another workgroup) is expressed by joining X.
   resource "workgroup_member" {
     description = "Ensure this computer is in the given workgroup — leaves its current domain or workgroup and joins it instead"
-    script = "resources/workgroup_member.wisp"
+    script = "resources/workgroup_member.ws"
     concurrency = "global"
     param "workgroup_name"      { description = "Workgroup to be a member of, e.g. WORKGROUP" type = "string" required = true }
     param "credential_user"     { description = "Account allowed to unjoin the current domain (UPN or DOMAIN\\user); empty = the current account must have unjoin rights. Ignored for workgroup-to-workgroup moves" type = "string" default = "" }
@@ -104,6 +104,6 @@ package "windows_domain" {
   scenario "ad_matrix" {
     description = "Forest, additional DC, member join and a second forest converge over real reboots"
     lab = "tests/ad-lab"
-    script = "tests/ad_matrix.wisp"
+    script = "tests/ad_matrix.ws"
   }
 }

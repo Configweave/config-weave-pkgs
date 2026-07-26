@@ -3,7 +3,7 @@ package "linux_system" {
 
   resource "sysctl" {
     description = "Ensure a sysctl value at runtime and persisted via a sysctl.d drop-in"
-    script = "resources/sysctl.wisp"
+    script = "resources/sysctl.ws"
     concurrency = "global"
     param "key" { description = "Sysctl key" type = "string" required = true }
     param "value" { description = "Desired value" type = "string" required = true }
@@ -11,21 +11,21 @@ package "linux_system" {
 
   resource "hostname" {
     description = "Ensure /etc/hostname content"
-    script = "resources/hostname.wisp"
+    script = "resources/hostname.ws"
     concurrency = "global"
     param "name" { description = "Desired hostname" type = "string" required = true }
   }
 
   resource "timezone" {
     description = "Ensure system timezone"
-    script = "resources/timezone.wisp"
+    script = "resources/timezone.ws"
     concurrency = "global"
     param "name" { description = "Timezone such as UTC or Australia/Brisbane" type = "string" required = true }
   }
 
   resource "locale" {
     description = "Ensure a locale is enabled in /etc/locale.gen (and generated) or absent"
-    script = "resources/locale.wisp"
+    script = "resources/locale.ws"
     // read-modify-write on the shared /etc/locale.gen
     concurrency = "exclusive"
     param "name" { description = "Locale name such as en_AU.UTF-8" type = "string" required = true }
@@ -35,7 +35,7 @@ package "linux_system" {
 
   resource "cron_job" {
     description = "Ensure a single cron.d job entry is present or absent"
-    script = "resources/cron_job.wisp"
+    script = "resources/cron_job.ws"
     concurrency = "parallel"
     param "name" { description = "Job name (also the cron.d filename; no dots)" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -46,7 +46,7 @@ package "linux_system" {
 
   resource "fstab_mount" {
     description = "Ensure an /etc/fstab entry and optionally mount it"
-    script = "resources/fstab_mount.wisp"
+    script = "resources/fstab_mount.ws"
     concurrency = "global"
     param "spec" { description = "Filesystem spec" type = "string" required = true }
     param "mountpoint" { description = "Mount point" type = "string" required = true }
@@ -62,7 +62,7 @@ package "linux_system" {
     image = "debian:12"
     group = "system"
     setup = "echo placeholder > /etc/cron.d/cw-rm-job"
-    verify = "tests/cron_job_verify.wisp"
+    verify = "tests/cron_job_verify.ws"
 
     step "add" {
       description = "Add a cron job"
@@ -84,7 +84,7 @@ package "linux_system" {
     image = "debian:12"
     group = "system"
     setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen"
-    verify = "tests/singletons_verify.wisp"
+    verify = "tests/singletons_verify.ws"
 
     step "hostname" {
       description = "Write /etc/hostname"

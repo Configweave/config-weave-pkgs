@@ -5,14 +5,14 @@ package "windows_defender" {
   // run as global singletons.
   resource "realtime_protection" {
     description = "Enable or disable Defender real-time monitoring. Note that Tamper Protection, when active, can silently override a disable"
-    script = "resources/realtime_protection.wisp"
+    script = "resources/realtime_protection.ws"
     concurrency = "global"
     param "enabled" { description = "Whether real-time monitoring should be on" type = "bool" required = true }
   }
 
   resource "exclusion" {
     description = "Ensure a Defender scan exclusion exists, or is absent"
-    script = "resources/exclusion.wisp"
+    script = "resources/exclusion.ws"
     concurrency = "global"
     param "kind" { description = "Exclusion kind: path, extension or process" type = "string" required = true }
     param "value" { description = "The excluded path, extension or process name" type = "string" required = true }
@@ -21,7 +21,7 @@ package "windows_defender" {
 
   resource "preference" {
     description = "Ensure a single Set-MpPreference setting holds the given value (compared string-wise against Get-MpPreference)"
-    script = "resources/preference.wisp"
+    script = "resources/preference.ws"
     concurrency = "global"
     param "name" { description = "Set-MpPreference parameter name, e.g. ScanScheduleDay" type = "string" required = true }
     param "value" { description = "Desired value as a string; $true, $false and numbers pass through unquoted, everything else is single-quoted" type = "string" required = true }
@@ -35,7 +35,7 @@ package "windows_defender" {
     description = "A path exclusion converges; real-time protection detection works"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/defender_verify.wisp"
+    verify = "tests/defender_verify.ws"
 
     step "exclude_test_dir" {
       description = "Exclude C:\\weave-defender-test from scans"

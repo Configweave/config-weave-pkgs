@@ -3,7 +3,7 @@ package "linux_accounts" {
 
   resource "group" {
     description = "Ensure a local group exists or is absent"
-    script = "resources/group.wisp"
+    script = "resources/group.ws"
     concurrency = "exclusive"
     param "name" { description = "Group name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -12,7 +12,7 @@ package "linux_accounts" {
 
   resource "user" {
     description = "Ensure a local user exists or is absent"
-    script = "resources/user.wisp"
+    script = "resources/user.ws"
     concurrency = "exclusive"
     param "name" { description = "User name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -26,7 +26,7 @@ package "linux_accounts" {
 
   resource "sudoers_user" {
     description = "Ensure a sudoers.d rule for a user exists or is absent"
-    script = "resources/sudoers_user.wisp"
+    script = "resources/sudoers_user.ws"
     concurrency = "global"
     param "user" { description = "Account the rule applies to" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -45,7 +45,7 @@ package "linux_accounts" {
     // removes a same-named primary group itself (USERGROUPS_ENAB), which
     // would leave rm_group nothing to do.
     setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && mkdir -p /etc/sudoers.d && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
-    verify = "tests/accounts_verify.wisp"
+    verify = "tests/accounts_verify.ws"
 
     step "group" {
       description = "Create group"

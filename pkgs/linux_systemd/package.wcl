@@ -3,7 +3,7 @@ package "linux_systemd" {
 
   resource "service_state" {
     description = "Ensure a systemd service is running or stopped"
-    script = "resources/service_state.wisp"
+    script = "resources/service_state.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "state" { description = "Desired state: running or stopped" type = "string" required = true }
@@ -11,7 +11,7 @@ package "linux_systemd" {
 
   resource "service_enabled" {
     description = "Ensure a systemd service starts at boot"
-    script = "resources/service_enabled.wisp"
+    script = "resources/service_enabled.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "enabled" { description = "Start at boot" type = "bool" required = true }
@@ -19,7 +19,7 @@ package "linux_systemd" {
 
   resource "unit_file" {
     description = "Ensure a systemd unit file under /etc/systemd/system"
-    script = "resources/unit_file.wisp"
+    script = "resources/unit_file.ws"
     concurrency = "exclusive"
     param "name" { description = "Unit filename such as example.service" type = "string" required = true }
     param "content" { description = "Unit file content" type = "string" required = true }
@@ -29,7 +29,7 @@ package "linux_systemd" {
   test "unit_file_converges" {
     description = "Unit files converge in a container (no live systemd needed)"
     image = "debian:12"
-    verify = "tests/unit_file_verify.wisp"
+    verify = "tests/unit_file_verify.ws"
 
     step "unit" {
       description = "Write a unit file"

@@ -3,7 +3,7 @@ package "linux_network" {
 
   resource "hosts_entry" {
     description = "Ensure an /etc/hosts entry maps an address to a set of names"
-    script = "resources/hosts_entry.wisp"
+    script = "resources/hosts_entry.ws"
     // read-modify-write on the shared /etc/hosts — parallel steps lose updates
     concurrency = "exclusive"
     param "ip" { description = "IP address" type = "string" required = true }
@@ -12,7 +12,7 @@ package "linux_network" {
 
   resource "firewalld_rule" {
     description = "Ensure a firewalld rule (service, port, source or rich rule) is present or absent"
-    script = "resources/firewalld_rule.wisp"
+    script = "resources/firewalld_rule.ws"
     concurrency = "global"
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "zone" { description = "Zone to operate on; empty uses the default zone" type = "string" default = "" }
@@ -25,7 +25,7 @@ package "linux_network" {
 
   resource "ufw_rule" {
     description = "Ensure a ufw rule is present or absent"
-    script = "resources/ufw_rule.wisp"
+    script = "resources/ufw_rule.ws"
     concurrency = "global"
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "action" { description = "Rule action: allow, deny, reject or limit" type = "string" default = "allow" }
@@ -35,7 +35,7 @@ package "linux_network" {
 
   resource "nftables_table" {
     description = "Ensure an nftables table exists or is absent"
-    script = "resources/nftables_table.wisp"
+    script = "resources/nftables_table.ws"
     concurrency = "global"
     param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
     param "name" { description = "Table name" type = "string" required = true }
@@ -44,7 +44,7 @@ package "linux_network" {
 
   resource "nftables_chain" {
     description = "Ensure an nftables chain exists or is absent (base chain when type/hook are set)"
-    script = "resources/nftables_chain.wisp"
+    script = "resources/nftables_chain.ws"
     concurrency = "global"
     param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
     param "table" { description = "Owning table name" type = "string" required = true }
@@ -58,7 +58,7 @@ package "linux_network" {
 
   resource "nftables_rule" {
     description = "Ensure an nftables rule is present in or absent from a chain"
-    script = "resources/nftables_rule.wisp"
+    script = "resources/nftables_rule.ws"
     concurrency = "global"
     param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
     param "table" { description = "Owning table name" type = "string" required = true }
@@ -71,7 +71,7 @@ package "linux_network" {
     description = "hosts entries converge in a Debian container"
     image = "debian:12"
     group = "network"
-    verify = "tests/network_verify.wisp"
+    verify = "tests/network_verify.ws"
 
     step "hosts" {
       description = "Add a hosts entry"
@@ -87,7 +87,7 @@ package "linux_network" {
   test "nftables_and_ufw_converge" {
     description = "An nftables table, chain and rule and a ufw rule converge"
     template = "x86_64/ubuntu-24.04"
-    verify = "tests/firewall_verify.wisp"
+    verify = "tests/firewall_verify.ws"
 
     step "table" {
       description = "Create an nftables table"
@@ -151,7 +151,7 @@ package "linux_network" {
     description = "A firewalld port and service rule converge in the permanent configuration"
     template = "x86_64/fedora-44"
     setup = "dnf install -y firewalld && systemctl start firewalld"
-    verify = "tests/firewalld_verify.wisp"
+    verify = "tests/firewalld_verify.ws"
 
     step "port" {
       description = "Allow a port in the default zone"

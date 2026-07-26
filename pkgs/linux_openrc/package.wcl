@@ -3,7 +3,7 @@ package "linux_openrc" {
 
   resource "service_state" {
     description = "Ensure an OpenRC service is running or stopped"
-    script = "resources/service_state.wisp"
+    script = "resources/service_state.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "state" { description = "Desired state: running or stopped" type = "string" required = true }
@@ -11,7 +11,7 @@ package "linux_openrc" {
 
   resource "service_enabled" {
     description = "Ensure an OpenRC service is added to a runlevel"
-    script = "resources/service_enabled.wisp"
+    script = "resources/service_enabled.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "enabled" { description = "Add to the runlevel" type = "bool" required = true }
@@ -23,7 +23,7 @@ package "linux_openrc" {
   test "service_converges" {
     description = "A service is added to the default runlevel and started"
     template = "x86_64/alpine-3.23"
-    verify = "tests/service_verify.wisp"
+    verify = "tests/service_verify.ws"
 
     // crond ships in the image but is neither enabled nor running, so both
     // resources have somewhere to converge to.

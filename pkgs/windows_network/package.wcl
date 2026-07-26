@@ -3,7 +3,7 @@ package "windows_network" {
 
   resource "static_ip" {
     description = "Ensure an interface has a static IPv4 address (absent returns it to DHCP)"
-    script = "resources/static_ip.wisp"
+    script = "resources/static_ip.ws"
     concurrency = "exclusive"
     param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
     param "ip" { description = "IPv4 address the interface should hold" type = "string" required = true }
@@ -14,7 +14,7 @@ package "windows_network" {
 
   resource "dns_servers" {
     description = "Ensure an interface uses exactly the given IPv4 DNS servers (an empty list resets to DHCP-assigned)"
-    script = "resources/dns_servers.wisp"
+    script = "resources/dns_servers.ws"
     concurrency = "exclusive"
     param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
     param "servers" { description = "DNS server addresses in preference order; compared order-sensitively" type = "list" required = true }
@@ -22,7 +22,7 @@ package "windows_network" {
 
   resource "firewall_rule" {
     description = "Ensure a Windows Firewall rule exists (enabled state, direction and action are reconciled; port, address and profile are applied on every converge but not probed for drift)"
-    script = "resources/firewall_rule.wisp"
+    script = "resources/firewall_rule.ws"
     concurrency = "exclusive"
     param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -43,7 +43,7 @@ package "windows_network" {
     description = "A firewall rule converges and absent detection works"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/network_verify.wisp"
+    verify = "tests/network_verify.ws"
 
     step "allow_8443" {
       description = "Allow inbound TCP 8443"

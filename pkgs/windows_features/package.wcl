@@ -3,7 +3,7 @@ package "windows_features" {
 
   resource "windows_optional_feature" {
     description = "Enable or disable a Windows optional feature (DISM)"
-    script = "resources/windows_optional_feature.wisp"
+    script = "resources/windows_optional_feature.ws"
     concurrency = "exclusive"
     param "name" { description = "Feature name such as Microsoft-Hyper-V or NetFx3" type = "string" required = true }
     param "ensure" { description = "Desired state: :present (enabled) or :absent (disabled)" type = "symbol" default = :present }
@@ -11,7 +11,7 @@ package "windows_features" {
 
   resource "windows_capability" {
     description = "Add or remove a Windows capability (Feature on Demand)"
-    script = "resources/windows_capability.wisp"
+    script = "resources/windows_capability.ws"
     concurrency = "exclusive"
     param "name" { description = "Capability name such as OpenSSH.Client~~~~0.0.1.0" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -19,7 +19,7 @@ package "windows_features" {
 
   resource "windows_server_feature" {
     description = "Install or remove a Windows Server role/feature"
-    script = "resources/windows_server_feature.wisp"
+    script = "resources/windows_server_feature.ws"
     concurrency = "exclusive"
     param "name" { description = "Feature name such as Web-Server or DNS" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -37,7 +37,7 @@ package "windows_features" {
     description = "Server feature converges; optional feature and capability detection work"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/features_verify.wisp"
+    verify = "tests/features_verify.ws"
 
     step "telnet_client" {
       description = "Install the Telnet-Client feature (offline, no reboot)"

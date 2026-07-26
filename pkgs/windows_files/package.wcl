@@ -3,7 +3,7 @@ package "windows_files" {
 
   resource "file" {
     description = "Ensure a file exists with the given content, or is absent"
-    script = "resources/file.wisp"
+    script = "resources/file.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -12,7 +12,7 @@ package "windows_files" {
 
   resource "directory" {
     description = "Ensure a directory exists (parents included), or is absent (recursive delete)"
-    script = "resources/directory.wisp"
+    script = "resources/directory.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the directory" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -20,7 +20,7 @@ package "windows_files" {
 
   resource "permissions" {
     description = "Ensure a file or directory carries the given NTFS owner, access rules and inheritance state"
-    script = "resources/permissions.wisp"
+    script = "resources/permissions.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the file or directory (must exist)" type = "string" required = true }
     param "owner" { description = "NT account that should own the path, e.g. BUILTIN\\Administrators; empty leaves ownership unmanaged" type = "string" default = "" }
@@ -32,7 +32,7 @@ package "windows_files" {
     description = "Directory, file and NTFS permissions converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/files_verify.wisp"
+    verify = "tests/files_verify.ws"
 
     step "test_dir" {
       description = "Create the working directory"

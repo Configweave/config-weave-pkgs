@@ -6,7 +6,7 @@ use json
 // domain/workgroup membership — and, when it is a DC, the FSMO roles it
 // holds. ConvertTo-Json in Windows PowerShell 5.1 can collapse a nested
 // single-element array to a scalar, so fsmo_roles is re-normalised on the
-// wisp side.
+// wscript side.
 fn membership_ps() -> string {
     "$ErrorActionPreference='Stop'; " +
     "$c = Get-CimInstance Win32_ComputerSystem; " +

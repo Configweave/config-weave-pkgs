@@ -33,10 +33,10 @@ docs:
 	rm -rf docs
 	{{CONFIG_WEAVE}} docs . docs --pkg-only
 
-# Regenerate weave.wispi for editor/LSP support
+# Regenerate weave.wscripti (and wscript.toml) for editor/LSP support
 [group('docs')]
-wispi:
-	{{CONFIG_WEAVE}} wispi .
+wscripti:
+	{{CONFIG_WEAVE}} wscripti .
 
 # Rebuild the package docs and serve them with WCL's watch-rebuild dev
 # server (live reload). Needs `wcl` on PATH.

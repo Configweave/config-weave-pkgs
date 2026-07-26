@@ -4,7 +4,7 @@
 // DNS) and `alt` (an independent second forest). config-weave's scenario
 // runner copies this dir, gives the lab a unique name, and brings each VM
 // up by name on demand — so the VMs are declared here once and the driver
-// (tests/ad_matrix.wisp) just interacts with them.
+// (tests/ad_matrix.ws) just interacts with them.
 
 import <vmlab.wcl>
 

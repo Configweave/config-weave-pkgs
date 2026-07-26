@@ -3,7 +3,7 @@ package "linux_snap" {
 
   resource "package" {
     description = "Ensure a snap package is installed or absent"
-    script = "resources/package.wisp"
+    script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Snap name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -19,7 +19,7 @@ package "linux_snap" {
     description = "A snap installs and a second apply is a no-op"
     template = "x86_64/ubuntu-24.04"
     setup = "systemctl start snapd.socket snapd.service && snap wait system seed.loaded"
-    verify = "tests/package_verify.wisp"
+    verify = "tests/package_verify.ws"
 
     step "install" {
       description = "Install the hello-world snap"

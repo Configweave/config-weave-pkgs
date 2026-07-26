@@ -3,7 +3,7 @@ package "linux_dnf" {
 
   resource "package" {
     description = "Ensure an rpm package is installed or absent via the dnf family"
-    script = "resources/package.wisp"
+    script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -12,14 +12,14 @@ package "linux_dnf" {
 
   resource "cache_updated" {
     description = "Run makecache when the last refresh is older than max_age (dnf5, dnf, microdnf or yum)"
-    script = "resources/cache_updated.wisp"
+    script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" { description = "Refresh when the last update is older than this span, such as 30m, 24h or 7d" type = "string" default = "24h" }
   }
 
   resource "repository" {
     description = "Ensure a yum/dnf .repo file exists or is absent"
-    script = "resources/repository.wisp"
+    script = "resources/repository.ws"
     concurrency = "exclusive"
     param "name" { description = "Repository file basename without .repo" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -28,7 +28,7 @@ package "linux_dnf" {
 
   resource "gpg_key" {
     description = "Ensure an RPM GPG key file exists (imported) or is absent"
-    script = "resources/gpg_key.wisp"
+    script = "resources/gpg_key.ws"
     concurrency = "exclusive"
     param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent (removes the key file; an already-imported rpmdb key stays)" type = "symbol" default = :present }
@@ -37,7 +37,7 @@ package "linux_dnf" {
 
   resource "hold" {
     description = "Ensure a versionlock on a package is present or absent"
-    script = "resources/hold.wisp"
+    script = "resources/hold.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present (held) or :absent (not held)" type = "symbol" default = :present }
@@ -55,7 +55,7 @@ package "linux_dnf" {
   test "package_installs" {
     description = "package installs a real package and removing it converges"
     template = "x86_64/fedora-44"
-    verify = "tests/dnf_install_verify.wisp"
+    verify = "tests/dnf_install_verify.ws"
 
     step "install" {
       description = "Install hello"
@@ -92,7 +92,7 @@ package "linux_dnf" {
     image = "fedora:latest"
     group = "fedora"
     setup = "mkdir -p /etc/yum.repos.d /etc/pki/rpm-gpg && printf '[cw-stale]\\nenabled=0\\n' > /etc/yum.repos.d/cw-stale.repo && echo stale-key > /etc/pki/rpm-gpg/cw-stale.asc"
-    verify = "tests/yum_repository_verify.wisp"
+    verify = "tests/yum_repository_verify.ws"
 
     step "repo" {
       description = "Write a .repo file"

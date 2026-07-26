@@ -3,7 +3,7 @@ package "linux_zypper" {
 
   resource "package" {
     description = "Ensure an rpm package is installed or absent via zypper"
-    script = "resources/package.wisp"
+    script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -12,7 +12,7 @@ package "linux_zypper" {
 
   resource "cache_updated" {
     description = "Run zypper refresh once per marker"
-    script = "resources/cache_updated.wisp"
+    script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
   }

@@ -3,7 +3,7 @@ package "linux_sysvinit" {
 
   resource "service_state" {
     description = "Ensure a SysV init service is running or stopped"
-    script = "resources/service_state.wisp"
+    script = "resources/service_state.ws"
     concurrency = "exclusive"
     param "name" { description = "Init script name under /etc/init.d" type = "string" required = true }
     param "state" { description = "Desired state: running or stopped" type = "string" required = true }
@@ -11,7 +11,7 @@ package "linux_sysvinit" {
 
   resource "service_enabled" {
     description = "Ensure a SysV init service is enabled at boot (update-rc.d or chkconfig)"
-    script = "resources/service_enabled.wisp"
+    script = "resources/service_enabled.ws"
     concurrency = "exclusive"
     param "name" { description = "Init script name under /etc/init.d" type = "string" required = true }
     param "enabled" { description = "Enable at boot" type = "bool" required = true }
@@ -26,7 +26,7 @@ package "linux_sysvinit" {
     image = "debian:12"
     group = "sysvinit"
     setup = "printf '#!/bin/sh\\nP=/run/cw-daemon.pid\\ncase \"$1\" in\\nstart) setsid sleep 3600 >/dev/null 2>&1 & echo $! > $P ;;\\nstop) if [ -f $P ]; then kill $(cat $P) 2>/dev/null; rm -f $P; fi ;;\\nstatus) [ -f $P ] && kill -0 $(cat $P) 2>/dev/null ;;\\nesac\\n' > /etc/init.d/cw-daemon && chmod +x /etc/init.d/cw-daemon"
-    verify = "tests/state_verify.wisp"
+    verify = "tests/state_verify.ws"
 
     step "start" {
       description = "Start the seeded service"
@@ -40,7 +40,7 @@ package "linux_sysvinit" {
     image = "debian:12"
     group = "sysvinit"
     setup = "printf '#!/bin/sh\\n### BEGIN INIT INFO\\n# Provides: cw-test\\n# Required-Start:\\n# Required-Stop:\\n# Default-Start: 2 3 4 5\\n# Default-Stop: 0 1 6\\n# Short-Description: config-weave test\\n### END INIT INFO\\nexit 0\\n' > /etc/init.d/cw-test && chmod +x /etc/init.d/cw-test"
-    verify = "tests/enable_verify.wisp"
+    verify = "tests/enable_verify.ws"
 
     step "enable" {
       description = "Enable the seeded service"

@@ -3,7 +3,7 @@ package "git" {
 
   resource "config_entry" {
     description = "Ensure a git config entry is present in or absent from the global or system config"
-    script = "resources/config_entry.wisp"
+    script = "resources/config_entry.ws"
     // read-modify-write on a shared gitconfig — parallel steps lose updates
     concurrency = "exclusive"
     param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase" type = "string" required = true }
@@ -19,7 +19,7 @@ package "git" {
     description = "Global git config entries converge in a Debian container"
     image = "debian:12"
     setup = "printf '[user]\\n\\tname = Old Name\\n[color]\\n\\tui = never\\n' > /root/.gitconfig"
-    verify = "tests/git_config_verify.wisp"
+    verify = "tests/git_config_verify.ws"
 
     step "name" {
       description = "Update the seeded user.name"

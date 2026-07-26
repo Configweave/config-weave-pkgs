@@ -3,7 +3,7 @@ package "linux_kde" {
 
   gatherer "kde_paths" {
     description = "Report KDE user configuration and data paths"
-    script = "gatherers/kde_paths.wisp"
+    script = "gatherers/kde_paths.ws"
     returns "home" { description = "Resolved home directory" type = "string" }
     returns "config_dir" { description = "KDE config directory (~/.config)" type = "string" }
     returns "local_share_dir" { description = "KDE data directory (~/.local/share)" type = "string" }
@@ -15,7 +15,7 @@ package "linux_kde" {
 
   gatherer "kde_version" {
     description = "Detect available KDE Plasma configuration tools"
-    script = "gatherers/kde_version.wisp"
+    script = "gatherers/kde_version.ws"
     returns "plasma_major" { description = "Plasma major version (0 when undetected)" type = "int" }
     returns "has_kreadconfig6" { description = "True when the Plasma 6 kconfig tools are present" type = "bool" }
     returns "has_legacy_kconfig_tools" { description = "True when only the Plasma 5 kconfig tools are present" type = "bool" }
@@ -23,7 +23,7 @@ package "linux_kde" {
 
   resource "kconfig_entry" {
     description = "Ensure a KConfig key is present in or absent from a KDE configuration file"
-    script = "resources/kconfig_entry.wisp"
+    script = "resources/kconfig_entry.ws"
     concurrency = "parallel"
     param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
     param "file" { description = "KDE config filename under ~/.config, such as kdeglobals or kwinrc" type = "string" required = true }
@@ -38,7 +38,7 @@ package "linux_kde" {
     description = "kconfig_entry adds and removes keys without a Plasma session"
     image = "debian:12"
     setup = "mkdir -p /tmp/cw-kde-home/.config && printf '[General]\\nloginMode=restoreSession\\nstale=yes\\n' > /tmp/cw-kde-home/.config/ksmserverrc"
-    verify = "tests/kconfig_verify.wisp"
+    verify = "tests/kconfig_verify.ws"
 
     gather "version" {
       description = "KDE tool detection works without installed KDE tools"

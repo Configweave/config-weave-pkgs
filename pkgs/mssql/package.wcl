@@ -7,7 +7,7 @@ package "mssql" {
 
   resource "instance" {
     description = "Install or uninstall a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
-    script = "resources/instance.wisp"
+    script = "resources/instance.ws"
     concurrency = "global"
     param "ensure"                { description = "Desired state: :present or :absent" type = "symbol" default = :present }
     param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); also required for ensure = absent (runs the uninstall)" type = "string" default = "" }
@@ -35,7 +35,7 @@ package "mssql" {
 
   resource "server_setting" {
     description = "Converge an sp_configure server setting to a value (compares the running value_in_use)"
-    script = "resources/server_setting.wisp"
+    script = "resources/server_setting.ws"
     concurrency = "exclusive"
     param "name"         { description = "sp_configure setting name, e.g. 'max server memory (MB)' or 'cost threshold for parallelism'" type = "string" required = true }
     param "value"        { description = "Desired integer value" type = "int" required = true }
@@ -47,7 +47,7 @@ package "mssql" {
 
   resource "login" {
     description = "Ensure a server login exists (SQL or Windows auth) with its enabled state, default database and server roles, or is absent"
-    script = "resources/login.wisp"
+    script = "resources/login.ws"
     concurrency = "parallel"
     param "name"             { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
     param "ensure"           { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -66,7 +66,7 @@ package "mssql" {
 
   resource "database" {
     description = "Ensure a database exists with the desired recovery model, owner and compatibility level, or is absent (drops after forcing SINGLE_USER)"
-    script = "resources/database.wisp"
+    script = "resources/database.ws"
     // the ensure = :absent drop path forces SINGLE_USER WITH ROLLBACK
     // IMMEDIATE, so distinct-database creates serialize too
     concurrency = "exclusive"
@@ -84,7 +84,7 @@ package "mssql" {
 
   resource "database_user" {
     description = "Ensure a database user mapped to a login exists with its role memberships"
-    script = "resources/database_user.wisp"
+    script = "resources/database_user.ws"
     concurrency = "parallel"
     param "database"       { description = "Database the user lives in" type = "string" required = true }
     param "name"           { description = "Database user name" type = "string" required = true }
@@ -103,7 +103,7 @@ package "mssql" {
 
   resource "database_cdc" {
     description = "Enable or disable Change Data Capture at the database level (needs SQL Server Agent for capture to run)"
-    script = "resources/database_cdc.wisp"
+    script = "resources/database_cdc.ws"
     concurrency = "exclusive"
     param "database"     { description = "Database to enable/disable CDC on" type = "string" required = true }
     param "enabled"      { description = "Whether CDC should be enabled on the database" type = "bool" default = true }
@@ -115,7 +115,7 @@ package "mssql" {
 
   resource "cdc_table" {
     description = "Enable a Change Data Capture instance for a table (requires database CDC already enabled)"
-    script = "resources/cdc_table.wisp"
+    script = "resources/cdc_table.ws"
     concurrency = "exclusive"
     param "database"             { description = "Database holding the table" type = "string" required = true }
     param "schema"               { description = "Source table schema" type = "string" default = "dbo" }
@@ -135,7 +135,7 @@ package "mssql" {
 
   resource "tcp" {
     description = "Configure the TCP/IP protocol and static port, restarting the engine so the change takes effect"
-    script = "resources/tcp.wisp"
+    script = "resources/tcp.ws"
     concurrency = "global"
     param "instance" { description = "Instance whose TCP protocol to configure" type = "string" default = "MSSQLSERVER" }
     param "port"     { description = "Static TCP port" type = "int" default = 1433 }
@@ -149,7 +149,7 @@ package "mssql" {
 
   resource "replication_distributor" {
     description = "Configure this server as its own replication distributor with a distribution database"
-    script = "resources/replication_distributor.wisp"
+    script = "resources/replication_distributor.ws"
     concurrency = "exclusive"
     param "distribution_db"   { description = "Distribution database name" type = "string" default = "distribution" }
     param "working_directory" { description = "Replication working directory (snapshot folder); empty = engine default" type = "string" default = "" }
@@ -161,7 +161,7 @@ package "mssql" {
 
   resource "replication_publisher" {
     description = "Enable a database for replication on a publisher whose distributor is already configured"
-    script = "resources/replication_publisher.wisp"
+    script = "resources/replication_publisher.ws"
     concurrency = "exclusive"
     param "publisher_db" { description = "Database to enable for publishing" type = "string" required = true }
     param "type"         { description = "Replication type to enable on the database: publish (transactional/snapshot) or merge" type = "string" default = "publish" }
@@ -177,7 +177,7 @@ package "mssql" {
 
   resource "database_mail" {
     description = "Enable Database Mail and ensure an SMTP account is linked to a mail profile"
-    script = "resources/database_mail.wisp"
+    script = "resources/database_mail.ws"
     concurrency = "exclusive"
     param "profile"       { description = "Mail profile name" type = "string" required = true }
     param "account"       { description = "Mail account name" type = "string" required = true }
@@ -200,7 +200,7 @@ package "mssql" {
 
   resource "agent_job" {
     description = "Ensure a single-step SQL Server Agent job exists (targeted at the local server) or is absent"
-    script = "resources/agent_job.wisp"
+    script = "resources/agent_job.ws"
     concurrency = "parallel"
     param "name"         { description = "Job name" type = "string" required = true }
     param "ensure"       { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -223,7 +223,7 @@ package "mssql" {
 
   resource "availability_group" {
     description = "Enable Always On HADR and create an availability group on the primary (multi-node join is a scenario concern)"
-    script = "resources/availability_group.wisp"
+    script = "resources/availability_group.ws"
     concurrency = "global"
     param "name"           { description = "Availability group name" type = "string" required = true }
     param "instance_name"  { description = "Instance to enable HADR on (Windows service name)" type = "string" default = "MSSQLSERVER" }
@@ -241,7 +241,7 @@ package "mssql" {
 
   gatherer "instance_info" {
     description = "Report SQL Server version, edition, collation and HADR state from SERVERPROPERTY"
-    script = "gatherers/instance_info.wisp"
+    script = "gatherers/instance_info.ws"
     returns "version" { description = "SERVERPROPERTY ProductVersion" type = "string" }
     returns "edition" { description = "SERVERPROPERTY Edition" type = "string" }
     returns "product_level" { description = "SERVERPROPERTY ProductLevel (RTM, SPn)" type = "string" }
@@ -271,7 +271,7 @@ package "mssql" {
     // 256MiB; without this the engine never comes up and setup times out.
     memory = "4GiB"
     setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q \"CREATE LOGIN cw_drop_login WITH PASSWORD=N'Dr0p!Me12345', CHECK_POLICY=OFF; CREATE DATABASE cw_drop_db; CREATE DATABASE cw_cdc_db; EXEC msdb.dbo.sp_add_job @job_name=N'cw_drop_job';\" && /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -d cw_cdc_db -Q 'CREATE TABLE dbo.cw_rows (id int NOT NULL PRIMARY KEY);'"
-    verify = "tests/config_verify.wisp"
+    verify = "tests/config_verify.ws"
 
     step "memory" {
       description = "Constrain max server memory"
@@ -355,6 +355,6 @@ package "mssql" {
   scenario "win_install" {
     description = "Silent SQL Server install on Windows then database + setting + CDC converge"
     lab = "tests/win-install-lab"
-    script = "tests/win_install.wisp"
+    script = "tests/win_install.ws"
   }
 }

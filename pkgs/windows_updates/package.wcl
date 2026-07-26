@@ -3,14 +3,14 @@ package "windows_updates" {
 
   resource "windows_update" {
     description = "Install applicable Windows Updates via the Windows Update Agent"
-    script = "resources/windows_update.wisp"
+    script = "resources/windows_update.ws"
     concurrency = "global"
     param "query" { description = "Update search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
   }
 
   resource "automatic_updates" {
     description = "Enable or disable automatic Windows Updates (the NoAutoUpdate AU policy)"
-    script = "resources/automatic_updates.wisp"
+    script = "resources/automatic_updates.ws"
     concurrency = "global"
     param "enabled" { description = "Whether automatic updates are allowed (false sets NoAutoUpdate=1)" type = "bool" default = true }
   }
@@ -23,7 +23,7 @@ package "windows_updates" {
     description = "The automatic-updates policy resource converges"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/updates_verify.wisp"
+    verify = "tests/updates_verify.ws"
 
     // The Server 2025 image already ships NoAutoUpdate = 1, so disabling
     // is a no-op there — converge the other way to prove the resource

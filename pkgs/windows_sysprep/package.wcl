@@ -3,7 +3,7 @@ package "windows_sysprep" {
 
   resource "unattend_file" {
     description = "Ensure an unattend.xml answer file exists with the given oobeSystem settings (or verbatim content), or is absent"
-    script = "resources/unattend_file.wisp"
+    script = "resources/unattend_file.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute path of the answer file; the default is where sysprep auto-discovers it" type = "string" default = "C:\\Windows\\System32\\Sysprep\\unattend.xml" }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -27,7 +27,7 @@ package "windows_sysprep" {
   test "unattend_generates" {
     description = "unattend_file renders escaped oobeSystem XML, honors the content escape hatch, and converges"
     image = "debian:12"
-    verify = "tests/unattend_verify.wisp"
+    verify = "tests/unattend_verify.ws"
 
     step "full" {
       description = "All structured params, including characters that need XML escaping"

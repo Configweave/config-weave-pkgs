@@ -3,7 +3,7 @@ package "windows_account" {
 
   resource "local_user" {
     description = "Ensure a local user account exists with the desired attributes, or is absent"
-    script = "resources/local_user.wisp"
+    script = "resources/local_user.ws"
     concurrency = "exclusive"
     param "name" { description = "Local account name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -16,7 +16,7 @@ package "windows_account" {
 
   resource "local_group" {
     description = "Ensure a local group exists, or is absent"
-    script = "resources/local_group.wisp"
+    script = "resources/local_group.ws"
     concurrency = "exclusive"
     param "name" { description = "Local group name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -25,7 +25,7 @@ package "windows_account" {
 
   resource "local_group_member" {
     description = "Ensure an account is (or is not) a member of a local group"
-    script = "resources/local_group_member.wisp"
+    script = "resources/local_group_member.ws"
     concurrency = "exclusive"
     param "group" { description = "Local group name" type = "string" required = true }
     param "member" { description = "Member account; matched by exact name or by the name after the domain/computer prefix" type = "string" required = true }
@@ -34,7 +34,7 @@ package "windows_account" {
 
   resource "ad_user" {
     description = "Ensure an Active Directory user exists with the desired attributes, or is absent (requires the ActiveDirectory PowerShell module)"
-    script = "resources/ad_user.wisp"
+    script = "resources/ad_user.ws"
     concurrency = "exclusive"
     param "name" { description = "SamAccountName of the user" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -48,7 +48,7 @@ package "windows_account" {
 
   resource "ad_group" {
     description = "Ensure an Active Directory group exists with the desired scope and category, or is absent (requires the ActiveDirectory PowerShell module)"
-    script = "resources/ad_group.wisp"
+    script = "resources/ad_group.ws"
     concurrency = "exclusive"
     param "name" { description = "SamAccountName of the group" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -59,7 +59,7 @@ package "windows_account" {
 
   resource "ad_group_member" {
     description = "Ensure a principal is (or is not) a member of an Active Directory group (requires the ActiveDirectory PowerShell module)"
-    script = "resources/ad_group_member.wisp"
+    script = "resources/ad_group_member.ws"
     concurrency = "exclusive"
     param "group" { description = "SamAccountName of the group" type = "string" required = true }
     param "member" { description = "Member principal; matched by SamAccountName or Name" type = "string" required = true }
@@ -74,7 +74,7 @@ package "windows_account" {
     description = "Local user, group and membership converge; ad_user guards on the missing AD module"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/accounts_verify.wisp"
+    verify = "tests/accounts_verify.ws"
 
     step "ops_group" {
       description = "Create the weave-ops local group"

@@ -3,7 +3,7 @@ package "linux_runit" {
 
   resource "service_state" {
     description = "Ensure a runit service is running or stopped"
-    script = "resources/service_state.wisp"
+    script = "resources/service_state.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name under the service directory" type = "string" required = true }
     param "state" { description = "Desired state: running or stopped" type = "string" required = true }
@@ -12,7 +12,7 @@ package "linux_runit" {
 
   resource "service_enabled" {
     description = "Ensure a runit service is linked into the active service directory"
-    script = "resources/service_enabled.wisp"
+    script = "resources/service_enabled.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name" type = "string" required = true }
     param "enabled" { description = "Link the service into the active service directory" type = "bool" required = true }
@@ -29,7 +29,7 @@ package "linux_runit" {
     description = "A supervised service stops and another is linked into the service directory"
     template = "x86_64/ubuntu-24.04"
     setup = "apt-get install -y -qq runit && mkdir -p /var/service /etc/sv/cw-stop /etc/sv/cw-enable && for s in cw-stop cw-enable; do printf '#!/bin/sh\\nexec sleep 3600\\n' > /etc/sv/$s/run; chmod +x /etc/sv/$s/run; done && systemd-run --unit=cw-runsvdir --collect runsvdir /var/service && sleep 1 && ln -sfn /etc/sv/cw-stop /var/service/cw-stop && for i in $(seq 1 30); do [ -e /var/service/cw-stop/supervise/ok ] && break; sleep 1; done"
-    verify = "tests/service_verify.wisp"
+    verify = "tests/service_verify.ws"
 
     // cw-stop is supervised and running after setup, so stopping it is a
     // real convergence rather than a no-op.

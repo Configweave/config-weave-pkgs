@@ -3,7 +3,7 @@ package "linux_pacman" {
 
   resource "package" {
     description = "Ensure a pacman package is installed or absent"
-    script = "resources/package.wisp"
+    script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -11,14 +11,14 @@ package "linux_pacman" {
 
   resource "cache_updated" {
     description = "Run pacman -Sy once per marker"
-    script = "resources/cache_updated.wisp"
+    script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
   }
 
   resource "aur_package" {
     description = "Ensure an AUR package is installed or absent via yay/paru"
-    script = "resources/aur_package.wisp"
+    script = "resources/aur_package.ws"
     concurrency = "exclusive"
     param "name" { description = "AUR package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -37,7 +37,7 @@ package "linux_pacman" {
     description = "package installs a real package and removing it converges"
     image = "archlinux:latest"
     setup = "pacman -Sy --noconfirm"
-    verify = "tests/pacman_install_verify.wisp"
+    verify = "tests/pacman_install_verify.ws"
 
     step "install" {
       description = "Install tree"

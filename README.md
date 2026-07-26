@@ -14,6 +14,21 @@ ln -s /home/wil/dev/config-weave-pkgs/pkgs/linux_facts ./pkgs/linux_facts
 Config Weave v1 loads packages from a playbook's local `pkgs/` directory only,
 so this repository intentionally does not require Config Weave loader changes.
 
+Every package follows the same layout — wscript sources use the `.ws`
+extension, matching config-weave and vmlab:
+
+```
+pkgs/<name>/
+  package.wcl               # resource, gatherer and test declarations
+  resources/<r>.ws          # exports check() and apply()
+  gatherers/<g>.ws          # exports gather()
+  tests/<t>.ws              # optional verify() / scenario drivers
+```
+
+`weave.wscripti` and `wscript.toml` in the repo root give the wscript LSP the
+exact host API; regenerate them with `just wscripti` after a config-weave
+upgrade.
+
 ## Packages
 
 Removal is expressed with `ensure = "absent"` on the same resource that
@@ -124,4 +139,4 @@ set a manager explicitly:
 
 The test suite avoids network installs. It checks package-state detection on
 container images with already-installed base packages and validates every manager
-branch through Wisp compilation.
+branch through wscript compilation.

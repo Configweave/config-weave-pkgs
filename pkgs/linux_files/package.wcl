@@ -3,7 +3,7 @@ package "linux_files" {
 
   resource "file" {
     description = "Ensure a file exists with exact content or fetched from a URL, or is absent"
-    script = "resources/file.wisp"
+    script = "resources/file.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -17,7 +17,7 @@ package "linux_files" {
 
   resource "template" {
     description = "Render a Tera template to a file with exact content"
-    script = "resources/template.wisp"
+    script = "resources/template.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute file path" type = "string" required = true }
     param "template" { description = "Tera template body (author as a raw heredoc)" type = "string" required = true }
@@ -29,7 +29,7 @@ package "linux_files" {
 
   resource "directory" {
     description = "Ensure a directory exists or is absent"
-    script = "resources/directory.wisp"
+    script = "resources/directory.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute directory path" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent (absent removes the directory and its contents)" type = "symbol" default = :present }
@@ -40,7 +40,7 @@ package "linux_files" {
 
   resource "symlink" {
     description = "Ensure a symbolic or hard link points at a target, or is absent"
-    script = "resources/symlink.wisp"
+    script = "resources/symlink.ws"
     concurrency = "parallel"
     param "path" { description = "Link path" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -50,7 +50,7 @@ package "linux_files" {
 
   resource "archive_extracted" {
     description = "Ensure a local archive has been extracted into a directory"
-    script = "resources/archive_extracted.wisp"
+    script = "resources/archive_extracted.ws"
     concurrency = "parallel"
     param "src" { description = "Local archive path (.zip, .tar.gz, .tgz)" type = "string" required = true }
     param "dest" { description = "Destination directory" type = "string" required = true }
@@ -58,7 +58,7 @@ package "linux_files" {
 
   resource "permissions" {
     description = "Ensure owner, group and mode on an existing path"
-    script = "resources/permissions.wisp"
+    script = "resources/permissions.ws"
     concurrency = "parallel"
     param "path" { description = "Target path" type = "string" required = true }
     param "mode" { description = "Optional octal mode" type = "string" default = "" }
@@ -68,7 +68,7 @@ package "linux_files" {
 
   gatherer "path_stat" {
     description = "Report a path's existence, type, size and mode"
-    script = "gatherers/path_stat.wisp"
+    script = "gatherers/path_stat.ws"
     returns "path" { description = "The path that was examined" type = "string" }
     returns "exists" { description = "True when the path exists" type = "bool" }
     returns "size" { description = "Size in bytes (only when exists)" type = "int" }
@@ -82,7 +82,7 @@ package "linux_files" {
 
   gatherer "paths_matching" {
     description = "List files under a root matching a glob pattern"
-    script = "gatherers/paths_matching.wisp"
+    script = "gatherers/paths_matching.ws"
     returns "root" { description = "The root the glob ran under" type = "string" }
     returns "pattern" { description = "The glob pattern" type = "string" }
     returns "count" { description = "Number of matches" type = "int" }
@@ -95,7 +95,7 @@ package "linux_files" {
     description = "Core file resources converge"
     image = "debian:12"
     group = "files"
-    verify = "tests/files_verify.wisp"
+    verify = "tests/files_verify.ws"
 
     step "dir" {
       description = "Create directory"
@@ -129,7 +129,7 @@ package "linux_files" {
     description = "Tera template resource renders and converges"
     image = "debian:12"
     group = "files"
-    verify = "tests/template_verify.wisp"
+    verify = "tests/template_verify.ws"
 
     step "tmpl" {
       description = "Render a Tera template"
@@ -152,7 +152,7 @@ TMPL
     image = "debian:12"
     group = "files"
     setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
-    verify = "tests/removals_verify.wisp"
+    verify = "tests/removals_verify.ws"
 
     gather "seed_stat" {
       description = "Stat the seed file created during setup"
@@ -199,7 +199,7 @@ TMPL
     description = "file fetches by url over local HTTP and permissions converges a mode"
     image = "python:3.12-slim"
     setup = "mkdir -p /srv/www && printf 'payload\\n' > /srv/www/payload.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
-    verify = "tests/download_verify.wisp"
+    verify = "tests/download_verify.ws"
 
     step "fetch" {
       description = "file fetches from the local HTTP server by url"

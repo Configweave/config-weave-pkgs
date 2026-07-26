@@ -3,7 +3,7 @@ package "windows_share" {
 
   resource "share" {
     description = "Ensure an SMB share exists with the given path and access grants, or is absent"
-    script = "resources/share.wisp"
+    script = "resources/share.ws"
     concurrency = "exclusive"
     param "name" { description = "Share name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -18,7 +18,7 @@ package "windows_share" {
     description = "An SMB share converges and absent detection works"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/share_verify.wisp"
+    verify = "tests/share_verify.ws"
 
     step "data_share" {
       description = "Share C:\\weave-share-test as weave-data"

@@ -3,7 +3,7 @@ package "linux_facts" {
 
   gatherer "os_release" {
     description = "Read /etc/os-release and kernel facts"
-    script = "gatherers/os_release.wisp"
+    script = "gatherers/os_release.ws"
     returns "family" { description = "OS family (linux, windows, macos)" type = "string" }
     returns "name" { description = "OS name" type = "string" }
     returns "version" { description = "OS version" type = "string" }
@@ -16,26 +16,26 @@ package "linux_facts" {
 
   gatherer "init_system" {
     description = "Detect the init/service manager"
-    script = "gatherers/init_system.wisp"
+    script = "gatherers/init_system.ws"
     returns "init" { description = "Detected init system (systemd, openrc, sysvinit, ...)" type = "string" }
   }
 
   gatherer "network" {
     description = "Enumerate network interfaces and detect the network management system"
-    script = "gatherers/network.wisp"
+    script = "gatherers/network.ws"
     returns "interfaces" { description = "One { name, mac, state, ipv4, ipv6 } map per interface" type = "list" }
     returns "network_system" { description = "Detected network manager (netplan, NetworkManager, systemd-networkd, wicked, ifupdown, unknown)" type = "string" }
   }
 
   gatherer "services" {
     description = "List systemd services and their active state"
-    script = "gatherers/services.wisp"
+    script = "gatherers/services.ws"
     returns "services" { description = "One { name, active, sub } map per service unit; empty without systemd" type = "list" }
   }
 
   gatherer "mounts" {
     description = "List mounted filesystems from /proc/mounts"
-    script = "gatherers/mounts.wisp"
+    script = "gatherers/mounts.ws"
     returns "count" { description = "Number of mounted filesystems" type = "int" }
     returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount" type = "list" }
   }
@@ -46,7 +46,7 @@ package "linux_facts" {
   test "facts_on_a_real_system" {
     description = "Facts gatherers return live systemd, network and mount data on a booted host"
     template = "x86_64/ubuntu-24.04"
-    verify = "tests/facts_vm_verify.wisp"
+    verify = "tests/facts_vm_verify.ws"
 
     gather "os" {
       description = "OS identity of the booted guest"
@@ -85,7 +85,7 @@ package "linux_facts" {
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"
-    verify = "tests/facts_verify.wisp"
+    verify = "tests/facts_verify.ws"
 
     gather "os" {
       description = "OS facts"

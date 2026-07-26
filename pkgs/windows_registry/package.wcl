@@ -3,7 +3,7 @@ package "windows_registry" {
 
   resource "value" {
     description = "Ensure a registry value exists with the given data, or is absent"
-    script = "resources/value.wisp"
+    script = "resources/value.ws"
     concurrency = "parallel"
     param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
     param "name" { description = "Value name" type = "string" required = true }
@@ -14,7 +14,7 @@ package "windows_registry" {
 
   resource "key" {
     description = "Ensure a registry key exists (optionally owned/ACLed) or is absent (subtree delete)"
-    script = "resources/key.wisp"
+    script = "resources/key.ws"
     concurrency = "exclusive"
     param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -26,7 +26,7 @@ package "windows_registry" {
     description = "Registry values and keys converge on a Windows VM"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    verify = "tests/value_verify.wisp"
+    verify = "tests/value_verify.ws"
 
     step "greeting" {
       description = "Write a string value"

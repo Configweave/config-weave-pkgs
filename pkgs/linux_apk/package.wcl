@@ -3,7 +3,7 @@ package "linux_apk" {
 
   resource "package" {
     description = "Ensure an apk package is installed or absent"
-    script = "resources/package.wisp"
+    script = "resources/package.ws"
     concurrency = "exclusive"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
@@ -11,14 +11,14 @@ package "linux_apk" {
 
   resource "cache_updated" {
     description = "Run apk update once per marker"
-    script = "resources/cache_updated.wisp"
+    script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
   }
 
   resource "repository" {
     description = "Ensure a repository line is present in or absent from /etc/apk/repositories"
-    script = "resources/repository.wisp"
+    script = "resources/repository.ws"
     // read-modify-write on the shared repositories file
     concurrency = "exclusive"
     param "url" { description = "Repository line, such as https://dl-cdn.alpinelinux.org/alpine/v3.20/community" type = "string" required = true }
@@ -30,7 +30,7 @@ package "linux_apk" {
   test "package_installs" {
     description = "package installs a real package and removing it converges"
     image = "alpine:3.20"
-    verify = "tests/apk_install_verify.wisp"
+    verify = "tests/apk_install_verify.ws"
 
     step "install" {
       description = "Install tree"
@@ -50,7 +50,7 @@ package "linux_apk" {
     description = "apk installed package checks and repository edits work in Alpine"
     image = "alpine:3.20"
     setup = "echo 'https://stale.invalid/alpine/v3.20/testing' >> /etc/apk/repositories"
-    verify = "tests/apk_verify.wisp"
+    verify = "tests/apk_verify.ws"
 
     step "alpine-baselayout-installed" {
       description = "alpine-baselayout is installed in Alpine"
