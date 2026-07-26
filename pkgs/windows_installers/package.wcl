@@ -39,8 +39,7 @@ package "windows_installers" {
   // uninstall would first need an MSI installed just to remove it).
   test "installers_converge" {
     description = "MSI install, guarded EXE install and MSI-absent detection converge"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/installers_verify.wisp"
 

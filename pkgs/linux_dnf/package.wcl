@@ -48,6 +48,29 @@ package "linux_dnf" {
   // needs the versionlock plugin installed — none converge honestly in an
   // offline container.
 
+  // Real installs run in a VM, not a container: dnf5 loads its repositories
+  // fine in a Fedora container but then wedges for many minutes on the
+  // transaction itself, while the same command in the VM finishes in
+  // seconds. The container tests above stay for the fast check-only paths.
+  test "package_installs" {
+    description = "package installs a real package and removing it converges"
+    template = "x86_64/fedora-44"
+    verify = "tests/dnf_install_verify.wisp"
+
+    step "install" {
+      description = "Install hello"
+      resource = "package"
+      properties { name = "hello" ensure = :present }
+    }
+
+    step "absent_stays_absent" {
+      description = "A package that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-package" ensure = :absent }
+    }
+  }
+
   test "dnf_existing_package" {
     description = "DNF-family installed package checks work in Fedora"
     image = "fedora:latest"

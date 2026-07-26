@@ -85,8 +85,7 @@ package "windows_sysprep" {
   // issue clears.
   test "sysprep_reseals" {
     description = "unattend_file feeds sysprep, which generalizes and reseals to OOBE with /quit"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     verify = "tests/sysprep_verify.wisp"
 
     step "answer_file" {

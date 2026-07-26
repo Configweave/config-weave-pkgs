@@ -67,9 +67,6 @@ package "linux_network" {
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
   }
 
-  // The firewall resources are untested in containers by design: firewalld and
-  // ufw are not present in the base images (installing them needs the network),
-  // and nft needs NET_ADMIN, which unprivileged containers do not have.
   test "network_files_converge" {
     description = "hosts entries converge in a Debian container"
     image = "debian:12"
@@ -80,6 +77,100 @@ package "linux_network" {
       description = "Add a hosts entry"
       resource = "hosts_entry"
       properties { ip = "192.0.2.10" names = ["cw-test.local", "cw-test"] }
+    }
+  }
+
+  // The firewall resources need a real kernel and NET_ADMIN, so they run in
+  // VMs: nftables and ufw on Ubuntu (both ship in the image), firewalld on
+  // Fedora. Write nftables rules exactly as `nft` prints them back — the
+  // resource compares against that text.
+  test "nftables_and_ufw_converge" {
+    description = "An nftables table, chain and rule and a ufw rule converge"
+    template = "x86_64/ubuntu-24.04"
+    verify = "tests/firewall_verify.wisp"
+
+    step "table" {
+      description = "Create an nftables table"
+      resource = "nftables_table"
+      properties { family = "inet" name = "cwtest" ensure = :present }
+    }
+
+    step "chain" {
+      description = "Create a base chain in the table"
+      resource = "nftables_chain"
+      requires = ["table"]
+      properties {
+        family = "inet"
+        table = "cwtest"
+        name = "input"
+        type = "filter"
+        hook = "input"
+        priority = 0
+        policy = "accept"
+        ensure = :present
+      }
+    }
+
+    step "rule" {
+      description = "Add a rule to the chain"
+      resource = "nftables_rule"
+      requires = ["chain"]
+      properties {
+        family = "inet"
+        table = "cwtest"
+        chain = "input"
+        rule = "tcp dport 8080 accept"
+        ensure = :present
+      }
+    }
+
+    step "absent_table_stays_absent" {
+      description = "A table that was never created is already configured"
+      resource = "nftables_table"
+      expect = "already_configured"
+      properties { family = "inet" name = "cw-never-created" ensure = :absent }
+    }
+
+    step "ufw" {
+      description = "Record a ufw rule"
+      resource = "ufw_rule"
+      properties { action = "allow" port = "9090/tcp" ensure = :present }
+    }
+
+    step "ufw_from_source" {
+      description = "Record a source-scoped ufw rule"
+      resource = "ufw_rule"
+      requires = ["ufw"]
+      properties { action = "allow" port = "9091/tcp" from = "10.0.0.0/8" ensure = :present }
+    }
+  }
+
+  // firewalld is not in the Fedora cloud image, so setup installs it; the
+  // permanent configuration converges without the daemon needing to run.
+  test "firewalld_converges" {
+    description = "A firewalld port and service rule converge in the permanent configuration"
+    template = "x86_64/fedora-44"
+    setup = "dnf install -y firewalld && systemctl start firewalld"
+    verify = "tests/firewalld_verify.wisp"
+
+    step "port" {
+      description = "Allow a port in the default zone"
+      resource = "firewalld_rule"
+      properties { port = "8443/tcp" permanent = true ensure = :present }
+    }
+
+    step "service" {
+      description = "Allow a named service"
+      resource = "firewalld_rule"
+      requires = ["port"]
+      properties { service = "https" permanent = true ensure = :present }
+    }
+
+    step "absent_port_stays_absent" {
+      description = "A port that was never allowed is already configured"
+      resource = "firewalld_rule"
+      expect = "already_configured"
+      properties { port = "9999/udp" permanent = true ensure = :absent }
     }
   }
 }

@@ -35,8 +35,7 @@ package "windows_features" {
   // preinstalled OpenSSH Server capability.
   test "features_converge_and_detect" {
     description = "Server feature converges; optional feature and capability detection work"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/features_verify.wisp"
 

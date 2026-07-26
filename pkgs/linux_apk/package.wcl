@@ -25,6 +25,27 @@ package "linux_apk" {
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
   }
 
+  // A real install over the container's NAT: `tree` is tiny and lives in
+  // Alpine's main repository.
+  test "package_installs" {
+    description = "package installs a real package and removing it converges"
+    image = "alpine:3.20"
+    verify = "tests/apk_install_verify.wisp"
+
+    step "install" {
+      description = "Install tree"
+      resource = "package"
+      properties { name = "tree" ensure = :present }
+    }
+
+    step "absent_stays_absent" {
+      description = "A package that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-package" ensure = :absent }
+    }
+  }
+
   test "apk_existing_package" {
     description = "apk installed package checks and repository edits work in Alpine"
     image = "alpine:3.20"

@@ -29,6 +29,30 @@ package "linux_pacman" {
   // Check-only test: installing anything needs the network, and aur_package
   // additionally needs an AUR helper and a build user. The existence probe
   // on a base package is the honest offline test.
+  // A real install over the container's NAT. The resource runs `pacman -S`
+  // without `-y` on purpose — syncing the package database is an operator
+  // decision, not something a convergence step should do behind your back —
+  // so setup syncs it first, exactly as a playbook would.
+  test "package_installs" {
+    description = "package installs a real package and removing it converges"
+    image = "archlinux:latest"
+    setup = "pacman -Sy --noconfirm"
+    verify = "tests/pacman_install_verify.wisp"
+
+    step "install" {
+      description = "Install tree"
+      resource = "package"
+      properties { name = "tree" ensure = :present }
+    }
+
+    step "absent_stays_absent" {
+      description = "A package that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-package" ensure = :absent }
+    }
+  }
+
   test "pacman_existing_package" {
     description = "pacman installed package checks work in Arch"
     image = "archlinux:latest"

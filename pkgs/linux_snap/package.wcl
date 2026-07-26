@@ -11,7 +11,27 @@ package "linux_snap" {
     param "channel" { description = "Channel to install from (e.g. latest/stable); empty means the default" type = "string" default = "" }
   }
 
-  // No container tests by design: snapd needs systemd running to do
-  // anything, and installing a snap needs the network — neither converges
-  // honestly in an offline container.
+  // snapd needs a live systemd and the network, so the test runs in an
+  // Ubuntu VM with NAT rather than a container. `hello-world` is the
+  // smallest real snap; installing it also pulls the `core` base, so the
+  // apply run takes a couple of minutes.
+  test "package_converges" {
+    description = "A snap installs and a second apply is a no-op"
+    template = "x86_64/ubuntu-24.04"
+    setup = "systemctl start snapd.socket snapd.service && snap wait system seed.loaded"
+    verify = "tests/package_verify.wisp"
+
+    step "install" {
+      description = "Install the hello-world snap"
+      resource = "package"
+      properties { name = "hello-world" ensure = :present }
+    }
+
+    step "absent_stays_absent" {
+      description = "A snap that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-never-installed" ensure = :absent }
+    }
+  }
 }

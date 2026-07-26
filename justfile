@@ -18,9 +18,9 @@ validate:
 [group('check')]
 check: validate
 
-# Run the testlab. Unfiltered runs everything — docker tests, vmlab tests and
-# scenarios (needs docker AND vmlab). Scope with a filter, e.g.
-# `just test linux_files` or `just test mssql:config_converges`.
+# Run the testlab. Unfiltered runs everything — container tests, VM tests and
+# scenarios (needs vmlab, KVM, and the templates the VM tests name). Scope
+# with a filter, e.g. `just test linux_files` or `just test mssql:config_converges`.
 [group('test')]
 test filter='':
 	{{CONFIG_WEAVE}} test . {{filter}}

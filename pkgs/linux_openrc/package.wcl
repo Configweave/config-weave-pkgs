@@ -18,6 +18,34 @@ package "linux_openrc" {
     param "runlevel" { description = "Runlevel to manage" type = "string" default = "default" }
   }
 
-  // Untested in containers by design: the base images do not ship OpenRC and
-  // its rc commands need a live OpenRC init to act on.
+  // OpenRC is Alpine's init, so the test runs in an Alpine VM — the rc
+  // commands need a live OpenRC to act on, which no container image has.
+  test "service_converges" {
+    description = "A service is added to the default runlevel and started"
+    template = "x86_64/alpine-3.23"
+    verify = "tests/service_verify.wisp"
+
+    // crond ships in the image but is neither enabled nor running, so both
+    // resources have somewhere to converge to.
+    step "enable" {
+      description = "Add crond to the default runlevel"
+      resource = "service_enabled"
+      properties { name = "crond" enabled = true runlevel = "default" }
+    }
+
+    step "start" {
+      description = "Start crond"
+      resource = "service_state"
+      requires = ["enable"]
+      properties { name = "crond" state = "running" }
+    }
+
+    // acpid is already started in the booted image.
+    step "already_running" {
+      description = "A running service is already configured"
+      resource = "service_state"
+      expect = "already_configured"
+      properties { name = "acpid" state = "running" }
+    }
+  }
 }

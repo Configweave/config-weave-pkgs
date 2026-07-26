@@ -84,8 +84,7 @@ package "windows_packages" {
   // resolve in later processes.
   test "chocolatey_manages_packages" {
     description = "Chocolatey package presence, absence and source management converge"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol=3072; irm https://community.chocolatey.org/install.ps1 | iex; Set-Content -Path C:\\Windows\\System32\\choco.cmd -Value '@C:\\ProgramData\\chocolatey\\choco.exe %*'\""
     verify = "tests/chocolatey_verify.wisp"
@@ -127,8 +126,7 @@ package "windows_packages" {
   // scoop_package's apply surfaces a missing scoop binary as an error.
   test "absent_managers_detect" {
     description = "winget and scoop detection paths work without the managers installed"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
 
     step "winget_pkg_absent" {

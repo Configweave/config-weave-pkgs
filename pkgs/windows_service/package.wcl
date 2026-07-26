@@ -38,8 +38,7 @@ package "windows_service" {
   // and switching it to manual are both real converges that stay put.
   test "service_management_converges" {
     description = "Service registration, state and startup type converge"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/service_verify.wisp"
 

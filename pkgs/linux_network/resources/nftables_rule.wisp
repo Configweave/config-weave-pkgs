@@ -25,7 +25,10 @@ fn require_nft() -> Result[unit, string] {
 // Write the rule exactly as nft prints it or the comparison will not match.
 fn find_handle(family: string, table: string, chain: string, rule: string) -> Result[string, string] {
     let out = shell::bash("nft -a list chain " + q(family) + " " + q(table) + " " + q(chain), Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    // No such table or chain — then the rule is not in it either. This is the
+    // normal case during a check run, where the step that creates the chain
+    // has not applied yet, so it must not be an error.
+    if !out.success { return Err("__not_found__") }
     for line in out.stdout.split("\n") {
         let t = line.trim()
         if !t.starts_with(rule) { continue }
@@ -56,10 +59,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if chain == "" { return Err("missing 'chain' parameter") }
     if rule == "" { return Err("missing 'rule' parameter") }
     let family = param_str(params, "family", "inet")
+    // A missing chain (or table) reads as "rule not present", which is
+    // already what :absent wants and what :present has to converge to.
     if !want_present(params)? {
-        // a missing chain (or table) means the rule is gone too
-        let probe = shell::bash("nft list chain " + q(family) + " " + q(table) + " " + q(chain) + " 2>/dev/null", Value::Null)?
-        if !probe.success { return Ok(CheckResult::AlreadyConfigured) }
         if rule_present(family, table, chain, rule)? { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }

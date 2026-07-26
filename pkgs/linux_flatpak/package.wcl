@@ -19,7 +19,33 @@ package "linux_flatpak" {
     param "ensure" { description = "Desired state: :present or :absent" type = "symbol" default = :present }
   }
 
-  // No container tests by design: installing a Flatpak needs the network and
-  // a configured remote (flathub), so nothing converges honestly in an
-  // offline container.
+  // Needs the network and a real flatpak install, so the test runs in a
+  // Fedora VM with NAT. `remote` converges against flathub; `package` is
+  // exercised through its absent path only — installing a real app pulls a
+  // multi-hundred-megabyte runtime, which is scenario territory, not a
+  // convergence test.
+  test "remote_converges" {
+    description = "The flathub remote is added and a second apply is a no-op"
+    template = "x86_64/fedora-44"
+    setup = "dnf install -y flatpak"
+    verify = "tests/remote_verify.wisp"
+
+    step "flathub" {
+      description = "Add the flathub remote"
+      resource = "remote"
+      properties {
+        name = "flathub"
+        url = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+        ensure = :present
+      }
+    }
+
+    step "app_absent" {
+      description = "An app that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      requires = ["flathub"]
+      properties { id = "org.example.CwNeverInstalled" ensure = :absent }
+    }
+  }
 }

@@ -33,8 +33,7 @@ package "windows_defender" {
   // toggling AV off on a shared instance.
   test "defender_exclusion_converges" {
     description = "A path exclusion converges; real-time protection detection works"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/defender_verify.wisp"
 

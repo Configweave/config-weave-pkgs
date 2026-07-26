@@ -44,8 +44,7 @@ package "linux_systemd" {
   // service_state / service_enabled need live systemd — covered by vmlab.
   test "service_control_converges" {
     description = "Service state and enablement converge against live systemd"
-    backend = "vmlab"
-    image = "x86_64/ubuntu-24.04"
+    template = "x86_64/ubuntu-24.04"
 
     step "disable" {
       description = "Disable systemd-timesyncd at boot"

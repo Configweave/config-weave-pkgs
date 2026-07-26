@@ -30,8 +30,7 @@ package "windows_files" {
 
   test "files_converge" {
     description = "Directory, file and NTFS permissions converge"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/files_verify.wisp"
 

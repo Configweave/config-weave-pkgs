@@ -72,10 +72,13 @@ package "linux_ssh" {
       }
     }
 
+    // `home` is explicit: without it the resource falls back to $HOME, and
+    // the guest agent runs execs with HOME=/ rather than the user's home.
     step "known" {
       description = "Add a known_hosts entry"
       resource = "known_host"
       properties {
+        home = "/root"
         name = "cw-test.example"
         key = "cw-test.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey"
       }

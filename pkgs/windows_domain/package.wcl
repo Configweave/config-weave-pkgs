@@ -66,6 +66,36 @@ package "windows_domain" {
     param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" default = "" }
   }
 
+  // Single-VM coverage for the parts that need no domain: the membership
+  // gatherer against a freshly booted workgroup server, and workgroup_member
+  // asserting the machine is already in the workgroup it reports. Promotion,
+  // joining and demotion all need reboots and several machines — that is the
+  // ad_matrix scenario below.
+  test "workgroup_membership" {
+    description = "Membership facts read back on a workgroup server and re-joining its own workgroup is a no-op"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+
+    gather "membership" {
+      description = "Membership facts of an unjoined server"
+      from = "membership"
+      expect {
+        part_of_domain = false
+        workgroup = "WORKGROUP"
+        domain = ""
+        is_dc = false
+        role = "standalone_server"
+      }
+    }
+
+    step "already_in_workgroup" {
+      description = "The machine is already in WORKGROUP"
+      resource = "workgroup_member"
+      expect = "already_configured"
+      properties { workgroup_name = "WORKGROUP" }
+    }
+  }
+
   // Multi-VM, reboot-driven test of the whole DC lifecycle over a declared
   // vmlab lab (forest root serving DNS, an additional DC, a member server,
   // and a second forest). The driver brings each VM up by name and applies

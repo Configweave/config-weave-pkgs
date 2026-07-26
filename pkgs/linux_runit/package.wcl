@@ -20,6 +20,30 @@ package "linux_runit" {
     param "service_dir" { description = "Active service directory" type = "string" default = "/var/service" }
   }
 
-  // Untested in containers by design: sv needs a live runsvdir supervisor,
-  // which the base images do not run.
+  // `sv` needs a live runsvdir supervising the service directory, so the
+  // test runs in a VM. Void has no vmlab template yet; runit from Ubuntu's
+  // archive is the same upstream, and setup stands up a real runsvdir (as
+  // a transient systemd unit so it outlives the setup exec) over two
+  // throwaway services.
+  test "service_converges" {
+    description = "A supervised service stops and another is linked into the service directory"
+    template = "x86_64/ubuntu-24.04"
+    setup = "apt-get install -y -qq runit && mkdir -p /var/service /etc/sv/cw-stop /etc/sv/cw-enable && for s in cw-stop cw-enable; do printf '#!/bin/sh\\nexec sleep 3600\\n' > /etc/sv/$s/run; chmod +x /etc/sv/$s/run; done && systemd-run --unit=cw-runsvdir --collect runsvdir /var/service && sleep 1 && ln -sfn /etc/sv/cw-stop /var/service/cw-stop && for i in $(seq 1 30); do [ -e /var/service/cw-stop/supervise/ok ] && break; sleep 1; done"
+    verify = "tests/service_verify.wisp"
+
+    // cw-stop is supervised and running after setup, so stopping it is a
+    // real convergence rather than a no-op.
+    step "stop" {
+      description = "Stop a supervised service"
+      resource = "service_state"
+      properties { name = "cw-stop" state = "stopped" }
+    }
+
+    // cw-enable exists under /etc/sv but is not linked yet.
+    step "enable" {
+      description = "Link a service into the active service directory"
+      resource = "service_enabled"
+      properties { name = "cw-enable" enabled = true }
+    }
+  }
 }

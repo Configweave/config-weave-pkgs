@@ -41,8 +41,7 @@ package "windows_network" {
   // detection path.
   test "firewall_rule_converges" {
     description = "A firewall rule converges and absent detection works"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/network_verify.wisp"
 

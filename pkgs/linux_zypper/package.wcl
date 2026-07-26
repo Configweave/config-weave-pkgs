@@ -19,6 +19,11 @@ package "linux_zypper" {
 
   // Check-only test: installing/refreshing needs the network, so the
   // existence probe on a base package is the honest offline test.
+  // No real-install test: a first `zypper install` in the Leap container
+  // spends over two minutes refreshing repository metadata before it does
+  // any work, which is too slow and too network-dependent to be worth a
+  // convergence test. The check paths below cover the resource's logic; the
+  // apply path is the same `zypper install` every other manager wraps.
   test "zypper_existing_package" {
     description = "zypper/rpm installed package checks work in openSUSE"
     image = "opensuse/leap:15.6"

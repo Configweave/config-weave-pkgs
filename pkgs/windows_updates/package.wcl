@@ -21,8 +21,7 @@ package "windows_updates" {
   // needs the update service running — scenario territory.
   test "update_policy_converges" {
     description = "The automatic-updates policy resource converges"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/updates_verify.wisp"
 

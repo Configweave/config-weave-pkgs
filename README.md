@@ -78,23 +78,27 @@ authentication. **Known limits:** SQL/SMTP/sa passwords cannot be read back, so
 password drift is undetectable (use the `force_password` / `force` flags to
 re-apply); database collation is enforced only at create; the Windows install and
 availability groups may require a reboot and are covered by the `win_install`
-vmlab scenario rather than the docker `test`.
+vmlab scenario rather than the container `test`.
 
 ## Development
 
 ```sh
 just validate
-just test               # everything: docker tests, vmlab tests and scenarios
+just test               # everything: container tests, VM tests and scenarios
 just test linux_files   # one package
 just test mssql:config_converges   # one test
 just docs
 ```
 
-An unfiltered `just test` runs every test on its declared backend plus the
-scenarios, so it needs Docker (or Podman) **and** vmlab with the
-`x86_64/windows-server-2025` and `x86_64/ubuntu-24.04` templates. Filter to a
-package or `package:test` while iterating — the docker-only tests need no
-vmlab.
+Every test runs in a disposable vmlab instance. A test declaring `image`
+provisions a **container** — the OCI image booted in a micro-VM, ready in
+seconds; one declaring `template` provisions a full **VM**, which is what
+anything needing a real init system, its own kernel, a reboot or a Windows
+guest uses. An unfiltered `just test` runs both kinds plus the scenarios, so
+it needs vmlab with the `x86_64/alpine-3.23`, `x86_64/debian-13`,
+`x86_64/fedora-44`, `x86_64/ubuntu-24.04` and `x86_64/windows-server-2025`
+templates. Filter to a package or `package:test` while iterating — the
+container tests need no template at all.
 
 ## Package Manager Support
 

@@ -26,7 +26,7 @@ lab "cw-windows-domain" {
   vm "dc01" {
     template = "x86_64/windows-server-2025"
     cpus     = 2
-    memory   = "4G"
+    memory   = 4GiB
     nic { segment = "corp" ip = "10.50.0.10" }
   }
 
@@ -34,7 +34,7 @@ lab "cw-windows-domain" {
   vm "dc02" {
     template   = "x86_64/windows-server-2025"
     cpus       = 2
-    memory     = "4G"
+    memory     = 4GiB
     depends_on = ["dc01"]
     nic { segment = "corp" }
   }
@@ -43,7 +43,7 @@ lab "cw-windows-domain" {
   vm "member01" {
     template   = "x86_64/windows-server-2025"
     cpus       = 2
-    memory     = "4G"
+    memory     = 4GiB
     depends_on = ["dc01"]
     nic { segment = "corp" }
   }
@@ -52,7 +52,7 @@ lab "cw-windows-domain" {
   vm "dc-alt" {
     template = "x86_64/windows-server-2025"
     cpus     = 2
-    memory   = "4G"
+    memory   = 4GiB
     nic { segment = "alt" ip = "10.60.0.10" }
   }
 }

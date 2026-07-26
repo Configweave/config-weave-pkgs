@@ -72,8 +72,7 @@ package "windows_account" {
   // check and apply raise the documented error.
   test "local_accounts_converge" {
     description = "Local user, group and membership converge; ad_user guards on the missing AD module"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/accounts_verify.wisp"
 

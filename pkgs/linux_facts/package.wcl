@@ -40,6 +40,48 @@ package "linux_facts" {
     returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount" type = "list" }
   }
 
+  // In a VM the gatherers must return substance, not just degrade
+  // gracefully: real units from systemd, a routable interface, a root
+  // filesystem, and a recognised network manager.
+  test "facts_on_a_real_system" {
+    description = "Facts gatherers return live systemd, network and mount data on a booted host"
+    template = "x86_64/ubuntu-24.04"
+    verify = "tests/facts_vm_verify.wisp"
+
+    gather "os" {
+      description = "OS identity of the booted guest"
+      from = "os_release"
+      expect {
+        family = "linux"
+        id = "ubuntu"
+        version_id = "24.04"
+      }
+    }
+
+    gather "init" {
+      description = "systemd is detected as the init system"
+      from = "init_system"
+      expect {
+        init = "systemd"
+      }
+    }
+
+    gather "net" {
+      description = "Interfaces and the network manager"
+      from = "network"
+    }
+
+    gather "mnt" {
+      description = "Mounted filesystems"
+      from = "mounts"
+    }
+
+    gather "svc" {
+      description = "Live systemd units"
+      from = "services"
+    }
+  }
+
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"

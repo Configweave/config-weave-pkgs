@@ -69,6 +69,29 @@ package "linux_apt" {
     }
   }
 
+  // A real install over the container's NAT: `hello` is the smallest thing
+  // in the archive, so the apply path is exercised without a slow download.
+  test "package_installs" {
+    description = "package installs a real package and removing it converges"
+    image = "debian:12"
+    group = "debian"
+    setup = "apt-get update -qq"
+    verify = "tests/apt_install_verify.wisp"
+
+    step "install" {
+      description = "Install hello"
+      resource = "package"
+      properties { name = "hello" ensure = :present }
+    }
+
+    step "absent_stays_absent" {
+      description = "A package that was never installed is already configured"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-package" ensure = :absent }
+    }
+  }
+
   // The absent steps converge on files seeded during setup (run 1 checks
   // every step before any apply).
   test "repositories_and_keys_converge" {

@@ -24,8 +24,7 @@ package "windows_registry" {
 
   test "registry_converges" {
     description = "Registry values and keys converge on a Windows VM"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/value_verify.wisp"
 

@@ -16,8 +16,7 @@ package "windows_share" {
 
   test "share_converges" {
     description = "An SMB share converges and absent detection works"
-    backend = "vmlab"
-    image = "x86_64/windows-server-2025"
+    template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/share_verify.wisp"
 
