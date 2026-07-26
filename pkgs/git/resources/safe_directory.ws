@@ -119,44 +119,29 @@ fn norm(v: string) -> string {
     v
 }
 
-// The escape hatch for the ~900 config variables with no typed resource,
-// and the only way to remove a key a section resource can set.
-//
-// Reads go through --get-all rather than --get: --get exits 2 on a
-// multi-valued key, and "converged" for a --replace-all write means
-// exactly one value, which is what the length check asserts.
+// safe.directory is multi-valued — several paths (and the literal "*") can
+// be listed at once — so this adds and removes single entries instead of
+// replacing the key, leaving any sibling entries untouched.
 fn check(params: Value) -> Result[CheckResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
-    let current = cfg_get_all(params, key)?
-    if !want_present(params)? {
-        // With a value, remove just that occurrence; without, remove them all.
-        if value == "" {
-            if current.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
-            return Ok(CheckResult::NotConfigured)
-        }
-        if current.contains(value) { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
-    }
-    if value == "" { return Err("missing 'value' parameter") }
-    if current.len() == 1 && norm(current.get(0).unwrap_or("")) == norm(value) {
-        return Ok(CheckResult::AlreadyConfigured)
-    }
+    let p = param_str(params, "path", "")
+    if p == "" { return Err("missing 'path' parameter") }
+    let listed = cfg_get_all(params, "safe.directory")?.contains(p)
+    if want_present(params)? == listed { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
-    if !want_present(params)? {
-        log::info("removing " + key)
-        if value == "" { cfg_unset(params, key)? } else { cfg_unset_value(params, key, value)? }
-        return Ok(ApplyResult::Success)
+    let p = param_str(params, "path", "")
+    if p == "" { return Err("missing 'path' parameter") }
+    let listed = cfg_get_all(params, "safe.directory")?.contains(p)
+    if want_present(params)? {
+        if !listed {
+            log::info("adding safe.directory " + p)
+            cfg_add(params, "safe.directory", p)?
+        }
+    } else if listed {
+        log::info("removing safe.directory " + p)
+        cfg_unset_value(params, "safe.directory", p)?
     }
-    if value == "" { return Err("missing 'value' parameter") }
-    log::info("setting " + key + " = " + value)
-    cfg_set(params, key, value)?
     Ok(ApplyResult::Success)
 }

@@ -119,44 +119,33 @@ fn norm(v: string) -> string {
     v
 }
 
-// The escape hatch for the ~900 config variables with no typed resource,
-// and the only way to remove a key a section resource can set.
-//
-// Reads go through --get-all rather than --get: --get exits 2 on a
-// multi-valued key, and "converged" for a --replace-all write means
-// exactly one value, which is what the length check asserts.
 fn check(params: Value) -> Result[CheckResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
-    let current = cfg_get_all(params, key)?
+    let name = param_str(params, "name", "")
+    if name == "" { return Err("missing 'name' parameter") }
+    let have = cfg_get(params, "alias." + name)?
     if !want_present(params)? {
-        // With a value, remove just that occurrence; without, remove them all.
-        if value == "" {
-            if current.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
-            return Ok(CheckResult::NotConfigured)
-        }
-        if current.contains(value) { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
+        if have.is_none() { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
     }
-    if value == "" { return Err("missing 'value' parameter") }
-    if current.len() == 1 && norm(current.get(0).unwrap_or("")) == norm(value) {
-        return Ok(CheckResult::AlreadyConfigured)
-    }
+    let command = param_str(params, "command", "")
+    if command == "" { return Err("missing 'command' parameter") }
+    // Compared literally, not through norm(): an alias is arbitrary text.
+    if have.unwrap_or("") == command { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
+    let name = param_str(params, "name", "")
+    if name == "" { return Err("missing 'name' parameter") }
+    let key = "alias." + name
     if !want_present(params)? {
         log::info("removing " + key)
-        if value == "" { cfg_unset(params, key)? } else { cfg_unset_value(params, key, value)? }
+        cfg_unset(params, key)?
         return Ok(ApplyResult::Success)
     }
-    if value == "" { return Err("missing 'value' parameter") }
-    log::info("setting " + key + " = " + value)
-    cfg_set(params, key, value)?
+    let command = param_str(params, "command", "")
+    if command == "" { return Err("missing 'command' parameter") }
+    log::info("setting " + key)
+    cfg_set(params, key, command)?
     Ok(ApplyResult::Success)
 }

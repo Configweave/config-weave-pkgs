@@ -119,44 +119,101 @@ fn norm(v: string) -> string {
     v
 }
 
-// The escape hatch for the ~900 config variables with no typed resource,
-// and the only way to remove a key a section resource can set.
-//
-// Reads go through --get-all rather than --get: --get exits 2 on a
-// multi-valued key, and "converged" for a --replace-all write means
-// exactly one value, which is what the length check asserts.
-fn check(params: Value) -> Result[CheckResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
-    let current = cfg_get_all(params, key)?
-    if !want_present(params)? {
-        // With a value, remove just that occurrence; without, remove them all.
-        if value == "" {
-            if current.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
-            return Ok(CheckResult::NotConfigured)
+fn section() -> string { "init" }
+
+fn keys() -> List[string] {
+    ["defaultBranch", "templateDir", "defaultObjectFormat", "defaultRefFormat"]
+}
+
+fn allowed() -> Map[string, List[string]] {
+    #{
+        "defaultObjectFormat": ["sha1", "sha256"],
+        "defaultRefFormat": ["files", "reftable"],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Section-resource machinery — also byte-identical across the section
+// scripts. Each of those declares only `keys()` (git's canonical spelling)
+// and `allowed()` (the legal values of its symbol params).
+// ---------------------------------------------------------------------------
+
+// A typed param rendered as the text git stores. None = the step omitted
+// the param, which means "leave this setting alone" — the only way a bool
+// or int param can express that, since a declared default would instead
+// mean "set it to false" / "set it to 0".
+fn to_cfg(params: Value, name: string) -> Option[string] {
+    if let Some(v) = params.get(name) {
+        if let Some(s) = v.as_string() { return Some(s) }
+        if let Some(b) = v.as_bool() {
+            if b { return Some("true") }
+            return Some("false")
         }
-        if current.contains(value) { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
+        if let Some(i) = v.as_int() { return Some(json::to_string(Value::Int(i))) }
     }
-    if value == "" { return Err("missing 'value' parameter") }
-    if current.len() == 1 && norm(current.get(0).unwrap_or("")) == norm(value) {
-        return Ok(CheckResult::AlreadyConfigured)
+    None
+}
+
+// "signingKey" -> "signing_key". Params keep the repo's snake_case naming
+// while `keys()` carries git's canonical spelling, so git's own casing is
+// what lands in the file. Requires keys() entries to be lowerCamelCase with
+// no consecutive capitals (which is why core.protectNTFS is not exposed).
+fn snake(k: string) -> string {
+    let out = k
+    for u in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+              "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"] {
+        out = out.replace(u, "_" + u.to_lower())
     }
-    Ok(CheckResult::NotConfigured)
+    out
+}
+
+// WCL symbols cannot contain hyphens — the lexer stops at [A-Za-z0-9_] — so
+// git's "on-demand" is written :on_demand and translated back here. The
+// literal string "on-demand" is accepted too, because a `symbol` param
+// validates exactly like a string.
+fn resolve_symbol(name: string, raw: string, allowed: List[string]) -> Result[string, string] {
+    if allowed.contains(raw) { return Ok(raw) }
+    let hyphenated = raw.replace("_", "-")
+    if allowed.contains(hyphenated) { return Ok(hyphenated) }
+    Err("invalid '" + name + "' value '" + raw + "' (expected one of: " + allowed.join(", ") + ")")
+}
+
+// The [git key, desired text] pairs this step actually asks for. Params the
+// step omitted are absent from `params` and so are skipped entirely.
+fn desired_pairs(params: Value) -> Result[List[List[string]], string] {
+    let out: List[List[string]] = []
+    for key in keys() {
+        let name = snake(key)
+        if let Some(raw) = to_cfg(params, name) {
+            let value = raw
+            if let Some(a) = allowed().get(key) { value = resolve_symbol(name, raw, a)? }
+            out.push([section() + "." + key, value])
+        }
+    }
+    Ok(out)
+}
+
+// An explicit empty string reads back as "unset" and so is a no-op here;
+// use git.config_entry with ensure = :absent to remove a key.
+fn check(params: Value) -> Result[CheckResult, string] {
+    for pair in desired_pairs(params)? {
+        let key = pair.get(0).unwrap_or("")
+        let want = pair.get(1).unwrap_or("")
+        let have = cfg_get(params, key)?
+        if norm(have.unwrap_or("")) != norm(want) { return Ok(CheckResult::NotConfigured) }
+    }
+    Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let value = param_str(params, "value", "")
-    if !want_present(params)? {
-        log::info("removing " + key)
-        if value == "" { cfg_unset(params, key)? } else { cfg_unset_value(params, key, value)? }
-        return Ok(ApplyResult::Success)
+    for pair in desired_pairs(params)? {
+        let key = pair.get(0).unwrap_or("")
+        let want = pair.get(1).unwrap_or("")
+        let have = cfg_get(params, key)?
+        if norm(have.unwrap_or("")) != norm(want) {
+            log::info("setting " + key + " = " + want)
+            cfg_set(params, key, want)?
+        }
     }
-    if value == "" { return Err("missing 'value' parameter") }
-    log::info("setting " + key + " = " + value)
-    cfg_set(params, key, value)?
     Ok(ApplyResult::Success)
 }

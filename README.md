@@ -48,7 +48,11 @@ resource.
   state and enablement per init system (systemd also manages unit files).
 - `linux_accounts`: users, groups and per-user sudo rules.
 - `linux_ssh`: authorized keys, known hosts and ssh/sshd config drop-ins.
-- `git`: global and system git config entries.
+- `git`: global and system git config — typed resources per section
+  (`user`, `core`, `commit`, `push`, `pull`, `fetch`, `merge`, `diff`,
+  `rebase`, `init`, `status`, `log`, `color`), plus `alias`,
+  `safe_directory` and `config_entry` for anything else. Shells out to
+  `git config`, so the target needs git installed.
 - `linux_system`: sysctl, hostname, timezone, locales, cron and fstab.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
