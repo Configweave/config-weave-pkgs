@@ -267,6 +267,9 @@ package "mssql" {
   test "config_converges" {
     description = "Server, login, database, user and CDC resources converge against a running engine"
     image = "mcr.microsoft.com/mssql/server:2022-latest"
+    // SQL Server refuses to start below 2GB and the instance defaults to
+    // 256MiB; without this the engine never comes up and setup times out.
+    memory = "4GiB"
     setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q \"CREATE LOGIN cw_drop_login WITH PASSWORD=N'Dr0p!Me12345', CHECK_POLICY=OFF; CREATE DATABASE cw_drop_db; CREATE DATABASE cw_cdc_db; EXEC msdb.dbo.sp_add_job @job_name=N'cw_drop_job';\" && /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -d cw_cdc_db -Q 'CREATE TABLE dbo.cw_rows (id int NOT NULL PRIMARY KEY);'"
     verify = "tests/config_verify.wisp"
 

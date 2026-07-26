@@ -43,12 +43,17 @@ package "windows_files" {
     step "hello_file" {
       description = "Write a marker file"
       resource = "file"
+      requires = ["test_dir"]
       properties { path = "C:\\weave-files-test\\hello.txt" content = "hello from config-weave" }
     }
 
+    // `permissions` acts on an existing path, so it must follow the step
+    // that creates the directory — without `requires` the scheduler is free
+    // to run it first, and it errors with "path does not exist".
     step "users_modify" {
       description = "Grant BUILTIN\\Users Modify on the directory"
       resource = "permissions"
+      requires = ["test_dir"]
       properties { path = "C:\\weave-files-test" acl = ["BUILTIN\\Users:Modify"] }
     }
 
