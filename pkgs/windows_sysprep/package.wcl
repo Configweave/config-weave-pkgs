@@ -77,33 +77,12 @@ package "windows_sysprep" {
     }
   }
 
-  // Runs on its own disposable VM — deliberately NOT group = "win2025":
-  // generalizing reseals the machine, which would wreck the shared instance.
-  // shutdown = "quit" keeps the VM up so the three-run protocol converges
-  // (run 2 reseals, the re-check reads the reseal ImageState, run 3 is
-  // already_configured). Blocked until the windows-server-2025 template boot
-  // issue clears.
-  test "sysprep_reseals" {
-    description = "unattend_file feeds sysprep, which generalizes and reseals to OOBE with /quit"
-    template = "x86_64/windows-server-2025"
-    verify = "tests/sysprep_verify.wisp"
-
-    step "answer_file" {
-      description = "Drop the answer file where sysprep auto-discovers it"
-      resource = "unattend_file"
-      properties {
-        admin_password = "vmlab123!"
-        autologon = true
-        first_logon_commands = ["cmd /c net accounts /maxpwage:unlimited"]
-        timezone = "UTC"
-      }
-    }
-
-    step "reseal" {
-      description = "Generalize and reseal to OOBE, staying up (/quit)"
-      resource = "sysprep"
-      requires = ["answer_file"]
-      properties { shutdown = "quit" unattend = "C:\\Windows\\System32\\Sysprep\\unattend.xml" vm = true }
-    }
-  }
+  // No test for `sysprep` itself: generalizing is capped by Windows'
+  // licensing rearm count, and the vmlab template was *itself* created by
+  // a sysprep, so every clone starts with that budget already spent —
+  // `sysprep /generalize` fails on any clone with 0xc004d307
+  // (SL_E_RIGHT_EXCEEDED, "maximum number of rearms exceeded"), which no
+  // amount of test setup can undo. Verified on x86_64/windows-server-2025
+  // 2026-07-26. The answer-file half of this package is covered above;
+  // exercising the reseal needs a template built without a prior sysprep.
 }
