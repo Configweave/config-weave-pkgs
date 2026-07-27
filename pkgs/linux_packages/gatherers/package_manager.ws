@@ -5,6 +5,14 @@ fn exists_bin(path: string) -> bool {
     fs::exists(path)
 }
 
+// The bare token, without a leading colon: `:apt` is a WCL *source* spelling,
+// and the engine promotes a symbol-typed `returns` key into a real WCL symbol
+// on the way into the variable space.
+//
+// Order matters. The system managers come first, so a Debian host running
+// flatpak still reports :apt; the ecosystem managers below only win when no
+// system manager was found. Detection is independent of what this library can
+// manage — :snap and :nix are reported with no package behind them.
 fn gather(params: Value) -> Value {
     let manager = if exists_bin("/usr/bin/apt-get") {
         "apt"

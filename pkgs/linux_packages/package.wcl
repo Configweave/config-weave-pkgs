@@ -4,7 +4,33 @@ package "linux_packages" {
   gatherer "package_manager" {
     description = "Detect the host package manager"
     script = "gatherers/package_manager.ws"
-    returns "manager" { description = "Detected manager (apt, dnf, pacman, zypper, apk, ...)" type = "string" }
+    returns "manager" {
+      description = "Detected package manager"
+      type = "symbol"
+
+      symbol "apt"        { description = "Debian/Ubuntu" }
+      symbol "dnf5"       { description = "Fedora and RPM systems shipping dnf5" }
+      symbol "dnf"        { description = "Fedora/RHEL/CentOS/Rocky/Alma" }
+      symbol "microdnf"   { description = "Minimal RPM images" }
+      symbol "yum"        { description = "Older RHEL-family systems" }
+      symbol "tdnf"       { description = "VMware Photon" }
+      symbol "zypper"     { description = "openSUSE/SUSE" }
+      symbol "pacman"     { description = "Arch" }
+      symbol "apk"        { description = "Alpine" }
+      symbol "xbps"       { description = "Void" }
+      symbol "emerge"     { description = "Gentoo" }
+      symbol "eopkg"      { description = "Solus" }
+      symbol "swupd"      { description = "Clear Linux" }
+      symbol "urpmi"      { description = "Mageia/OpenMandriva" }
+      symbol "slackpkg"   { description = "Slackware" }
+      symbol "opkg"       { description = "OpenWrt and embedded Linux" }
+      symbol "rpm-ostree" { description = "Image-based rpm-ostree systems" }
+      symbol "flatpak"    { description = "Flatpak, where no system manager was found" }
+      symbol "snap"       { description = "Snap, where no system manager was found" }
+      symbol "nix"        { description = "Nix" }
+      symbol "guix"       { description = "Guix" }
+      symbol "unknown"    { description = "No supported manager could be detected" }
+    }
     returns "known" { description = "True when a supported manager was found" type = "bool" }
   }
 
@@ -16,7 +42,7 @@ package "linux_packages" {
       description = "Package manager detection"
       from = "package_manager"
       expect {
-        manager = "apt"
+        manager = :apt
         known = true
       }
     }
