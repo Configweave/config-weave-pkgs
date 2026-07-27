@@ -33,13 +33,41 @@ package "linux_flatpak" {
     }
   }
 
+  // Unlike the other managers' `cache_updated`, this upgrades installed apps
+  // and runtimes rather than refreshing metadata: flatpak resolves against the
+  // remote live, so an `--appstream` refresh would buy nothing.
+  resource "updated" {
+    description = "Run flatpak update when the last update is older than max_age"
+    script = "resources/updated.ws"
+    concurrency = "exclusive"
+    param "installation" {
+      description = "Which flatpak installation to update"
+      type = "symbol"
+      default = :system
+
+      symbol "system" { description = "Update the system-wide installation" }
+      symbol "user"   { description = "Update the calling user's installation" }
+    }
+    param "max_age" {
+      description = "Update when the last update is older than this span"
+      type = "duration"
+      default = 24h
+    }
+  }
+
   // Needs the network and a real flatpak install, so the test runs in a
   // Fedora VM with NAT. `remote` converges against flathub; `package` is
   // exercised through its absent path only — installing a real app pulls a
   // multi-hundred-megabyte runtime, which is scenario territory, not a
-  // convergence test.
+  // convergence test. `updated` is cheap here for the same reason: with no
+  // apps installed, `flatpak update` is a no-op that still writes its stamp.
+  //
+  // The steps are chained with `requires`: `exclusive` only serializes steps
+  // of the SAME resource type, but every flatpak subcommand contends for the
+  // one system installation lock. Playbooks mixing these need the same
+  // ordering.
   test "remote_converges" {
-    description = "The flathub remote is added and a second apply is a no-op"
+    description = "The flathub remote, an absent app and the update window all converge"
     template = "x86_64/fedora-44"
     setup = "dnf install -y flatpak"
     verify = "tests/remote_verify.ws"
@@ -60,6 +88,13 @@ package "linux_flatpak" {
       expect = "already_configured"
       requires = ["flathub"]
       properties { id = "org.example.CwNeverInstalled" ensure = :absent }
+    }
+
+    step "updated" {
+      description = "Update the system installation and stamp the window"
+      resource = "updated"
+      requires = ["app_absent"]
+      properties { installation = :system  max_age = 24h }
     }
   }
 }
