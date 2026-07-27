@@ -59,16 +59,24 @@ package "linux_system" {
   }
 
   resource "fstab_mount" {
-    description = "Ensure an /etc/fstab entry and optionally mount it"
+    description = "Ensure an /etc/fstab entry exists or is absent, and optionally (un)mount it"
     script = "resources/fstab_mount.ws"
     concurrency = "global"
-    param "spec" { description = "Filesystem spec" type = "string" required = true }
-    param "mountpoint" { description = "Mount point" type = "string" required = true }
-    param "fstype" { description = "Filesystem type" type = "string" required = true }
+    param "mountpoint" { description = "Mount point; identifies the entry, so it is the only field needed to remove one" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the fstab entry, replacing any existing entry for this mount point" }
+      symbol "absent"  { description = "Remove the fstab entry for this mount point" }
+    }
+    param "spec" { description = "Filesystem spec (required when :present)" type = "string" default = "" }
+    param "fstype" { description = "Filesystem type (required when :present)" type = "string" default = "" }
     param "options" { description = "Mount options" type = "string" default = "defaults" }
     param "dump" { description = "Dump field" type = "int" default = 0 }
     param "pass" { description = "Pass field" type = "int" default = 0 }
-    param "mount" { description = "Run mount after editing fstab" type = "bool" default = false }
+    param "mount" { description = "Mount after adding the entry, or unmount before removing it" type = "bool" default = false }
   }
 
   test "cron_job_converge" {
@@ -97,7 +105,7 @@ package "linux_system" {
     description = "hostname, timezone, locale and fstab file edits converge"
     image = "debian:12"
     group = "system"
-    setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen"
+    setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen && printf 'tmpfs /mnt/cw-seeded tmpfs defaults 0 0\\n' >> /etc/fstab"
     verify = "tests/singletons_verify.ws"
 
     step "hostname" {
@@ -129,6 +137,16 @@ package "linux_system" {
       description = "Add an fstab entry without mounting it"
       resource = "fstab_mount"
       properties { spec = "tmpfs" mountpoint = "/mnt/cw-test" fstype = "tmpfs" mount = false }
+    }
+
+    // The mount point alone identifies the entry, so removal needs no spec
+    // or fstype — and `mount = false` leaves /proc/mounts alone, which is
+    // what makes this safe in a container.
+    step "rm_fstab" {
+      description = "Remove the fstab entry seeded during setup"
+      resource = "fstab_mount"
+      requires = ["fstab"]
+      properties { mountpoint = "/mnt/cw-seeded" ensure = :absent mount = false }
     }
   }
 }
