@@ -27,6 +27,25 @@ package "linux_pacman" {
     }
   }
 
+  // Separate from `cache_updated`: an AUR helper refreshes AUR metadata that
+  // a bare `pacman -Sy` never sees, so the two windows are tracked apart.
+  //
+  // Untested by design, like every cache refresh here: it hits the network,
+  // and additionally needs an AUR helper and a non-root user with passwordless
+  // sudo — the helper shells out to pacman to write the sync databases.
+  resource "aur_cache_updated" {
+    description = "Run the AUR helper's sync when the metadata is older than max_age"
+    script = "resources/aur_cache_updated.ws"
+    concurrency = "exclusive"
+    param "max_age" {
+      description = "Refresh when the last update is older than this span"
+      type = "duration"
+      default = 24h
+    }
+    param "helper" { description = "AUR helper: auto (detect yay then paru), yay or paru" type = "string" default = "auto" }
+    param "user" { description = "Non-root user to run the helper as (yay/paru refuse to run as root)" type = "string" required = true }
+  }
+
   resource "aur_package" {
     description = "Ensure an AUR package is installed or absent via yay/paru"
     script = "resources/aur_package.ws"
