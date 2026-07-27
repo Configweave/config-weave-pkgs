@@ -2,9 +2,10 @@ use value
 use fs
 use path
 use shell
+use time
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
+fn param_int(params: Value, key: string, fallback: int) -> int {
+    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
     fallback
 }
 
@@ -17,40 +18,30 @@ fn dnf_bin() -> Result[string, string] {
 }
 
 // The stamp file's mtime records the last refresh this resource performed.
+// It is per manager: one machine may run more than one, and a refresh of
+// dnf's metadata says nothing about anyone else's.
 fn stamp_path() -> string { "/var/lib/config-weave/dnf-cache-updated" }
 
-// "30m" / "24h" / "7d" / "90s" -> seconds
-fn parse_span(span: string) -> Result[int, string] {
-    let s = span.trim()
-    if s.len() < 2 { return Err("invalid 'max_age' value '" + span + "' (expected e.g. 30m, 24h or 7d)") }
-    let unit = s.slice(s.len() - 1, s.len())
-    let mult = if unit == "s" { 1 } else if unit == "m" { 60 } else if unit == "h" { 3600 } else if unit == "d" { 86400 } else { 0 }
-    if mult == 0 { return Err("invalid 'max_age' unit '" + unit + "' (expected s, m, h or d)") }
-    if let Some(n) = s.slice(0, s.len() - 1).parse_int() {
-        if n > 0 { return Ok(n * mult) }
-    }
-    Err("invalid 'max_age' value '" + span + "' (expected e.g. 30m, 24h or 7d)")
-}
-
-fn now() -> Result[int, string] {
-    let out = shell::bash("date +%s", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    if let Some(n) = out.stdout.trim().parse_int() { return Ok(n) }
-    Err("could not parse `date +%s` output")
+// A `duration` param arrives as base nanoseconds.
+fn max_age_secs(params: Value) -> int {
+    param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
 }
 
 fn last_refresh() -> Result[int, string] {
     let meta = fs::metadata(stamp_path())?
+    // `modified` is always present (0 where the platform can't report it),
+    // and an epoch mtime simply forces a refresh.
     if let Some(m) = meta.get("modified") {
         if let Some(ts) = m.as_int() { return Ok(ts) }
     }
-    Err("stamp file has no modification time")
+    Ok(0)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let max_age = parse_span(param_str(params, "max_age", "24h"))?
     if !fs::is_file(stamp_path()) { return Ok(CheckResult::NotConfigured) }
-    if now()? - last_refresh()? > max_age { return Ok(CheckResult::NotConfigured) }
+    if time::now_millis() / 1000 - last_refresh()? > max_age_secs(params) {
+        return Ok(CheckResult::NotConfigured)
+    }
     Ok(CheckResult::AlreadyConfigured)
 }
 
@@ -62,6 +53,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !out.success { return Err(out.stderr.trim()) }
     let stamp = stamp_path()
     fs::mkdir(path::parent(stamp))?
+    // Rewriting the stamp truncates it and so refreshes its mtime, which is
+    // what advances the window — no separate touch is needed.
     fs::write(stamp, bin + "\n")?
     Ok(ApplyResult::Success)
 }

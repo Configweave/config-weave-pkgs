@@ -17,10 +17,14 @@ package "linux_pacman" {
   }
 
   resource "cache_updated" {
-    description = "Run pacman -Sy once per marker"
+    description = "Run pacman -Sy when the index is older than max_age"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
-    param "marker" { description = "Marker path used for idempotence" type = "string" default = "/var/lib/config-weave/package-cache-updated" }
+    param "max_age" {
+      description = "Refresh when the last update is older than this span"
+      type = "duration"
+      default = 24h
+    }
   }
 
   resource "aur_package" {

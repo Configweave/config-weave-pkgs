@@ -80,6 +80,16 @@ mod toml {
     fn to_string_pretty(a0: Value) -> Result[string, string]
 }
 
+/// Clocks and sleeping (capability: clock access, thread blocking)
+mod time {
+    fn now_unix() -> float
+    fn now_millis() -> int
+    fn instant() -> float
+    fn elapsed(a0: float) -> float
+    fn sleep(a0: int)
+    fn format_iso(a0: float) -> string
+}
+
 /// Structured logging with step context attached
 mod log {
     /// Log at debug level
