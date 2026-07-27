@@ -1,51 +1,96 @@
 package "linux_openrc" {
   description = "Manage OpenRC services (Alpine, Gentoo)"
 
-  resource "service_state" {
-    description = "Ensure an OpenRC service is running or stopped"
-    script = "resources/service_state.ws"
+  // One resource for the whole service: its init script, its runlevel
+  // membership and whether it is running. `state` and `enabled` default to
+  // :unmanaged so this can install a script without also deciding those, or
+  // manage an existing service without supplying a script.
+  resource "service" {
+    description = "Ensure an OpenRC service's init script, runlevel membership and running state"
+    script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
-  }
+    param "name" { description = "Service name, and the basename of its script under /etc/init.d" type = "string" required = true }
+    param "ensure" {
+      description = "Whether the service is installed"
+      type = "symbol"
+      default = :present
 
-  resource "service_enabled" {
-    description = "Ensure an OpenRC service is added to a runlevel"
-    script = "resources/service_enabled.ws"
-    concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "enabled" { description = "Add to the runlevel" type = "bool" required = true }
-    param "runlevel" { description = "Runlevel to manage" type = "string" default = "default" }
+      symbol "present" { description = "The init script exists" }
+      symbol "absent"  { description = "Stop the service, drop it from the runlevel and delete its init script" }
+    }
+    param "script" { description = "Init script body; empty manages an existing script under /etc/init.d without rewriting it" type = "string" default = "" }
+    param "state" {
+      description = "Runtime state to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "running"   { description = "Start the service" }
+      symbol "stopped"   { description = "Stop the service" }
+      symbol "unmanaged" { description = "Leave the runtime state alone" }
+    }
+    param "enabled" {
+      description = "Runlevel membership to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "enabled"   { description = "Add the service to the runlevel" }
+      symbol "disabled"  { description = "Remove the service from the runlevel" }
+      symbol "unmanaged" { description = "Leave runlevel membership alone" }
+    }
+    param "runlevel" { description = "Runlevel this service's enablement is managed in" type = "string" default = "default" }
   }
 
   // OpenRC is Alpine's init, so the test runs in an Alpine VM — the rc
   // commands need a live OpenRC to act on, which no container image has.
   test "service_converges" {
-    description = "A service is added to the default runlevel and started"
+    description = "A service is installed, enabled and started, and a seeded one is removed"
     template = "x86_64/alpine-3.23"
+    setup = "printf '#!/sbin/openrc-run\\ncommand=/bin/sleep\\ncommand_args=3600\\ncommand_background=true\\npidfile=/run/cw-seeded.pid\\n' > /etc/init.d/cw-seeded && chmod +x /etc/init.d/cw-seeded && rc-update add cw-seeded default"
     verify = "tests/service_verify.ws"
 
-    // crond ships in the image but is neither enabled nor running, so both
-    // resources have somewhere to converge to.
-    step "enable" {
-      description = "Add crond to the default runlevel"
-      resource = "service_enabled"
-      properties { name = "crond" enabled = true runlevel = "default" }
+    // crond ships in the image but is neither enabled nor running, so
+    // managing an already-present script has somewhere to converge to.
+    step "crond" {
+      description = "Enable and start the shipped crond service"
+      resource = "service"
+      properties { name = "crond" enabled = :enabled state = :running }
     }
 
-    step "start" {
-      description = "Start crond"
-      resource = "service_state"
-      requires = ["enable"]
-      properties { name = "crond" state = "running" }
+    // A service this resource installs from scratch, script and all.
+    step "install" {
+      description = "Install an init script, enable it and start it"
+      resource = "service"
+      requires = ["crond"]
+      properties {
+        name = "cw-managed"
+        enabled = :enabled
+        state = :running
+        script = <<'RC'
+#!/sbin/openrc-run
+command=/bin/sleep
+command_args=3600
+command_background=true
+pidfile=/run/cw-managed.pid
+RC
+      }
+    }
+
+    // The seeded service is in the runlevel and its script exists, so
+    // :absent has real work: drop it from the runlevel, delete the script.
+    step "remove" {
+      description = "Remove the service seeded during setup"
+      resource = "service"
+      requires = ["install"]
+      properties { name = "cw-seeded" ensure = :absent }
     }
 
     // acpid is already started in the booted image.
     step "already_running" {
       description = "A running service is already configured"
-      resource = "service_state"
+      resource = "service"
       expect = "already_configured"
-      properties { name = "acpid" state = "running" }
+      requires = ["remove"]
+      properties { name = "acpid" state = :running }
     }
   }
 }

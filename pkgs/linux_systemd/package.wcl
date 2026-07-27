@@ -1,27 +1,53 @@
 package "linux_systemd" {
   description = "Manage systemd services and unit files"
 
-  resource "service_state" {
-    description = "Ensure a systemd service is running or stopped"
-    script = "resources/service_state.ws"
+  // One resource for the whole service: its unit file, its boot enablement
+  // and whether it is running. `state` and `enabled` default to :unmanaged
+  // so this can install a unit without also deciding those, or manage an
+  // existing service (including a vendor unit under /lib) without supplying
+  // one. This owns .service units; `unit_file` below covers every other
+  // unit type.
+  resource "service" {
+    description = "Ensure a systemd service's unit file, boot enablement and running state"
+    script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+    param "name" { description = "Service name without the .service suffix" type = "string" required = true }
+    param "ensure" {
+      description = "Whether the service is installed"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The service exists" }
+      symbol "absent"  { description = "Stop and disable the service, then delete its unit file under /etc/systemd/system" }
+    }
+    param "unit" { description = "Unit file body written to /etc/systemd/system/<name>.service; empty manages an existing unit without rewriting it" type = "string" default = "" }
+    param "state" {
+      description = "Runtime state to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "running"   { description = "Start the service" }
+      symbol "stopped"   { description = "Stop the service" }
+      symbol "unmanaged" { description = "Leave the runtime state alone" }
+    }
+    param "enabled" {
+      description = "Boot enablement to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "enabled"   { description = "Enable the service at boot" }
+      symbol "disabled"  { description = "Disable the service at boot" }
+      symbol "unmanaged" { description = "Leave boot enablement alone" }
+    }
   }
 
-  resource "service_enabled" {
-    description = "Ensure a systemd service starts at boot"
-    script = "resources/service_enabled.ws"
-    concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "enabled" { description = "Start at boot" type = "bool" required = true }
-  }
-
+  // For unit types `service` does not cover — timers, sockets, mounts,
+  // targets — where there is no running/enabled pair to manage.
   resource "unit_file" {
-    description = "Ensure a systemd unit file under /etc/systemd/system"
+    description = "Ensure a systemd unit file under /etc/systemd/system (any unit type)"
     script = "resources/unit_file.ws"
     concurrency = "exclusive"
-    param "name" { description = "Unit filename such as example.service" type = "string" required = true }
+    param "name" { description = "Unit filename including its suffix, such as example.timer" type = "string" required = true }
     param "content" { description = "Unit file content" type = "string" required = true }
     param "daemon_reload" { description = "Run systemctl daemon-reload after writing" type = "bool" default = false }
   }
@@ -32,31 +58,57 @@ package "linux_systemd" {
     verify = "tests/unit_file_verify.ws"
 
     step "unit" {
-      description = "Write a unit file"
+      description = "Write a timer unit"
       resource = "unit_file"
       properties {
-        name = "config-weave-test.service"
+        name = "config-weave-test.timer"
         content = "[Unit]\nDescription=Config Weave Test\n"
       }
     }
   }
 
-  // service_state / service_enabled need live systemd — covered by vmlab.
+  // `service` needs live systemd — covered by vmlab.
   test "service_control_converges" {
-    description = "Service state and enablement converge against live systemd"
+    description = "Unit installation, enablement and runtime state converge against live systemd"
     template = "x86_64/ubuntu-24.04"
+    setup = "printf '[Unit]\\nDescription=config-weave seeded\\n[Service]\\nExecStart=/bin/sleep 3600\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/cw-seeded.service && systemctl daemon-reload && systemctl enable cw-seeded >/dev/null 2>&1"
+    verify = "tests/service_verify.ws"
 
     step "disable" {
-      description = "Disable systemd-timesyncd at boot"
-      resource = "service_enabled"
-      properties { name = "systemd-timesyncd" enabled = false }
+      description = "Stop and disable systemd-timesyncd"
+      resource = "service"
+      properties { name = "systemd-timesyncd" enabled = :disabled state = :stopped }
     }
 
-    step "stop" {
-      description = "Stop systemd-timesyncd"
-      resource = "service_state"
+    // A service this resource installs from scratch, unit and all.
+    step "install" {
+      description = "Install a unit, enable it and start it"
+      resource = "service"
       requires = ["disable"]
-      properties { name = "systemd-timesyncd" state = "stopped" }
+      properties {
+        name = "cw-managed"
+        enabled = :enabled
+        state = :running
+        unit = <<'UNIT'
+[Unit]
+Description=config-weave managed test service
+
+[Service]
+ExecStart=/bin/sleep 3600
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+      }
+    }
+
+    // cw-seeded is enabled with its unit under /etc, so :absent has real
+    // work: disable it, then delete the unit file.
+    step "remove" {
+      description = "Remove the service seeded during setup"
+      resource = "service"
+      requires = ["install"]
+      properties { name = "cw-seeded" ensure = :absent }
     }
   }
 }

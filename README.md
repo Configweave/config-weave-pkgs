@@ -43,11 +43,14 @@ legal values under **Symbol values**.
   symlinks/hard links, archives and modes.
 - `linux_packages`: the package-manager detection gatherer.
 - `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper` /
-  `linux_flatpak` / `linux_snap`: one package per package manager — install,
-  cache refresh and, where the manager supports them, repositories, keys and
-  holds (`linux_pacman` also installs AUR packages via yay/paru).
-- `linux_systemd` / `linux_openrc` / `linux_runit` / `linux_sysvinit`: service
-  state and enablement per init system (systemd also manages unit files).
+  `linux_flatpak`: one package per package manager — install, cache refresh
+  and, where the manager supports them, repositories, keys and holds
+  (`linux_pacman` also installs AUR packages via yay/paru).
+- `linux_systemd` / `linux_openrc` / `linux_runit` / `linux_sysvinit`: one
+  `service` resource per init system covering the service script/unit, boot
+  enablement and running state, with `ensure = :absent` removing the service
+  outright (systemd also has `unit_file` for timers, sockets and other unit
+  types).
 - `linux_accounts`: users, groups and per-user sudo rules.
 - `linux_ssh`: authorized keys, known hosts and ssh/sshd config drop-ins.
 - `git`: global and system git config — typed resources per section

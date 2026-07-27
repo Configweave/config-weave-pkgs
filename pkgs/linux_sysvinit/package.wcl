@@ -1,23 +1,45 @@
 package "linux_sysvinit" {
   description = "Manage SysV init services"
 
-  resource "service_state" {
-    description = "Ensure a SysV init service is running or stopped"
-    script = "resources/service_state.ws"
+  // One resource for the whole service: its init script, its boot
+  // enablement and whether it is running. `state` and `enabled` default to
+  // :unmanaged so this can install a script without also deciding those, or
+  // manage an existing service without supplying a script.
+  resource "service" {
+    description = "Ensure a SysV init service's script, boot enablement and running state"
+    script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Init script name under /etc/init.d" type = "string" required = true }
-    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
+    param "name" { description = "Service name, and the basename of its script under /etc/init.d" type = "string" required = true }
+    param "ensure" {
+      description = "Whether the service is installed"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The init script exists" }
+      symbol "absent"  { description = "Stop the service, remove its rc.d links and delete its init script" }
+    }
+    param "script" { description = "Init script body; empty manages an existing script under /etc/init.d without rewriting it" type = "string" default = "" }
+    param "state" {
+      description = "Runtime state to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "running"   { description = "Start the service" }
+      symbol "stopped"   { description = "Stop the service" }
+      symbol "unmanaged" { description = "Leave the runtime state alone" }
+    }
+    param "enabled" {
+      description = "Boot enablement to enforce, via update-rc.d or chkconfig"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "enabled"   { description = "Create the rc.d start links" }
+      symbol "disabled"  { description = "Remove the rc.d start links" }
+      symbol "unmanaged" { description = "Leave boot enablement alone" }
+    }
   }
 
-  resource "service_enabled" {
-    description = "Ensure a SysV init service is enabled at boot (update-rc.d or chkconfig)"
-    script = "resources/service_enabled.ws"
-    concurrency = "exclusive"
-    param "name" { description = "Init script name under /etc/init.d" type = "string" required = true }
-    param "enabled" { description = "Enable at boot" type = "bool" required = true }
-  }
-
-  // service_state only ever shells out to /etc/init.d/<name>, so the test
+  // The resource only ever shells out to /etc/init.d/<name>, so the test
   // seeds a script that supervises a `sleep` through a pidfile and reports
   // `status` honestly — the resource's whole contract, without depending on
   // which daemons an image happens to ship.
@@ -30,22 +52,54 @@ package "linux_sysvinit" {
 
     step "start" {
       description = "Start the seeded service"
-      resource = "service_state"
-      properties { name = "cw-daemon" state = "running" }
+      resource = "service"
+      properties { name = "cw-daemon" state = :running }
     }
   }
 
   test "enable_converges" {
-    description = "update-rc.d enablement converges on a seeded init script"
+    description = "Enablement converges, an installed script is removed, and a new one is installed"
     image = "debian:12"
     group = "sysvinit"
-    setup = "printf '#!/bin/sh\\n### BEGIN INIT INFO\\n# Provides: cw-test\\n# Required-Start:\\n# Required-Stop:\\n# Default-Start: 2 3 4 5\\n# Default-Stop: 0 1 6\\n# Short-Description: config-weave test\\n### END INIT INFO\\nexit 0\\n' > /etc/init.d/cw-test && chmod +x /etc/init.d/cw-test"
+    setup = "for s in cw-test cw-seeded; do printf '#!/bin/sh\\n### BEGIN INIT INFO\\n# Provides: '$s'\\n# Required-Start:\\n# Required-Stop:\\n# Default-Start: 2 3 4 5\\n# Default-Stop: 0 1 6\\n# Short-Description: config-weave test\\n### END INIT INFO\\nexit 0\\n' > /etc/init.d/$s; chmod +x /etc/init.d/$s; done && update-rc.d cw-seeded defaults >/dev/null"
     verify = "tests/enable_verify.ws"
 
     step "enable" {
       description = "Enable the seeded service"
-      resource = "service_enabled"
-      properties { name = "cw-test" enabled = true }
+      resource = "service"
+      properties { name = "cw-test" enabled = :enabled }
+    }
+
+    // A service this resource installs from scratch, script and all.
+    step "install" {
+      description = "Install an init script and enable it"
+      resource = "service"
+      requires = ["enable"]
+      properties {
+        name = "cw-managed"
+        enabled = :enabled
+        script = <<'INIT'
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: cw-managed
+# Required-Start:
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: config-weave managed test service
+### END INIT INFO
+exit 0
+INIT
+      }
+    }
+
+    // cw-seeded is enabled and its script exists, so :absent has real work:
+    // drop the rc.d links, then delete the script.
+    step "remove" {
+      description = "Remove the service seeded during setup"
+      resource = "service"
+      requires = ["install"]
+      properties { name = "cw-seeded" ensure = :absent }
     }
   }
 }
