@@ -1,37 +1,158 @@
 package "windows_updates" {
   description = "Apply Windows Updates and manage update policy"
 
-  resource "windows_update" {
-    description = "Install applicable Windows Updates via the Windows Update Agent"
-    script = "resources/windows_update.ws"
-    concurrency = "global"
-    param "query" { description = "Update search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
-  }
-
-  resource "automatic_updates" {
-    description = "Enable or disable automatic Windows Updates (the NoAutoUpdate AU policy)"
-    script = "resources/automatic_updates.ws"
-    concurrency = "global"
-    param "enabled" { description = "Whether automatic updates are allowed (false sets NoAutoUpdate=1)" type = "bool" default = true }
-  }
-
-  // automatic_updates manages pure local state (an AU policy registry
-  // value), so it converges fully offline. windows_update itself is
-  // untested here: a WUA search/install is network-bound, very slow, and
+  // The package-manager shape, for Windows Update: a max_age window over the
+  // last run that left the host drained. `check` reports already_configured
+  // when nothing is pending, so this is a no-op on an up-to-date machine.
+  //
+  // The window is deliberately NOT advanced when an install asks for a
+  // reboot: the host is not drained, and the next wave of updates usually
+  // only becomes applicable afterwards. That is what lets a playbook loop —
+  // apply, reboot, apply — until a pass finds nothing pending.
+  //
+  // Untested by design: a WUA search/install is network-bound, very slow and
   // needs the update service running — scenario territory.
+  resource "updated" {
+    description = "Install outstanding Windows Updates when the last full run is older than max_age"
+    script = "resources/updated.ws"
+    concurrency = "global"
+    param "max_age" {
+      description = "Search for updates when the last fully-drained run is older than this span"
+      type = "duration"
+      default = 24h
+    }
+    param "query" { description = "Windows Update Agent search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
+  }
+
+  // Maps onto the "Configure Automatic Updates" Group Policy setting under
+  // HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU. Every
+  // enumerated param has an :unmanaged member and every numeric one takes
+  // -1, so a playbook sets only the aspects it cares about.
+  resource "policy" {
+    description = "Configure the Automatic Updates policy (the AU Group Policy key)"
+    script = "resources/policy.ws"
+    concurrency = "global"
+    param "enabled" {
+      description = "Whether automatic updates are allowed (the NoAutoUpdate policy)"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "enabled"   { description = "Automatic updates run (NoAutoUpdate = 0)" }
+      symbol "disabled"  { description = "Automatic updates are turned off (NoAutoUpdate = 1)" }
+      symbol "unmanaged" { description = "Leave the policy alone" }
+    }
+    param "au_option" {
+      description = "How updates are downloaded and installed (AUOptions)"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "notify_download"                { description = "Notify before download and before install (2)" }
+      symbol "auto_download_notify_install"   { description = "Download automatically, notify before install (3)" }
+      symbol "auto_download_schedule_install" { description = "Download automatically and install on the schedule below (4)" }
+      symbol "allow_local_admin"              { description = "Let a local administrator choose the setting (5)" }
+      symbol "unmanaged"                      { description = "Leave the policy alone" }
+    }
+    param "scheduled_day" {
+      description = "Day the scheduled install runs, when au_option is :auto_download_schedule_install"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "every_day"  { description = "Every day (0)" }
+      symbol "sunday"     { description = "Sunday (1)" }
+      symbol "monday"     { description = "Monday (2)" }
+      symbol "tuesday"    { description = "Tuesday (3)" }
+      symbol "wednesday"  { description = "Wednesday (4)" }
+      symbol "thursday"   { description = "Thursday (5)" }
+      symbol "friday"     { description = "Friday (6)" }
+      symbol "saturday"   { description = "Saturday (7)" }
+      symbol "unmanaged"  { description = "Leave the policy alone" }
+    }
+    param "scheduled_hour" { description = "Hour (0-23) the scheduled install runs; -1 leaves it unmanaged" type = "int" default = -1 }
+    param "reboot_with_logged_on_users" {
+      description = "Whether a scheduled install may reboot while users are signed in"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "allowed"   { description = "Reboot automatically even with users signed in" }
+      symbol "blocked"   { description = "Do not reboot automatically while users are signed in" }
+      symbol "unmanaged" { description = "Leave the policy alone" }
+    }
+    param "detection_frequency_hours" { description = "How often (1-22 hours) the client checks for updates; -1 leaves it unmanaged" type = "int" default = -1 }
+  }
+
+  // WSUS: the server URLs and target group on the WindowsUpdate key, plus
+  // the UseWUServer switch on its AU subkey that makes the client use them.
+  resource "wsus" {
+    description = "Point the client at a WSUS server (the Specify intranet update service location policy)"
+    script = "resources/wsus.ws"
+    concurrency = "global"
+    param "server" { description = "WSUS server URL, e.g. http://wsus.example.com:8530; empty leaves it unmanaged" type = "string" default = "" }
+    param "status_server" { description = "Statistics server URL; empty defaults to `server`" type = "string" default = "" }
+    param "target_group" { description = "Client-side targeting group; empty leaves it unmanaged" type = "string" default = "" }
+    param "use_wsus" {
+      description = "Whether the client actually uses the configured server"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "enabled"   { description = "Use the WSUS server instead of Windows Update" }
+      symbol "disabled"  { description = "Use Windows Update even though a server is configured" }
+      symbol "unmanaged" { description = "Leave the switch alone" }
+    }
+  }
+
+  // Windows Update for Business deferrals and active hours.
+  resource "deferral" {
+    description = "Defer feature and quality updates, and set active hours"
+    script = "resources/deferral.ws"
+    concurrency = "global"
+    param "feature_update_days" { description = "Days to defer feature updates (0-365); -1 leaves it unmanaged" type = "int" default = -1 }
+    param "quality_update_days" { description = "Days to defer quality updates (0-30); -1 leaves it unmanaged" type = "int" default = -1 }
+    param "branch_readiness" {
+      description = "Which servicing channel the device follows"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "targeted"  { description = "Targeted release — features arrive as soon as they ship (16)" }
+      symbol "broad"     { description = "Broad release — features arrive once declared broadly available (32)" }
+      symbol "unmanaged" { description = "Leave the policy alone" }
+    }
+    param "active_hours_start" { description = "Hour (0-23) active hours begin; -1 leaves them unmanaged, and must be set with active_hours_end" type = "int" default = -1 }
+    param "active_hours_end" { description = "Hour (0-23) active hours end; -1 leaves them unmanaged, and must be set with active_hours_start" type = "int" default = -1 }
+  }
+
+  // The policy resources manage pure local state (registry values), so they
+  // converge fully offline. `updated` is untested here for the reasons noted
+  // on the resource itself.
   test "update_policy_converges" {
-    description = "The automatic-updates policy resource converges"
+    description = "The Windows Update policy resources converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/updates_verify.ws"
 
-    // The Server 2025 image already ships NoAutoUpdate = 1, so disabling
-    // is a no-op there — converge the other way to prove the resource
-    // actually writes the policy.
-    step "enable_auto_updates" {
-      description = "Clear the NoAutoUpdate AU policy"
-      resource = "automatic_updates"
-      properties { enabled = true }
+    // The Server 2025 image already ships NoAutoUpdate = 1, so enabling is
+    // the direction that proves the resource actually writes the policy.
+    step "au_policy" {
+      description = "Allow automatic updates on a Wednesday 03:00 schedule"
+      resource = "policy"
+      properties {
+        enabled = :enabled
+        au_option = :auto_download_schedule_install
+        scheduled_day = :wednesday
+        scheduled_hour = 3
+        reboot_with_logged_on_users = :blocked
+      }
+    }
+
+    step "deferrals" {
+      description = "Defer quality updates and set active hours"
+      resource = "deferral"
+      requires = ["au_policy"]
+      properties {
+        quality_update_days = 7
+        branch_readiness = :broad
+        active_hours_start = 8
+        active_hours_end = 18
+      }
     }
   }
 }

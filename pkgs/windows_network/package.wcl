@@ -40,12 +40,53 @@ package "windows_network" {
       symbol "present" { description = "Create the rule" }
       symbol "absent"  { description = "Delete the rule" }
     }
-    param "direction" { description = "Traffic direction: Inbound or Outbound" type = "string" default = "Inbound" }
-    param "action" { description = "Rule action: Allow or Block" type = "string" default = "Allow" }
-    param "protocol" { description = "Protocol: TCP, UDP, ICMPv4, ..." type = "string" default = "TCP" }
+    param "direction" {
+      description = "Traffic direction"
+      type = "symbol"
+      default = :inbound
+
+      symbol "inbound"  { description = "Traffic arriving at this host" }
+      symbol "outbound" { description = "Traffic leaving this host" }
+    }
+    param "action" {
+      description = "What the rule does with matching traffic"
+      type = "symbol"
+      default = :allow
+
+      symbol "allow" { description = "Permit matching traffic" }
+      symbol "block" { description = "Drop matching traffic" }
+    }
+    param "protocol" {
+      description = "Protocol the rule matches"
+      type = "symbol"
+      default = :tcp
+
+      symbol "tcp"    { description = "TCP" }
+      symbol "udp"    { description = "UDP" }
+      symbol "icmpv4" { description = "ICMPv4" }
+      symbol "icmpv6" { description = "ICMPv6" }
+      symbol "any"    { description = "Any protocol" }
+    }
+    // Windows profiles combine, so the combinations are spelled out rather
+    // than dropped: a closed symbol set cannot carry a comma list.
+    // Domain+Private+Public is exactly :any.
+    param "profile" {
+      description = "Firewall profile the rule applies to"
+      type = "symbol"
+      default = :any
+
+      symbol "any"             { description = "All profiles" }
+      symbol "domain"          { description = "Domain" }
+      symbol "private"         { description = "Private" }
+      symbol "public"          { description = "Public" }
+      symbol "domain_private"  { description = "Domain and Private" }
+      symbol "domain_public"   { description = "Domain and Public" }
+      symbol "private_public"  { description = "Private and Public" }
+    }
+    // Addresses and ports stay strings: they carry ranges and CIDR, which a
+    // closed symbol set cannot express.
     param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any" type = "string" default = "" }
     param "remote_address" { description = "Remote address filter, e.g. 10.0.0.0/8; empty means any" type = "string" default = "" }
-    param "profile" { description = "Firewall profile: Any, Domain, Private, Public or a comma list" type = "string" default = "Any" }
     param "enabled" { description = "Whether the rule is enabled" type = "bool" default = true }
   }
 
@@ -62,7 +103,7 @@ package "windows_network" {
     step "allow_8443" {
       description = "Allow inbound TCP 8443"
       resource = "firewall_rule"
-      properties { name = "weave-test-8443" direction = "Inbound" action = "Allow" protocol = "TCP" local_port = "8443" }
+      properties { name = "weave-test-8443" direction = :inbound action = :allow protocol = :tcp local_port = "8443" }
     }
 
     step "ghost_rule_absent" {

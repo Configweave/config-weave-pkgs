@@ -1,45 +1,51 @@
 package "windows_service" {
   description = "Manage Windows service installation, state and startup"
 
-  resource "service_installed" {
-    description = "Ensure a Windows service is registered with the SCM, or is removed"
-    script = "resources/service_installed.ws"
+  // One resource for the whole service: its SCM registration, its startup
+  // type and whether it is running. `state` and `startup` default to
+  // :unmanaged so this can register a service without also deciding those,
+  // or manage an existing service without supplying a binary path.
+  resource "service" {
+    description = "Ensure a Windows service's SCM registration, startup type and running state"
+    script = "resources/service.ws"
     concurrency = "exclusive"
     param "name" { description = "Service name (the SCM key, not the display name)" type = "string" required = true }
     param "ensure" {
-      description = "Desired state: :present or :absent"
+      description = "Whether the service is registered with the SCM"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Register the service with the SCM" }
-      symbol "absent"  { description = "Delete the service" }
+      symbol "absent"  { description = "Stop the service and delete it" }
     }
-    param "path" { description = "Binary path the service runs (may include arguments); required when present, create-only" type = "string" default = "" }
+    param "path" { description = "Binary path the service runs (may include arguments); required when :present, create-only" type = "string" default = "" }
     param "display_name" { description = "Display name shown in the services console; create-only, empty defaults to the service name" type = "string" default = "" }
     param "description" { description = "Service description; create-only" type = "string" default = "" }
-    param "startup" { description = "Startup type at create time: automatic, manual or disabled (drift is managed by service_startup)" type = "string" default = "automatic" }
     param "user" { description = "Account the service runs as; create-only, empty uses LocalSystem" type = "string" default = "" }
     param "password" { description = "Password for the service account; create-only, leave empty for built-in accounts" type = "string" default = "" }
+    param "state" {
+      description = "Runtime state to enforce"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "running"   { description = "Start the service" }
+      symbol "stopped"   { description = "Stop the service" }
+      symbol "unmanaged" { description = "Leave the runtime state alone" }
+    }
+    param "startup" {
+      description = "Startup type to enforce; unlike the create-only fields this is reconciled on every run"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "automatic" { description = "Start at boot" }
+      symbol "manual"    { description = "Start on demand" }
+      symbol "disabled"  { description = "Cannot be started" }
+      symbol "unmanaged" { description = "Leave the startup type alone (a newly created service is made Automatic)" }
+    }
   }
 
-  resource "service_state" {
-    description = "Ensure a Windows service is running or stopped"
-    script = "resources/service_state.ws"
-    concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "state" { description = "Desired state: running or stopped" type = "string" required = true }
-  }
-
-  resource "service_startup" {
-    description = "Ensure a Windows service has the desired startup type"
-    script = "resources/service_startup.ws"
-    concurrency = "exclusive"
-    param "name" { description = "Service name" type = "string" required = true }
-    param "startup" { description = "Desired startup type: automatic, manual or disabled" type = "string" required = true }
-  }
-
-  // service_installed converges by registering a service that never has to
-  // start (svchost with a real group is a valid, inert BinaryPathName), so no
+  // Registration converges by creating a service that never has to start
+  // (svchost with a real group is a valid, inert BinaryPathName), so no
   // extra payload is needed. State/startup coverage uses the Print Spooler,
   // which ships running with automatic startup on Server 2025 — stopping it
   // and switching it to manual are both real converges that stay put.
@@ -51,31 +57,28 @@ package "windows_service" {
 
     step "register_test_service" {
       description = "Register the weave-testsvc service"
-      resource = "service_installed"
+      resource = "service"
       properties {
         name = "weave-testsvc"
         path = "C:\\Windows\\System32\\svchost.exe -k netsvcs"
         display_name = "Weave Test Service"
         description = "config-weave testlab service"
-        startup = "manual"
+        startup = :manual
       }
     }
 
-    step "spooler_stopped" {
-      description = "Stop the Print Spooler"
-      resource = "service_state"
-      properties { name = "Spooler" state = "stopped" }
-    }
-
-    step "spooler_manual" {
-      description = "Switch the Print Spooler to manual startup"
-      resource = "service_startup"
-      properties { name = "Spooler" startup = "manual" }
+    // One step now covers what service_state and service_startup did
+    // separately. No `path`: it is only needed to create a service, and the
+    // Spooler already exists.
+    step "spooler" {
+      description = "Stop the Print Spooler and switch it to manual startup"
+      resource = "service"
+      properties { name = "Spooler" state = :stopped startup = :manual }
     }
 
     step "ghost_service_absent" {
       description = "A never-registered service with ensure = absent is already configured"
-      resource = "service_installed"
+      resource = "service"
       expect = "already_configured"
       properties { name = "weave-ghost-svc" ensure = :absent }
     }

@@ -25,21 +25,19 @@ package "windows_installers" {
     description = "Install or uninstall software via an EXE installer, detected by a path or uninstall key"
     script = "resources/exe_installer.ws"
     concurrency = "exclusive"
-    param "path" { description = "Local path or HTTP(S) URL of the installer .exe" type = "string" required = true }
-    param "args" { description = "Silent-install arguments passed to the installer" type = "string" default = "" }
+    param "path" { description = "Local path or HTTP(S) URL of the .exe to run, for both install and uninstall" type = "string" required = true }
+    param "args" { description = "Arguments passed to the .exe: silent-install switches when :present, uninstall switches when :absent" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Run the installer" }
-      symbol "absent"  { description = "Run the uninstaller" }
+      symbol "present" { description = "Run the .exe with args to install" }
+      symbol "absent"  { description = "Run the .exe with args to uninstall" }
     }
     param "install_path" { description = "Path whose existence means the install is done (one of install_path/install_reg required)" type = "string" default = "" }
     param "install_reg" { description = "Hive-prefixed registry key (e.g. the uninstall key) whose existence means the install is done" type = "string" default = "" }
     param "version" { description = "Expected DisplayVersion under install_reg; a mismatch re-runs the installer (upgrade)" type = "string" default = "" }
-    param "uninstall_path" { description = "Command/exe run to remove the install when ensure = :absent" type = "string" default = "" }
-    param "uninstall_args" { description = "Arguments passed to uninstall_path" type = "string" default = "" }
   }
 
   // The msi_package step downloads the small (~2 MB) 7-Zip MSI guest-side —

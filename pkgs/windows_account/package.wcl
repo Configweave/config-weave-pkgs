@@ -87,8 +87,23 @@ package "windows_account" {
       symbol "present" { description = "Create the directory group" }
       symbol "absent"  { description = "Delete the directory group" }
     }
-    param "scope" { description = "Group scope: Global, Universal or DomainLocal" type = "string" default = "Global" }
-    param "category" { description = "Group category: Security or Distribution" type = "string" default = "Security" }
+    param "scope" {
+      description = "Group scope"
+      type = "symbol"
+      default = :global
+
+      symbol "global"      { description = "Global — members from this domain, granted access in any domain" }
+      symbol "universal"   { description = "Universal — members and access across the whole forest" }
+      symbol "domainlocal" { description = "DomainLocal — members from any domain, access in this domain only" }
+    }
+    param "category" {
+      description = "Group category"
+      type = "symbol"
+      default = :security
+
+      symbol "security"     { description = "Security — can be granted permissions" }
+      symbol "distribution" { description = "Distribution — mail distribution only, carries no permissions" }
+    }
     param "ou_path" { description = "Distinguished name of the OU the group is created in; create-only (an existing group is never moved)" type = "string" default = "" }
   }
 

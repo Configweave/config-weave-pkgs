@@ -66,21 +66,27 @@ fn check(params: Value) -> Result[CheckResult, string] {
     Ok(CheckResult::AlreadyConfigured)
 }
 
-fn apply(params: Value) -> Result[ApplyResult, string] {
-    if !want_present(params)? {
-        if !installed(params)? { return Ok(ApplyResult::Success) }
-        let un = param_str(params, "uninstall_path", "")
-        if un == "" { return Err("ensure = :absent needs 'uninstall_path' to remove the install") }
-        return run_installer(un, param_str(params, "uninstall_args", ""), "uninstaller")
-    }
-    let src = param_str(params, "path", "")
-    if src == "" { return Err("missing 'path' parameter") }
-    let local = if src.starts_with("http") {
+// A URL is fetched to a temp file; a local path is used as-is. Uninstalls
+// resolve the same way — many installers double as their own uninstaller
+// when handed the right switches.
+fn local_exe(src: string) -> Result[string, string] {
+    if src.starts_with("http") {
         let f = path::join(fs::temp_dir()?, "config-weave-installer.exe")
         http::download(src, f, Value::Null)?
-        f
-    } else {
-        src
+        return Ok(f)
     }
-    run_installer(local, param_str(params, "args", ""), "installer")
+    Ok(src)
+}
+
+fn apply(params: Value) -> Result[ApplyResult, string] {
+    let present = want_present(params)?
+    // Nothing to remove: leave the install markers alone rather than running
+    // an uninstaller against software that is not there.
+    if !present && !installed(params)? { return Ok(ApplyResult::Success) }
+    let src = param_str(params, "path", "")
+    if src == "" { return Err("missing 'path' parameter") }
+    // One executable, one argument string: `args` carries the silent-install
+    // switches when :present and the uninstall switches when :absent.
+    let what = if present { "installer" } else { "uninstaller" }
+    run_installer(local_exe(src)?, param_str(params, "args", ""), what)
 }

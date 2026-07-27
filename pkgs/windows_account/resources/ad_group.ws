@@ -14,6 +14,25 @@ fn want_present(params: Value) -> Result[bool, string] {
     Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
+// The params are lowercase symbols, matching this library's convention; AD
+// speaks PascalCase and `[string]$g.GroupScope` reports it that way, so the
+// symbol is translated once here and that spelling is used for both the
+// comparison in `check` and the cmdlet arguments in `apply`.
+fn ad_scope(params: Value) -> Result[string, string] {
+    let s = param_str(params, "scope", "global")
+    if s == "global" { return Ok("Global") }
+    if s == "universal" { return Ok("Universal") }
+    if s == "domainlocal" { return Ok("DomainLocal") }
+    Err("invalid 'scope' value '" + s + "' (expected :global, :universal or :domainlocal)")
+}
+
+fn ad_category(params: Value) -> Result[string, string] {
+    let c = param_str(params, "category", "security")
+    if c == "security" { return Ok("Security") }
+    if c == "distribution" { return Ok("Distribution") }
+    Err("invalid 'category' value '" + c + "' (expected :security or :distribution)")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 fn ps_out(script: string) -> Result[string, string] {
@@ -63,8 +82,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
     // ou_path is create-only placement, so the DN is not compared.
     let g = json::parse(st)?
-    if get_str(g, "scope") != param_str(params, "scope", "Global") { return Ok(CheckResult::NotConfigured) }
-    if get_str(g, "category") != param_str(params, "category", "Security") { return Ok(CheckResult::NotConfigured) }
+    if get_str(g, "scope") != ad_scope(params)? { return Ok(CheckResult::NotConfigured) }
+    if get_str(g, "category") != ad_category(params)? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
@@ -76,8 +95,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         ps_run(ad_guard() + fetch(name) + "if ($g) {{ Remove-ADGroup -Identity " + qn + " -Confirm:$false }}")?
         return Ok(ApplyResult::Success)
     }
-    let scope = ps_q(param_str(params, "scope", "Global"))
-    let category = ps_q(param_str(params, "category", "Security"))
+    let scope = ps_q(ad_scope(params)?)
+    let category = ps_q(ad_category(params)?)
     let ou = param_str(params, "ou_path", "")
     let create = "New-ADGroup -Name " + qn + " -SamAccountName " + qn +
         " -GroupScope " + scope + " -GroupCategory " + category +

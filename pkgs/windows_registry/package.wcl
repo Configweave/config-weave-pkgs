@@ -16,7 +16,16 @@ package "windows_registry" {
       symbol "absent"  { description = "Delete the value" }
     }
     param "data" { description = "Desired data (decimal string for dword/qword); used when present" type = "string" default = "" }
-    param "kind" { description = "Value kind: sz, expand_sz, dword or qword" type = "string" default = "sz" }
+    param "kind" {
+      description = "Registry value kind"
+      type = "symbol"
+      default = :sz
+
+      symbol "sz"        { description = "REG_SZ — a string" }
+      symbol "expand_sz" { description = "REG_EXPAND_SZ — a string whose environment references expand on read" }
+      symbol "dword"     { description = "REG_DWORD — a 32-bit number, written as a decimal string in `data`" }
+      symbol "qword"     { description = "REG_QWORD — a 64-bit number, written as a decimal string in `data`" }
+    }
   }
 
   resource "key" {
@@ -51,7 +60,7 @@ package "windows_registry" {
     step "answer" {
       description = "Write a dword value"
       resource = "value"
-      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "answer" data = "42" kind = "dword" }
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "answer" data = "42" kind = :dword }
     }
 
     step "ghost_value_absent" {

@@ -26,6 +26,23 @@ package "windows_packages" {
     param "url" { description = "Source URL" type = "string" required = true }
   }
 
+  // Chocolatey queries its sources live and keeps no refreshable index, so
+  // there is no cache to age out. As with linux_flatpak.updated, the useful
+  // periodic action is upgrading what is installed — hence `updated` rather
+  // than `cache_updated`.
+  //
+  // Untested by design, like every cache refresh here: it hits the network.
+  resource "chocolatey_updated" {
+    description = "Run choco upgrade all when the last upgrade is older than max_age"
+    script = "resources/chocolatey_updated.ws"
+    concurrency = "exclusive"
+    param "max_age" {
+      description = "Upgrade when the last run is older than this span"
+      type = "duration"
+      default = 24h
+    }
+  }
+
   resource "scoop_package" {
     description = "Ensure a Scoop app is installed (per-user) or absent"
     script = "resources/scoop_package.ws"
@@ -47,6 +64,19 @@ package "windows_packages" {
     concurrency = "exclusive"
     param "name" { description = "Bucket name" type = "string" required = true }
     param "url" { description = "Optional bucket repository URL" type = "string" default = "" }
+  }
+
+  // Scoop's index is its bucket repositories, so this genuinely refreshes
+  // metadata without touching installed apps. Untested by design: network.
+  resource "scoop_cache_updated" {
+    description = "Run scoop update when the buckets are older than max_age"
+    script = "resources/scoop_cache_updated.ws"
+    concurrency = "exclusive"
+    param "max_age" {
+      description = "Refresh when the last update is older than this span"
+      type = "duration"
+      default = 24h
+    }
   }
 
   resource "winget_package" {
@@ -81,6 +111,18 @@ package "windows_packages" {
     }
     param "url" { description = "Source argument/URL (required when present)" type = "string" default = "" }
     param "type" { description = "Optional source type, e.g. Microsoft.Rest" type = "string" default = "" }
+  }
+
+  // Refreshes the winget source manifests. Untested by design: network.
+  resource "winget_cache_updated" {
+    description = "Run winget source update when the sources are older than max_age"
+    script = "resources/winget_cache_updated.ws"
+    concurrency = "exclusive"
+    param "max_age" {
+      description = "Refresh when the last update is older than this span"
+      type = "duration"
+      default = 24h
+    }
   }
 
   gatherer "winget_packages" {

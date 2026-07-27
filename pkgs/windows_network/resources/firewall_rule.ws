@@ -19,6 +19,48 @@ fn want_present(params: Value) -> Result[bool, string] {
     Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
+// The params are lowercase symbols, matching this library's convention. The
+// NetSecurity cmdlets speak PascalCase and `[string]$r.Direction` reports it
+// that way, so each symbol is translated once here and that spelling is used
+// for both the drift comparison and the cmdlet arguments.
+fn ps_direction(params: Value) -> Result[string, string] {
+    let d = param_str(params, "direction", "inbound")
+    if d == "inbound" { return Ok("Inbound") }
+    if d == "outbound" { return Ok("Outbound") }
+    Err("invalid 'direction' value '" + d + "' (expected :inbound or :outbound)")
+}
+
+fn ps_action(params: Value) -> Result[string, string] {
+    let a = param_str(params, "action", "allow")
+    if a == "allow" { return Ok("Allow") }
+    if a == "block" { return Ok("Block") }
+    Err("invalid 'action' value '" + a + "' (expected :allow or :block)")
+}
+
+fn ps_protocol(params: Value) -> Result[string, string] {
+    let p = param_str(params, "protocol", "tcp")
+    if p == "tcp" { return Ok("TCP") }
+    if p == "udp" { return Ok("UDP") }
+    if p == "icmpv4" { return Ok("ICMPv4") }
+    if p == "icmpv6" { return Ok("ICMPv6") }
+    if p == "any" { return Ok("Any") }
+    Err("invalid 'protocol' value '" + p + "' (expected :tcp, :udp, :icmpv4, :icmpv6 or :any)")
+}
+
+// -Profile takes a comma list, which is why the combinations are their own
+// symbols rather than something the caller composes.
+fn ps_profile(params: Value) -> Result[string, string] {
+    let p = param_str(params, "profile", "any")
+    if p == "any" { return Ok("Any") }
+    if p == "domain" { return Ok("Domain") }
+    if p == "private" { return Ok("Private") }
+    if p == "public" { return Ok("Public") }
+    if p == "domain_private" { return Ok("Domain,Private") }
+    if p == "domain_public" { return Ok("Domain,Public") }
+    if p == "private_public" { return Ok("Private,Public") }
+    Err("invalid 'profile' value '" + p + "' (expected :any, :domain, :private, :public, :domain_private, :domain_public or :private_public)")
+}
+
 fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
 
 fn ps_out(script: string) -> Result[string, string] {
@@ -68,8 +110,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
     // cheap and the comparison unambiguous.
     let m = json::parse(st)?
     if get_bool(m, "enabled") != param_bool(params, "enabled", true) { return Ok(CheckResult::NotConfigured) }
-    if get_str(m, "direction") != param_str(params, "direction", "Inbound") { return Ok(CheckResult::NotConfigured) }
-    if get_str(m, "action") != param_str(params, "action", "Allow") { return Ok(CheckResult::NotConfigured) }
+    if get_str(m, "direction") != ps_direction(params)? { return Ok(CheckResult::NotConfigured) }
+    if get_str(m, "action") != ps_action(params)? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
@@ -86,10 +128,10 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     }
     let local_port = param_str(params, "local_port", "")
     let remote = param_str(params, "remote_address", "")
-    let common = " -Direction " + ps_q(param_str(params, "direction", "Inbound")) +
-        " -Action " + ps_q(param_str(params, "action", "Allow")) +
-        " -Protocol " + ps_q(param_str(params, "protocol", "TCP")) +
-        " -Profile " + ps_q(param_str(params, "profile", "Any")) +
+    let common = " -Direction " + ps_q(ps_direction(params)?) +
+        " -Action " + ps_q(ps_action(params)?) +
+        " -Protocol " + ps_q(ps_protocol(params)?) +
+        " -Profile " + ps_q(ps_profile(params)?) +
         " -Enabled " + (if param_bool(params, "enabled", true) { "True" } else { "False" }) +
         (if local_port != "" { " -LocalPort " + ps_q(local_port) } else { "" }) +
         (if remote != "" { " -RemoteAddress " + ps_q(remote) } else { "" })

@@ -17,6 +17,26 @@ package "windows_files" {
     param "content" { description = "Exact file content; used when present" type = "string" default = "" }
   }
 
+  // The Windows counterpart of linux_files.template. It carries no mode or
+  // owner params: on Windows those are NTFS concerns, managed by the
+  // `permissions` resource below, exactly as `file` leaves them alone.
+  resource "template" {
+    description = "Render a Tera template to a file with exact content, or ensure it is absent"
+    script = "resources/template.ws"
+    concurrency = "exclusive"
+    param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Render the template and converge the file's content" }
+      symbol "absent"  { description = "Delete the file" }
+    }
+    param "template" { description = "Tera template body (author as a raw heredoc); used when present" type = "string" default = "" }
+    param "vars" { description = "Variables exposed to the template" type = "map" }
+  }
+
   resource "directory" {
     description = "Ensure a directory exists (parents included), or is absent (recursive delete)"
     script = "resources/directory.ws"
@@ -69,6 +89,17 @@ package "windows_files" {
       resource = "permissions"
       requires = ["test_dir"]
       properties { path = "C:\\weave-files-test" acl = ["BUILTIN\\Users:Modify"] }
+    }
+
+    step "rendered_file" {
+      description = "Render a template with variables"
+      resource = "template"
+      requires = ["test_dir"]
+      properties {
+        path = "C:\\weave-files-test\\rendered.txt"
+        template = "host={{ host }} port={{ port }}\n"
+        vars = { host: "weave", port: 8080 }
+      }
     }
 
     step "ghost_file_absent" {

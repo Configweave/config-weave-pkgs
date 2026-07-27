@@ -4,6 +4,8 @@ use shell
 
 fn verify(facts: Value) -> Result[bool, string] {
     if fs::read("C:\\weave-files-test\\hello.txt")? != "hello from config-weave" { return Ok(false) }
+    // The template must have interpolated both vars, not been copied verbatim.
+    if fs::read("C:\\weave-files-test\\rendered.txt")? != "host=weave port=8080\n" { return Ok(false) }
     let out = shell::powershell(
         "$ErrorActionPreference='Stop'; " +
         "$acl = Get-Acl -LiteralPath 'C:\\weave-files-test'; " +
