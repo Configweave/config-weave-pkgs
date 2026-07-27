@@ -17,7 +17,15 @@ package "linux_facts" {
   gatherer "init_system" {
     description = "Detect the init/service manager"
     script = "gatherers/init_system.ws"
-    returns "init" { description = "Detected init system (systemd, openrc, sysvinit, ...)" type = "string" }
+    returns "init" {
+      description = "Detected init/service manager"
+      type = "symbol"
+      symbol "systemd"  { description = "systemd — /run/systemd/system exists and systemctl runs" }
+      symbol "openrc"   { description = "OpenRC" }
+      symbol "runit"    { description = "runit" }
+      symbol "sysvinit" { description = "SysV init scripts, detected via `service`" }
+      symbol "unknown"  { description = "No init manager could be detected" }
+    }
   }
 
   gatherer "network" {
@@ -62,7 +70,7 @@ package "linux_facts" {
       description = "systemd is detected as the init system"
       from = "init_system"
       expect {
-        init = "systemd"
+        init = :systemd
       }
     }
 
