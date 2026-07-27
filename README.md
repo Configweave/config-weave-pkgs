@@ -67,8 +67,48 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
 `windows_account`,
 `windows_service`, `windows_network`, `windows_share`, `windows_files`,
-`windows_defender`) and the cross-platform `mssql` package round out the
-library.
+`windows_defender`, `windows_iis`) and the cross-platform `mssql` package
+round out the library.
+
+### `windows_iis`
+
+Every aspect of an IIS web site, as convergent resources — 70 of them:
+
+- `feature` — the IIS role services, named as symbols (`:web_server`,
+  `:asp_net45`, `:windows_auth`, …) rather than raw `Web-*` strings.
+- `app_pool` plus `app_pool_recycling` / `_failure` / `_cpu` /
+  `_environment_variable` — the pool, its identity and process model, and
+  each of its sub-elements as its own resource.
+- `site`, `binding`, `application`, `virtual_directory`, `site_limits`,
+  `site_logging`, `failed_request_tracing`(`_rule`).
+- Security: the four authentication schemes plus the two certificate-mapping
+  ones, `authorization_rule`, `ssl_settings`, `ip_restriction`(`_settings`),
+  `dynamic_ip_restriction`, `request_filtering`(`_rule`).
+- Content and pipeline: `default_document`, `directory_browse`,
+  `http_errors`/`http_error`, `http_redirect`, `response_header`, `mime_map`,
+  `static_content_cache`, `url_compression`/`http_compression`/
+  `compression_scheme`/`compression_mime_type`, `output_cache`(`_profile`),
+  `handler`, `handler_access`, `module`, `global_module`, `isapi_filter`,
+  `isapi_cgi_restriction`(`_settings`), `fastcgi_application`, `cgi`,
+  `websocket`, `server_runtime`, `application_initialization`, `asp`.
+- TLS: `certificate`, `self_signed_certificate`, `central_certificate_store`.
+- URL Rewrite: `rewrite_module` (installs the separate MSI — or winget or
+  Chocolatey), `rewrite_rule`, `rewrite_outbound_rule`,
+  `rewrite_pre_condition`, `rewrite_map`(`_entry`),
+  `rewrite_allowed_server_variable`.
+- Escape hatches: `section_delegation`, `config_property` and
+  `config_collection_element` reach whatever the typed resources do not.
+
+Everything is written to `applicationHost.config` under a `<location>` by
+default, which is what reaches the `system.webServer/security/*` sections
+IIS locks against `web.config`; resources that can legally be delegated take
+a `store` param to opt into `web.config` instead. Optional attributes have
+**no default** — an omitted param means "leave this setting alone", which is
+the only way a bool or int can say so.
+
+Shells out to PowerShell's `WebAdministration` module, so the target needs
+the IIS management scripting tools (`feature` with `:scripting_tools`, or
+`:web_server` with `include_management_tools = true`).
 
 ### `mssql`
 
