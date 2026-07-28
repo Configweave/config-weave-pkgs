@@ -67,8 +67,58 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
 `windows_account`,
 `windows_service`, `windows_network`, `windows_share`, `windows_files`,
-`windows_defender`, `windows_iis`) and the cross-platform `mssql` package
-round out the library.
+`windows_defender`, `windows_iis`, `windows_powershell`) and the
+cross-platform `mssql` package round out the library.
+
+### `windows_powershell`
+
+PowerShell itself, as convergent resources — installing it, and every setting
+it reads. 26 resources and 6 gatherers:
+
+- `pwsh_installed` — install or remove PowerShell 7 by `:msi`, `:winget` or
+  `:zip` on Windows and `:repo` or `:tarball` on Linux. The archive methods
+  own a versioned `install_root` of their own, which is what makes them the
+  only side-by-side-capable ones; the MSI method carries the documented
+  properties (`add_path`, `enable_remoting`, `register_manifest`, the two
+  context-menu items, Microsoft Update) and reports `RebootRequired` on
+  msiexec 3010.
+- `psremoting` and `session_configuration` — the WinRM endpoints. Which
+  endpoint `Enable-PSRemoting` registers depends on the PowerShell that runs
+  it, so `edition` is what picks between `microsoft.powershell` and
+  `PowerShell.7` rather than a name the caller has to know.
+- `config_setting`, `module_path`, `experimental_feature`, `win_compat` and
+  `log_setting` — `powershell.config.json`. `config_setting` is the generic
+  escape hatch: a dotted key path, or `literal_key` for a module-qualified
+  key such as `Microsoft.PowerShell:ExecutionPolicy`. All take a `path`
+  override, which is what lets them run on a machine with no PowerShell 7
+  installed at all.
+- `execution_policy`, `script_block_logging`, `module_logging`,
+  `transcription`, `protected_event_logging` and
+  `console_session_configuration` — the registry behind `Set-ExecutionPolicy`
+  and the PowerShell Group Policy settings, driven through the `registry`
+  host module. `edition` picks the policy key: Windows PowerShell 5.1 reads
+  `…\Policies\Microsoft\Windows\PowerShell`, PowerShell 7 reads
+  `…\Policies\Microsoft\PowerShellCore`.
+- `profile`, `profile_snippet`, `psreadline_option`,
+  `psreadline_key_handler`, `default_parameter_values` and
+  `preference_variable` — the profiles. PSReadLine options,
+  `$PSDefaultParameterValues` and the preference variables are session state
+  that no file stores, so each owns a marked block of a profile script
+  (`# BEGIN config-weave: <name>`) and leaves every other line alone.
+  `psreadline_option` carries the whole documented `Set-PSReadLineOption`
+  surface, each option defaulting to `:unmanaged`, `-1` or `""`.
+- `repository`, `module`, `module_from_path`, `script_resource`,
+  `modules_updated` and `help_updated` — the package-manager shape.
+  PowerShell has two generations of these cmdlets, so `provider` defaults to
+  `:auto` and prefers PSResourceGet when it can be imported, falling back to
+  the PowerShellGet v2 a stock Windows Server ships. `module_from_path` is
+  the manual install: a directory, zip or nupkg, local or fetched, copied
+  into the `<Name>/<Version>/` layout `Get-Module -ListAvailable` needs.
+
+Detection deliberately uses `Get-Module -ListAvailable` rather than the
+provider's own inventory: `Get-InstalledPSResource` and `Get-InstalledModule`
+only know about resources those cmdlets installed, so an in-box or
+hand-copied module would read as missing and be reinstalled on every run.
 
 ### `windows_iis`
 
