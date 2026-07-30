@@ -1,13 +1,23 @@
-CONFIG_WEAVE := "../config-weave/target/debug/config-weave"
+# The config-weave binary. Defaults to a PATH lookup (`just install-tool`
+# installs it from GitHub) rather than a sibling build tree, because a ticket
+# worktree lives at <repo>/.tree/<ticket> where a relative `../` path resolves
+# to nothing. Point it at a local build to develop the two together:
+#   CONFIG_WEAVE=../config-weave/target/debug/config-weave just check
+CONFIG_WEAVE := env_var_or_default("CONFIG_WEAVE", "config-weave")
 
 # Fixed dev-server address so the pkg docs never collide with config-weave's
 # own docs site (8280) or other projects on the default 8080. Must match
-# pkgs_docs_addr in ../config-weave.
+# pkgs_docs_addr in the config-weave repo.
 DOCS_ADDR := "127.0.0.1:8281"
 
 [default, private]
 main:
 	@just --list
+
+# Install the config-weave binary this repo checks against, from GitHub.
+[group('check'), doc("Install the config-weave binary from GitHub into ~/.cargo/bin")]
+install-tool:
+	cargo install --git https://github.com/Configweave/config-weave.git --locked
 
 # Validate every package and the harness playbook
 [group('check')]
