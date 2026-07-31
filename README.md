@@ -197,7 +197,8 @@ vmlab scenario rather than the container `test`.
 ## Development
 
 ```sh
-just validate
+just ci::check          # the merge bar: everything a change must pass
+just validate           # the one part it is made of, run on its own
 just test               # everything: container tests, VM tests and scenarios
 just test linux_files   # one package
 just test mssql:config_converges   # one test
@@ -212,7 +213,9 @@ guest uses. An unfiltered `just test` runs both kinds plus the scenarios, so
 it needs vmlab with the `x86_64/alpine-3.23`, `x86_64/debian-13`,
 `x86_64/fedora-44`, `x86_64/ubuntu-24.04` and `x86_64/windows-server-2025`
 templates. Filter to a package or `package:test` while iterating — the
-container tests need no template at all.
+container tests need no template at all. That is why `just test` sits outside
+`ci::check`: it is KVM-bound and slow, so convergence stays a deliberate human
+action and the merge bar does not claim to prove it.
 
 ## Package Manager Support
 

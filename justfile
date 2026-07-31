@@ -3,7 +3,7 @@
 # worktree lives at <repo>/.tree/<ticket> where a relative `../` path resolves
 # to nothing. Point it at a local build to develop the two together:
 #   CONFIG_WEAVE=../config-weave/target/debug/config-weave just check
-CONFIG_WEAVE := env_var_or_default("CONFIG_WEAVE", "config-weave")
+export CONFIG_WEAVE := env("CONFIG_WEAVE", "config-weave")
 
 # Fixed dev-server address so the pkg docs never collide with config-weave's
 # own docs site (8280) or other projects on the default 8080. Must match
@@ -14,6 +14,9 @@ DOCS_ADDR := "127.0.0.1:8281"
 main:
 	@just --list
 
+# The merge bar — everything a change must pass before it can merge
+mod ci '.just/ci'
+
 # Install the config-weave binary this repo checks against, from GitHub.
 [group('check'), doc("Install the config-weave binary from GitHub into ~/.cargo/bin")]
 install-tool:
@@ -21,16 +24,18 @@ install-tool:
 
 # Validate every package and the harness playbook
 [group('check')]
-validate:
-	{{CONFIG_WEAVE}} validate .
+validate: ci::validate
 
-# Alias for validate, matching the config-weave repo
+# The whole merge bar (`ci::check`), under the name the config-weave repo uses
 [group('check')]
-check: validate
+check: ci::check
 
-# Run the testlab. Unfiltered runs everything — container tests, VM tests and
-# scenarios (needs vmlab, KVM, and the templates the VM tests name). Scope
-# with a filter, e.g. `just test linux_files` or `just test mssql:config_converges`.
+# Unfiltered runs everything — container tests, VM tests and scenarios (needs
+# vmlab, KVM, and the templates the VM tests name). Scope with a filter, e.g.
+# `just test linux_files` or `just test mssql:config_converges`. Not part of
+# the merge bar: see the note on `ci::check`.
+
+# Run the testlab (filterable; needs vmlab and KVM)
 [group('test')]
 test filter='':
 	{{CONFIG_WEAVE}} test . {{filter}}
