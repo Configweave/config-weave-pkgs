@@ -26,6 +26,9 @@ pkgs/<name>/
   tests/<t>.ws              # optional verify() / scenario drivers
 ```
 
+`.just/` holds the command runner's modules — `.just/ci/mod.just` is the merge
+bar (see Conventions), `.just/shared.just` the helpers modules import.
+
 `playbook.wcl` at the root is the validation/documentation harness only — two
 `gather` blocks and one container-safe `baseline` play. It is not part of the
 public docs surface, which is why every docs command passes `--pkg-only`.
@@ -50,9 +53,12 @@ gitignored, so a package's documentation *is* its doc cells in `package.wcl`.
   a **symbol**, so it must be written `:absent` — the string spelling
   `"absent"` is a validation error. Every symbol param declares its legal
   values.
-- **just** as command runner: `just check` (== `just validate`) is the cheap,
-  unattended-safe gate — pure WCL parse, schema check and wscript compile, with
-  no network, VM or sudo.
+- **just** as command runner. `just ci::check` is the **merge bar** — the whole
+  gate a change must pass before it can land. Today it is `ci::validate` alone:
+  a pure WCL parse, schema check and wscript compile, with no network, VM or
+  sudo, so it is safe to run unattended. `just check` and `just validate` at the
+  top level delegate to it, so there is one definition of the gate, not two.
+  The VM-backed `just test` is deliberately *outside* the bar — see below.
 - The `config-weave` binary comes from `PATH` (`just install-tool` installs it
   from GitHub). Override it to develop the two repos together:
   `CONFIG_WEAVE=../config-weave/target/debug/config-weave just check`.
@@ -70,5 +76,10 @@ templates the VM tests name, so it is not safe to run unattended.
 Scope it with a filter instead: `just test linux_files` for a whole package, or
 `just test mssql:config_converges` for a single test.
 
-This repo has no CI of its own; `just check` is run for it on a schedule from
-the aciddog workspace, which files a ticket when it fails.
+That is why `test` is not in `ci::check`: package convergence is something to
+watch, not something to retry blind in a fix loop. Passing the merge bar is not
+evidence that a package converges.
+
+This repo has no CI of its own, so `ci::check` *defines* the merge bar rather
+than mirroring a workflow; it is run for this repo on a schedule from the
+aciddog workspace, which files a ticket when it fails.
