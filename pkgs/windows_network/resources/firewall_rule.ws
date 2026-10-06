@@ -85,14 +85,69 @@ fn get_bool(m: Value, key: string) -> bool {
     false
 }
 
-// 'ABSENT' or a JSON object { enabled, direction, action }.
+// 'ABSENT' or a JSON object { enabled, direction, action, profile, protocol,
+// local_port, remote_address }. The port and address filters are separate CIM
+// objects, read in the same PowerShell call so check stays one round trip;
+// their multi-valued fields come back comma-joined.
 fn probe(name: string) -> Result[string, string] {
     ps_out(
         "$r = Get-NetFirewallRule -Name " + ps_q(name) + " -ErrorAction SilentlyContinue; " +
         "if ($null -eq $r) {{ 'ABSENT' }} else {{ " +
+        "$pf = $r | Get-NetFirewallPortFilter; $af = $r | Get-NetFirewallAddressFilter; " +
         "[pscustomobject]@{{ enabled = ([string]$r.Enabled -eq 'True'); " +
-        "direction = [string]$r.Direction; action = [string]$r.Action }} | ConvertTo-Json -Compress }}"
+        "direction = [string]$r.Direction; action = [string]$r.Action; profile = [string]$r.Profile; " +
+        "protocol = [string]$pf.Protocol; local_port = (@($pf.LocalPort) -join ','); " +
+        "remote_address = (@($af.RemoteAddress) -join ',') }} | ConvertTo-Json -Compress }}"
     )
+}
+
+// Ports only exist for TCP and UDP: the cmdlets reject -LocalPort for any
+// other protocol, so apply only writes it, and check only compares it, here.
+fn has_ports(protocol: string) -> bool { protocol == "TCP" || protocol == "UDP" }
+
+// Empty means any, and apply writes it as `Any` so a narrowed filter is
+// widened back rather than left in place.
+fn want_local_port(params: Value) -> string {
+    let p = param_str(params, "local_port", "")
+    if p == "" { "Any" } else { p }
+}
+
+fn want_remote_address(params: Value) -> string {
+    let a = param_str(params, "remote_address", "")
+    if a == "" { "Any" } else { a }
+}
+
+// a.b.c.d/n as the dotted mask Windows reports it with (a.b.c.d/m.m.m.m), or
+// the address unchanged when it is not IPv4 CIDR.
+fn ipv4_cidr_to_mask(addr: string) -> string {
+    let parts = addr.split("/")
+    if parts.len() != 2 || parts[0].contains(":") { return addr }
+    if let Some(n) = parts[1].parse_int() {
+        if n < 0 || n > 32 { return addr }
+        let octet = ["0", "128", "192", "224", "240", "248", "252", "254", "255"]
+        let octets: List[string] = []
+        let left = n
+        for _i in 0..4 {
+            let bits = if left >= 8 { 8 } else { left }
+            octets.push(octet[bits])
+            left = left - bits
+        }
+        return parts[0] + "/" + octets.join(".")
+    }
+    addr
+}
+
+// A comma list as an order-insensitive, case-insensitive, whitespace-free set,
+// so the param's spelling and Windows' read-back compare equal. The PowerShell
+// enum flags (`Domain, Private`) and address lists both pass through here.
+fn norm_list(s: string, cidr: bool) -> string {
+    let items: List[string] = []
+    for p in s.split(",") {
+        let t = p.trim().to_lower()
+        if t != "" { items.push(if cidr { ipv4_cidr_to_mask(t) } else { t }) }
+    }
+    items.sort()
+    items.join(",")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -104,14 +159,20 @@ fn check(params: Value) -> Result[CheckResult, string] {
         return Ok(CheckResult::NotConfigured)
     }
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    // Pragmatic drift detection: existence + enabled + direction + action.
-    // Port/address/profile filters are pushed on every apply but reading them
-    // back (Get-NetFirewallPortFilter et al.) is skipped to keep the probe
-    // cheap and the comparison unambiguous.
+    // Every field apply writes is compared, spelled the way apply writes it.
     let m = json::parse(st)?
     if get_bool(m, "enabled") != param_bool(params, "enabled", true) { return Ok(CheckResult::NotConfigured) }
     if get_str(m, "direction") != ps_direction(params)? { return Ok(CheckResult::NotConfigured) }
     if get_str(m, "action") != ps_action(params)? { return Ok(CheckResult::NotConfigured) }
+    if norm_list(get_str(m, "profile"), false) != norm_list(ps_profile(params)?, false) { return Ok(CheckResult::NotConfigured) }
+    let protocol = ps_protocol(params)?
+    if get_str(m, "protocol").to_lower() != protocol.to_lower() { return Ok(CheckResult::NotConfigured) }
+    if has_ports(protocol) && norm_list(get_str(m, "local_port"), false) != norm_list(want_local_port(params), false) {
+        return Ok(CheckResult::NotConfigured)
+    }
+    if norm_list(get_str(m, "remote_address"), true) != norm_list(want_remote_address(params), true) {
+        return Ok(CheckResult::NotConfigured)
+    }
     Ok(CheckResult::AlreadyConfigured)
 }
 
@@ -126,15 +187,14 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         )?
         return Ok(ApplyResult::Success)
     }
-    let local_port = param_str(params, "local_port", "")
-    let remote = param_str(params, "remote_address", "")
+    let protocol = ps_protocol(params)?
     let common = " -Direction " + ps_q(ps_direction(params)?) +
         " -Action " + ps_q(ps_action(params)?) +
-        " -Protocol " + ps_q(ps_protocol(params)?) +
+        " -Protocol " + ps_q(protocol) +
         " -Profile " + ps_q(ps_profile(params)?) +
         " -Enabled " + (if param_bool(params, "enabled", true) { "True" } else { "False" }) +
-        (if local_port != "" { " -LocalPort " + ps_q(local_port) } else { "" }) +
-        (if remote != "" { " -RemoteAddress " + ps_q(remote) } else { "" })
+        (if has_ports(protocol) { " -LocalPort " + ps_q(want_local_port(params)) } else { "" }) +
+        " -RemoteAddress " + ps_q(want_remote_address(params))
     ps_run(
         "if ($null -eq (Get-NetFirewallRule -Name " + qn + " -ErrorAction SilentlyContinue)) {{ " +
         "New-NetFirewallRule -Name " + qn + " -DisplayName " + qn + common + " | Out-Null }} " +

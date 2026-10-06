@@ -28,7 +28,7 @@ package "windows_network" {
   }
 
   resource "firewall_rule" {
-    description = "Ensure a Windows Firewall rule exists (enabled state, direction and action are reconciled; port, address and profile are applied on every converge but not probed for drift)"
+    description = "Ensure a Windows Firewall rule exists and matches every param: enabled state, direction, action, protocol, profile, local port and remote address are all probed for drift"
     script = "resources/firewall_rule.ws"
     concurrency = "exclusive"
     param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
@@ -85,7 +85,7 @@ package "windows_network" {
     }
     // Addresses and ports stay strings: they carry ranges and CIDR, which a
     // closed symbol set cannot express.
-    param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any" type = "string" default = "" }
+    param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any. Only applied and compared for :tcp and :udp" type = "string" default = "" }
     param "remote_address" { description = "Remote address filter, e.g. 10.0.0.0/8; empty means any" type = "string" default = "" }
     param "enabled" { description = "Whether the rule is enabled" type = "bool" default = true }
   }
@@ -111,6 +111,49 @@ package "windows_network" {
       resource = "firewall_rule"
       expect = "already_configured"
       properties { name = "weave-ghost-rule" ensure = :absent }
+    }
+  }
+
+  // Each seeded rule already matches name, direction, action and enabled, and
+  // drifts in exactly one other field, so run 1 can only report Not Configured
+  // if check reads that field back. Run 3 then proves the read-back spelling
+  // (dotted masks, `Domain, Private`) normalises to what apply wrote. Setup
+  // runs under `cmd /C`: no double quotes, no pipes.
+  test "firewall_rule_drift_converges" {
+    description = "Port, protocol, profile and remote address drift is detected and corrected"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; New-NetFirewallRule -Name weave-drift-port -DisplayName weave-drift-port -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1434; New-NetFirewallRule -Name weave-drift-protocol -DisplayName weave-drift-protocol -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5001; New-NetFirewallRule -Name weave-drift-profile -DisplayName weave-drift-profile -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5002 -Profile Public; New-NetFirewallRule -Name weave-drift-remote -DisplayName weave-drift-remote -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5003 -RemoteAddress 10.0.0.0/8; New-NetFirewallRule -Name weave-drift-remote-any -DisplayName weave-drift-remote-any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5004 -RemoteAddress 10.0.0.0/8"
+    verify = "tests/firewall_drift_verify.ws"
+
+    step "port_drift" {
+      description = "Rule seeded on TCP 1434 moves back to 1433"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-port" protocol = :tcp local_port = "1433" }
+    }
+
+    step "protocol_drift" {
+      description = "Rule seeded as UDP becomes TCP"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-protocol" protocol = :tcp local_port = "5001" }
+    }
+
+    step "profile_drift" {
+      description = "Rule seeded on Public moves to Domain and Private"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-profile" protocol = :tcp local_port = "5002" profile = :domain_private }
+    }
+
+    step "remote_address_drift" {
+      description = "Rule seeded for 10.0.0.0/8 is narrowed to 192.168.50.0/24"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-remote" protocol = :tcp local_port = "5003" remote_address = "192.168.50.0/24" }
+    }
+
+    step "remote_address_widened" {
+      description = "Rule seeded for 10.0.0.0/8 with no remote_address goes back to Any"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-remote-any" protocol = :tcp local_port = "5004" }
     }
   }
 }
