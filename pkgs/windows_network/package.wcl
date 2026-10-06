@@ -2,7 +2,7 @@ package "windows_network" {
   description = "Manage Windows network configuration and firewall rules"
 
   resource "static_ip" {
-    description = "Ensure an interface has a static IPv4 address (absent returns it to DHCP)"
+    description = "Ensure an interface has a static IPv4 address (absent removes it and returns the interface to DHCP; it is converged only once DHCP is enabled)"
     script = "resources/static_ip.ws"
     concurrency = "exclusive"
     param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
@@ -15,7 +15,7 @@ package "windows_network" {
       default = :present
 
       symbol "present" { description = "Set the static address" }
-      symbol "absent"  { description = "Return the interface to DHCP" }
+      symbol "absent"  { description = "Remove the address and return the interface to DHCP" }
     }
   }
 
@@ -111,6 +111,27 @@ package "windows_network" {
       resource = "firewall_rule"
       expect = "already_configured"
       properties { name = "weave-ghost-rule" ensure = :absent }
+    }
+  }
+
+  // The one static_ip case that is safe on the testlab's only adapter: the
+  // testlab drives the guest through the vmlab agent, not the network, and
+  // the step itself hands the adapter back to DHCP. Setup leaves it in the
+  // drifted state — the address already gone but DHCP still off — which
+  // check must report as not configured so apply re-enables DHCP. Its own
+  // instance, so the outage cannot leak into the win2025 group.
+  test "static_ip_absent_restores_dhcp" {
+    description = "An absent static address with DHCP still disabled is drift, and apply re-enables DHCP"
+    template = "x86_64/windows-server-2025"
+    // Setup runs under cmd.exe; the command stays unquoted because a quoted
+    // -Command reaches PowerShell as a string literal and is only echoed.
+    setup = "powershell -NoProfile -Command Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled"
+    verify = "tests/static_ip_verify.ws"
+
+    step "absent_with_dhcp_off" {
+      description = "The address is absent but DHCP is disabled, so the step converges by enabling DHCP"
+      resource = "static_ip"
+      properties { interface = "Ethernet" ip = "192.0.2.55" prefix_length = 24 ensure = :absent }
     }
   }
 }

@@ -43,14 +43,17 @@ fn get_str(m: Value, key: string) -> string {
     ""
 }
 
-// 'ABSENT' or a JSON object { prefix, gateway } — gateway is the interface's
-// current IPv4 default-route next hop ('' when it has none).
+// 'ABSENT:<dhcp>' or a JSON object { prefix, gateway }. <dhcp> is the
+// interface's IPv4 Dhcp state (Enabled/Disabled), which :absent also owns;
+// gateway is the interface's current IPv4 default-route next hop ('' when it
+// has none).
 fn probe(iface: string, ip: string) -> Result[string, string] {
     let qi = ps_q(iface)
     ps_out(
         "$a = Get-NetIPAddress -InterfaceAlias " + qi + " -IPAddress " + ps_q(ip) +
         " -AddressFamily IPv4 -ErrorAction SilentlyContinue; " +
-        "if ($null -eq $a) {{ 'ABSENT' }} else {{ " +
+        "if ($null -eq $a) {{ " +
+        "'ABSENT:' + (Get-NetIPInterface -InterfaceAlias " + qi + " -AddressFamily IPv4).Dhcp }} else {{ " +
         "$gw = ''; $r = @(Get-NetRoute -InterfaceAlias " + qi + " -AddressFamily IPv4 " +
         "-DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue); " +
         "if ($r.Count -gt 0) {{ $gw = $r[0].NextHop }}; " +
@@ -66,10 +69,11 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if ip == "" { return Err("missing 'ip' parameter") }
     let st = probe(iface, ip)?
     if !want_present(params)? {
-        if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
+        // Absent means the address is gone *and* the interface is back on DHCP.
+        if st == "ABSENT:Enabled" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
+    if st.starts_with("ABSENT") { return Ok(CheckResult::NotConfigured) }
     let m = json::parse(st)?
     if get_int(m, "prefix") != param_int(params, "prefix_length", 0) { return Ok(CheckResult::NotConfigured) }
     let gw = param_str(params, "gateway", "")
