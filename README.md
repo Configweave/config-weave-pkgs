@@ -217,6 +217,19 @@ container tests need no template at all. That is why `just test` sits outside
 `ci::check`: it is KVM-bound and slow, so convergence stays a deliberate human
 action and the merge bar does not claim to prove it.
 
+A Windows test also needs a Windows build of config-weave to copy into the
+guest. config-weave looks for one only in its own build tree, which this repo
+does not have. Download `config-weave-windows-x86_64.exe` from a config-weave
+GitHub release, or run `just release` in a config-weave checkout and use
+`dist/config-weave-windows-x86_64.exe`. Then point the testlab at it:
+
+```sh
+export CONFIG_WEAVE_TEST_BINARY_WINDOWS=/path/to/config-weave-windows-x86_64.exe
+just test windows_network
+```
+
+Without it, a Windows test fails with "no windows test binary was found".
+
 ## Package Manager Support
 
 `linux_packages` supports native package managers for the common Linux families and
