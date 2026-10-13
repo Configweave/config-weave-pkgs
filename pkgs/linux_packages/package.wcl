@@ -2,12 +2,13 @@ package "linux_packages" {
   description = "Detect the host package manager"
 
   gatherer "package_manager" {
-    description = "Detect the host package manager"
+    description = "Detect the host package manager by the files it installs, first match wins: rpm_ostree (when /run/ostree-booted exists), then apt, dnf5, dnf, microdnf, yum, tdnf, zypper, pacman, apk, xbps, emerge, eopkg, swupd, urpmi, slackpkg and opkg, then flatpak and snap, then nix (/nix/store and a nix-env in a profile) and guix (/gnu/store and a guix in a profile). System managers win over the ecosystem ones, so a Debian host with flatpak is :apt. Use it to pick between the per-manager packages (linux_apt, linux_dnf, linux_zypper, linux_pacman, linux_apk, linux_flatpak)"
     script = "gatherers/package_manager.ws"
     returns "manager" {
       description = "Detected package manager"
       type = "symbol"
 
+      symbol "rpm_ostree" { description = "Image-based rpm-ostree systems (Fedora Atomic, CoreOS), detected before dnf5, which they also ship" }
       symbol "apt"        { description = "Debian/Ubuntu" }
       symbol "dnf5"       { description = "Fedora and RPM systems shipping dnf5" }
       symbol "dnf"        { description = "Fedora/RHEL/CentOS/Rocky/Alma" }
@@ -24,7 +25,6 @@ package "linux_packages" {
       symbol "urpmi"      { description = "Mageia/OpenMandriva" }
       symbol "slackpkg"   { description = "Slackware" }
       symbol "opkg"       { description = "OpenWrt and embedded Linux" }
-      symbol "rpm-ostree" { description = "Image-based rpm-ostree systems" }
       symbol "flatpak"    { description = "Flatpak, where no system manager was found" }
       symbol "snap"       { description = "Snap, where no system manager was found" }
       symbol "nix"        { description = "Nix" }
@@ -45,6 +45,92 @@ package "linux_packages" {
         manager = :apt
         known = true
       }
+    }
+  }
+
+  test "detects_dnf5" {
+    description = "Fedora reports dnf5, not dnf"
+    image = "fedora:44"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :dnf5 }
+    }
+  }
+
+  // Faked: a booted ostree image is marked by /run/ostree-booted, and the
+  // real dnf5 in the image must lose to it.
+  test "detects_rpm_ostree" {
+    description = "An ostree-booted Fedora with rpm-ostree reports rpm_ostree, not dnf5"
+    image = "fedora:44"
+    setup = "touch /run/ostree-booted && printf '#!/bin/sh\\n' > /usr/bin/rpm-ostree && chmod +x /usr/bin/rpm-ostree"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :rpm_ostree }
+    }
+  }
+
+  test "detects_pacman" {
+    description = "Arch reports pacman"
+    image = "archlinux:latest"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :pacman }
+    }
+  }
+
+  test "detects_apk" {
+    description = "Alpine reports apk"
+    image = "alpine:3.20"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :apk }
+    }
+  }
+
+  test "detects_zypper" {
+    description = "openSUSE Leap reports zypper"
+    image = "opensuse/leap:15.6"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :zypper }
+    }
+  }
+
+  test "detects_unknown" {
+    description = "busybox, with no package manager, reports unknown"
+    image = "busybox:latest"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect {
+        manager = :unknown
+        known = false
+      }
+    }
+  }
+
+  // Faked on busybox, which has no system manager to win first: a Nix
+  // store and a nix-env in root's profile.
+  test "detects_nix" {
+    description = "A Nix store with nix-env in a profile reports nix"
+    image = "busybox:latest"
+    setup = "mkdir -p /nix/store /root/.nix-profile/bin && touch /root/.nix-profile/bin/nix-env"
+
+    gather "pm" {
+      description = "Package manager detection"
+      from = "package_manager"
+      expect { manager = :nix }
     }
   }
 }
