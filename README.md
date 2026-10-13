@@ -42,10 +42,13 @@ legal values under **Symbol values**.
 - `linux_files`: files (exact content or URL-fetched), directories,
   symlinks/hard links, archives and modes.
 - `linux_packages`: the package-manager detection gatherer.
-- `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper` /
-  `linux_flatpak`: one package per package manager — install, cache refresh
-  and, where the manager supports them, repositories, keys and holds
-  (`linux_pacman` also installs AUR packages via yay/paru).
+- `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper`:
+  one package per package manager — install, cache refresh and, where the
+  manager supports them, repositories, keys and holds (`linux_pacman` also
+  installs AUR packages via yay/paru).
+- `linux_flatpak`: Flatpak apps, runtimes and remotes per installation, and
+  `updated`, which upgrades every installed app rather than refreshing a
+  cache. See [Package managers](#package-managers).
 - `linux_systemd` / `linux_openrc` / `linux_runit` / `linux_sysvinit`: one
   `service` resource per init system covering the service script/unit, boot
   enablement and running state, with `ensure = :absent` removing the service
@@ -230,28 +233,90 @@ just test windows_network
 
 Without it, a Windows test fails with "no windows test binary was found".
 
-## Package Manager Support
+## Package managers
 
-`linux_packages` supports native package managers for the common Linux families and
-several opt-in ecosystem managers. Use `manager = "auto"` for native detection, or
-set a manager explicitly:
+### `linux_packages`
 
-- Debian/Ubuntu: `apt`
-- Fedora/RHEL/CentOS/Rocky/Alma/Amazon-style RPM: `dnf5`, `dnf`, `microdnf`, `yum`
-- VMware Photon: `tdnf`
-- openSUSE/SUSE: `zypper`
-- Arch: `pacman`
-- Alpine: `apk`
-- Void: `xbps`
-- Gentoo: `emerge`
-- Solus: `eopkg`
-- Clear Linux: `swupd`
-- Mageia/OpenMandriva: `urpmi`
-- Slackware: `slackpkg`
-- OpenWrt/embedded Linux: `opkg`
-- rpm-ostree systems: `rpm-ostree`
-- Optional ecosystem managers: `flatpak`, `snap`, `nix`, `guix`
+`linux_packages` has one gatherer, `package_manager`. It returns `manager`, a
+symbol naming the host's package manager, and `known`, false when nothing was
+found. Use it to choose between the per-manager packages: `linux_apt`,
+`linux_dnf`, `linux_zypper`, `linux_pacman`, `linux_apk` and `linux_flatpak`.
+It manages nothing itself.
 
-The test suite avoids network installs. It checks package-state detection on
-container images with already-installed base packages and validates every manager
-branch through wscript compilation.
+Detection checks the files each manager installs and takes the first match,
+in this order:
+
+1. `:rpm_ostree`, when `/run/ostree-booted` exists. Fedora Atomic and CoreOS
+   ship dnf5 too, so this comes before the dnf family.
+2. The system managers: `:apt`, `:dnf5`, `:dnf`, `:microdnf`, `:yum`,
+   `:tdnf`, `:zypper`, `:pacman`, `:apk`, `:xbps`, `:emerge`, `:eopkg`,
+   `:swupd`, `:urpmi`, `:slackpkg`, `:opkg`.
+3. The ecosystem managers, only when no system manager was found: `:flatpak`,
+   `:snap`, then `:nix` (`/nix/store` and a `nix-env` in a profile) and `:guix`
+   (`/gnu/store` and a `guix` in a profile).
+4. `:unknown`.
+
+A Debian host with flatpak installed is `:apt`. Several symbols (`:snap`,
+`:nix`, `:xbps` and others) have no package in this library behind them.
+
+### `linux_apk`
+
+- `package` matches `name` exactly against `/etc/apk/world`, so a pin or
+  constraint (`tree=2.1.1-r0`, `xz>=5`) or a tag (`tree@testing`) is
+  compared as written, and a package installed only as a dependency is added
+  to world. `:absent` fails, with apk's output, when other installed
+  packages need the package, unless `remove_dependents = true` (`apk del -r`).
+- `cache_updated` runs `apk update` when its own stamp is older than
+  `max_age`, or when `/etc/apk/repositories`, `repositories.d` or `keys`
+  changed since.
+- `repository` manages one whole line of `/etc/apk/repositories`, including
+  any `@tag`; commented lines do not count.
+- `signing_key` writes `/etc/apk/keys/<name>.rsa.pub` from `content`, or from
+  a `url` checked against `sha256`.
+
+Every apk call waits up to five minutes for apk's database lock.
+
+### `linux_pacman`
+
+- `package` accepts a package, a name an installed package provides, or a
+  group. It installs with `pacman -S --needed` and never syncs, so run
+  `cache_updated` first. `:absent` fails when other packages depend on the
+  package.
+- `cache_updated` runs `pacman -Sy` when its stamp is older than `max_age`,
+  or when `pacman.conf` or `pacman.d` changed since.
+- `aur_package` builds with yay or paru (`helper = :auto`, `:yay`, `:paru`)
+  as `user`, through `sudo -H` from that user's home. The helper must be on
+  the user's PATH, and the user needs passwordless sudo. Removal is plain
+  `pacman -R` and needs neither. `aur_cache_updated` is the helper's `-Sy`:
+  neither helper caches AUR metadata.
+- `repository` owns a `[name]` section of `pacman.conf`: `servers` and
+  `siglevel`.
+- `key` adds a key from `content` or a keyserver and locally signs it. It
+  needs an initialised keyring (`pacman-key --init`).
+- `hold` manages `IgnorePkg` entries in `[options]`.
+
+pacman has no lock wait, so every pacman call first waits up to five minutes
+for `db.lck` to go.
+
+### `linux_flatpak`
+
+Every resource works on one installation: `installation = :system` (the
+default) or `:user`, which is root's, since config-weave runs as root.
+
+- `package` installs an app (`kind = :app`) or a runtime (`kind = :runtime`)
+  from `remote`. It also checks which remote the installed copy came from,
+  and reinstalls from `remote` when it differs.
+- `remote` adds the remote, re-enables a disabled one (Fedora ships flathub
+  disabled), and reconciles `url` and `gpg_verify`. A `.flatpakrepo`
+  descriptor URL is only read when the remote is added. `:absent` fails
+  while anything installed came from the remote.
+- `updated` runs `flatpak update`, which upgrades every installed app and
+  runtime in the installation. This is not a metadata refresh: running apps
+  keep their old version until restarted.
+
+### Ordering
+
+apk and pacman wait for their own locks, but steps of different resource
+types in one package can still run at the same time. Order them with
+`requires`, for example a repository and its key before `cache_updated`, and
+`cache_updated` before `package`.
