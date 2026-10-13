@@ -76,6 +76,55 @@ package "linux_pacman" {
     param "user" { description = "Non-root user to build and install as; required when :present (AUR builds cannot run as root). The helper runs with sudo -H from the user's home directory, must be on that user's PATH (/usr/local/bin counts), and needs passwordless sudo to call pacman" type = "string" default = "" }
   }
 
+  resource "repository" {
+    description = "Ensure a [name] repository section in /etc/pacman.conf holds exactly the given SigLevel and Server lines, or is absent. A new section is appended, so it is searched after the repositories already there; an existing one is rewritten in place and keeps its position. A change makes the next cache_updated sync"
+    script = "resources/repository.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Repository name, the section header: letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-', and not options" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the section" }
+      symbol "absent"  { description = "Remove the section" }
+    }
+    param "servers" { description = "Server URLs, in order (https://repo.example.com/$repo/os/$arch, file:///srv/repo); at least one when present. Every other line in the section, Include included, is replaced" type = "list" }
+    param "siglevel" { description = "The section's SigLevel (Required DatabaseOptional, Optional TrustAll); empty leaves it out, so the global SigLevel applies" type = "string" default = "" }
+  }
+
+  resource "key" {
+    description = "Ensure a key is in pacman's keyring and locally signed (pacman-key --add or --recv-keys, then --lsign-key), so packages it signed are trusted, or that it is deleted (pacman-key --delete). Needs an initialised keyring (pacman-key --init)"
+    script = "resources/key.ws"
+    concurrency = "exclusive"
+    param "fingerprint" { description = "The key's full fingerprint (40 hex digits; spaces are ignored). The key is matched by fingerprint only" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Import and locally sign the key" }
+      symbol "absent"  { description = "Delete the key from the keyring" }
+    }
+    param "content" { description = "ASCII-armored public key to import. Empty fetches fingerprint from a keyserver instead" type = "string" default = "" }
+    param "keyserver" { description = "Keyserver to fetch from when content is empty; empty uses the keyring's configured keyserver" type = "string" default = "" }
+  }
+
+  resource "hold" {
+    description = "Ensure a package name is in, or not in, the IgnorePkg entries of /etc/pacman.conf's [options] section, so pacman -Syu does not upgrade it. Commented-out lines and IgnorePkg in included files are not read"
+    script = "resources/hold.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Package name (or IgnorePkg glob), matched exactly against the entries; must not start with '-' or contain whitespace" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present (held) or :absent (not held)"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add name to IgnorePkg" }
+      symbol "absent"  { description = "Remove name from every IgnorePkg line" }
+    }
+  }
+
   // Real installs over the container's NAT. The resource runs pacman -S
   // without -y on purpose, so setup syncs the databases first, exactly as a
   // playbook would with cache_updated.
@@ -235,6 +284,152 @@ SETUP
       description = "Nothing to do inside max_age"
       resource = "cache_updated"
       expect = "already_configured"
+    }
+  }
+
+  test "repositories_converge" {
+    description = "repository adds, rewrites and removes pacman.conf sections, and pacman reads the result"
+    image = "archlinux:latest"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+[ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd
+d=/srv/cw-repo
+rm -rf "$d" && mkdir -p "$d"
+mk() {
+  b=$(mktemp -d) && mkdir -p "$b/usr/share/cw" && echo "$1" > "$b/usr/share/cw/$1"
+  { printf 'pkgname = %s\npkgver = 1.0-1\npkgdesc = config-weave test package\nbuilddate = 1700000000\npackager = cw\nsize = 10\narch = any\n' "$1"; [ -z "$2" ] || echo "depend = $2"; [ -z "$3" ] || echo "provides = $3"; [ -z "$4" ] || echo "group = $4"; } > "$b/.PKGINFO"
+  (cd "$b" && bsdtar -cf "$d/$1-1.0-1-any.pkg.tar" .PKGINFO usr) && rm -rf "$b"
+}
+mk cw-base "" cw-virtual ""
+mk cw-dep cw-base "" ""
+mk cw-leaf "" "" ""
+mk cw-rm "" "" ""
+mk cw-prov "" cw-virt2 ""
+mk cw-g2a "" "" cw-group2
+mk cw-g2b "" "" cw-group2
+repo-add -q "$d/cw.db.tar.gz" "$d"/*.pkg.tar
+repo-add -q "$d/cw-drift.db.tar.gz" "$d"/cw-leaf-*.pkg.tar
+printf '
+[cw-drift]
+Server = https://drift.invalid/$arch
+
+[cw-old]
+SigLevel = Never
+Server = https://old.invalid/$arch
+' >> /etc/pacman.conf
+SETUP
+    verify = "tests/pacman_repository_verify.ws"
+
+    step "add" {
+      description = "Add a repository section"
+      resource = "repository"
+      properties {
+        name = "cw"
+        servers = ["file:///srv/cw-repo"]
+        siglevel = "Optional TrustAll"
+      }
+    }
+
+    step "drift" {
+      description = "Rewrite a section whose Server and SigLevel drifted"
+      resource = "repository"
+      properties {
+        name = "cw-drift"
+        servers = ["file:///srv/cw-repo"]
+        siglevel = "Optional TrustAll"
+      }
+    }
+
+    step "remove" {
+      description = "Remove a section"
+      resource = "repository"
+      properties { name = "cw-old" ensure = :absent }
+    }
+
+    step "options" {
+      description = "options is not a repository"
+      resource = "repository"
+      expect = "error"
+      properties { name = "options" servers = ["file:///srv/cw-repo"] }
+    }
+  }
+
+  test "holds_converge" {
+    description = "hold adds and removes IgnorePkg entries"
+    image = "archlinux:latest"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && sed -i '0,/^\\[options\\]/s//[options]\\nIgnorePkg = cw-a cw-b/' /etc/pacman.conf"
+    verify = "tests/pacman_hold_verify.ws"
+
+    step "hold" {
+      // The default pacman.conf has a commented-out IgnorePkg line, which
+      // must not count.
+      description = "Hold a package"
+      resource = "hold"
+      properties { name = "tree" }
+    }
+
+    step "release" {
+      description = "Release one entry of a line holding two"
+      resource = "hold"
+      properties { name = "cw-a" ensure = :absent }
+    }
+  }
+
+  test "keys_converge" {
+    description = "key imports and locally signs a key, and deletes one"
+    image = "archlinux:latest"
+    // The Arch image ships its keyring without a local master key, which
+    // --lsign-key needs: pacman-key --init makes one.
+    setup = <<'SETUP'
+pacman-key --init >/dev/null 2>&1
+cat > /tmp/cw-key2.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas4HMRYJKwYBBAHaRw8BAQdA/FUHG/27qVgv/+/+ZSprfRwa0rS923saticD
+ZEiVdQ+0KGN3IHRlc3Qga2V5IDIgPGN3MkBjb25maWctd2VhdmUuaW52YWxpZD6I
+kAQTFgoAOBYhBK3jzFIgs553XmyLvCkN1tPfBEKJBQJqzgcxAhsDBQsJCAcCBhUK
+CQgLAgQWAgMBAh4BAheAAAoJECkN1tPfBEKJHlsBAOBhzXfOLzPh0g2UhoasOtJf
+j5MsF5v9SVRsfhKWfp2BAQDuWbe+kJ0gN1N+dodQADnudabFw0p50SBsUdLJFZUs
+DA==
+=En6M
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+pacman-key --add /tmp/cw-key2.asc
+SETUP
+    verify = "tests/pacman_key_verify.ws"
+
+    step "add" {
+      description = "Import and locally sign a key from content"
+      resource = "key"
+      properties {
+        fingerprint = "BF7DF9F280EE40347C9A 69FFDC4883058AE970F7"
+        content = <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas4HMRYJKwYBBAHaRw8BAQdA6GpKgpx403GDq180f3u7p8lPlp6KtudvnGfI
+l8u+Zty0KGN3IHRlc3Qga2V5IDEgPGN3MUBjb25maWctd2VhdmUuaW52YWxpZD6I
+kAQTFgoAOBYhBL99+fKA7kA0fJpp/9xIgwWK6XD3BQJqzgcxAhsDBQsJCAcCBhUK
+CQgLAgQWAgMBAh4BAheAAAoJENxIgwWK6XD3tfIBAIF0lIqZQPX6/p3edqt/FrWF
+DcEOjycYmv4I1Zb/W4uUAP9tbX19kBo2mLnSRbqXA2eEvypM2VDv4rL2H4BVsT9U
+Dg==
+=qb1p
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+      }
+    }
+
+    step "remove" {
+      description = "Delete a key already in the keyring"
+      resource = "key"
+      properties { fingerprint = "ADE3CC5220B39E775E6C8BBC290DD6D3DF044289" ensure = :absent }
+    }
+
+    step "short_id" {
+      description = "A short key id is rejected"
+      resource = "key"
+      expect = "error"
+      properties { fingerprint = "DC4883058AE970F7" }
     }
   }
 
