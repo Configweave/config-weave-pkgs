@@ -12,9 +12,10 @@ package "linux_apt" {
       default = :present
 
       symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package with apt-get remove; its conffiles stay (the rc state)" }
+      symbol "absent"  { description = "Remove the package with apt-get remove; its conffiles stay (the rc state). Refused when apt would also remove packages that depend on it, unless remove_dependents is true" }
     }
     param "version" { description = "Exact version to install when present, the full Debian version as apt-cache policy shows it including any epoch (1:2.38-1); empty means any version. A version below the installed one is a downgrade, which is allowed. This installs a version once; it does not stop later upgrades, which is what linux_apt.hold is for" type = "string" default = "" }
+    param "remove_dependents" { description = "When :absent, let apt-get remove every installed package that depends on this one as well. false simulates the removal first and fails, naming them, if anything besides this package would go" type = "bool" default = false }
   }
 
   resource "cache_updated" {
@@ -182,6 +183,19 @@ SETUP
       expect = "error"
       requires = ["remove"]
       properties { name = "cw-held" version = "1.0" }
+    }
+
+    step "guarded" {
+      description = "Removing a package another installed package depends on is refused"
+      resource = "package"
+      expect = "error"
+      properties { name = "cw-base" ensure = :absent }
+    }
+
+    step "with_dependents" {
+      description = "remove_dependents = true removes the package and what depends on it"
+      resource = "package"
+      properties { name = "cw-base2" ensure = :absent remove_dependents = true }
     }
 
     step "option_name" {

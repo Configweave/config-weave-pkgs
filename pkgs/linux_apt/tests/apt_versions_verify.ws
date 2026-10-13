@@ -19,5 +19,12 @@ fn verify(facts: Value) -> Result[bool, string] {
     let gone = state("cw-gone")?
     if gone != "" && gone != "not-installed" { return Err("cw-gone should be removed, dpkg says '" + gone + "'") }
     expect("cw-held", "installed 2.0")?
+    // the guard refused, so both are still there
+    expect("cw-base", "installed 1.0")?
+    expect("cw-dep", "installed 1.0")?
+    for n in ["cw-base2", "cw-dep2"] {
+        let s = state(n)?
+        if s != "" && s != "not-installed" { return Err(n + " should be removed, dpkg says '" + s + "'") }
+    }
     Ok(true)
 }

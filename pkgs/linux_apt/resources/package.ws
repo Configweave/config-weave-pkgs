@@ -50,6 +50,28 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if converged(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
+// "foo:amd64" and "foo" are one package to this guard.
+fn base_name(pkg: string) -> string {
+    if let Some(i) = pkg.find(":") { return pkg.slice(0, i) }
+    pkg
+}
+
+// apt-get remove also removes every package that depends on this one,
+// without asking. Simulate first and refuse when anything else would go.
+fn guard_dependents(name: string) -> Result[unit, string] {
+    let sim = common::output("simulating removal of " + name, common::apt_get("-s remove " + common::q(name)))?
+    let others = []
+    for l in sim.stdout.split("\n") {
+        if !l.starts_with("Remv ") { continue }
+        let pkg = l.slice(5, l.len()).split(" ")[0]
+        if base_name(pkg) != base_name(name) { others.push(pkg) }
+    }
+    if !others.is_empty() {
+        return Err("removing " + name + " would also remove " + others.join(", ") + "; remove those first or set remove_dependents = true")
+    }
+    Ok(())
+}
+
 fn apply(params: Value) -> Result[ApplyResult, string] {
     validate(params)?
     let name = common::param_str(params, "name", "")
@@ -66,6 +88,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // refuses under -y without --allow-downgrades.
         common::run("apt-get install " + target, common::apt_get("install --allow-downgrades " + common::q(target)))?
     } else {
+        if !common::param_bool(params, "remove_dependents", false) { guard_dependents(name)? }
         common::run("apt-get remove " + name, common::apt_get("remove " + common::q(name)))?
     }
     Ok(ApplyResult::Success)
