@@ -21,11 +21,36 @@ fn verify(facts: Value) -> Result[bool, string] {
     if !text.contains("$ErrorActionPreference = 'Stop'") { return Ok(false) }
     if !text.contains("$ProgressPreference = 'SilentlyContinue'") { return Ok(false) }
 
+    // The preference block setup seeded was removed with no value given.
+    if text.contains("WarningPreference") { return Err("the :absent preference block was not removed") }
+
     // Every block is inserted exactly once, not appended on each run.
     if text.split("# BEGIN config-weave: greeting").len() != 2 { return Err("the greeting block was written more than once") }
 
     // The profile must still be loadable PowerShell.
     let out = shell::run("pwsh -NoProfile -NonInteractive -Command " + "\"$null = [ScriptBlock]::Create((Get-Content -Raw '" + host_profile + "'))\"", Value::Null)?
     if !out.success { return Err("the generated profile does not parse: " + out.stderr.trim()) }
+
+    // A CRLF profile keeps CRLF on every line after a rewrite.
+    let crlf = fs::read("/cwhome/crlf_profile.ps1")?
+    if !crlf.contains("# BEGIN config-weave: crlf\r\nSet-Alias gg Get-Location\r\n# END config-weave: crlf\r\n") {
+        return Err("the block added to the CRLF profile is missing or lost its CRLF endings: " + crlf)
+    }
+    if crlf.replace("\r\n", "").contains("\n") { return Err("the CRLF profile now mixes in bare LF line endings") }
+    if crlf.contains("config-weave: old") { return Err("the seeded block was not removed from the CRLF profile") }
+    if !crlf.contains("# keep\r\n") || !crlf.contains("# keep too\r\n") { return Err("hand-written lines of the CRLF profile were lost") }
+
+    // The unterminated block was refused, and the file left exactly as seeded.
+    let broken = fs::read("/cwhome/broken_profile.ps1")?
+    if broken != "# BEGIN config-weave: broken\nWrite-Host broken\n# hand written after the unterminated block\n" {
+        return Err("the profile with an unterminated block was rewritten: " + broken)
+    }
+
+    // The Windows PowerShell 5.1 profile starts with a UTF-8 BOM.
+    let bytes = fs::read_bytes("/cwhome/winps_profile.ps1")?
+    if bytes.len() < 3 || bytes[0] != 239 || bytes[1] != 187 || bytes[2] != 191 {
+        return Err("the Windows PowerShell profile was written without a UTF-8 BOM")
+    }
+    if !fs::read("/cwhome/winps_profile.ps1")?.contains("Write-Host 'café'") { return Err("the accented content did not survive") }
     Ok(true)
 }

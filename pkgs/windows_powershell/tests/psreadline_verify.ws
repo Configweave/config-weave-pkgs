@@ -18,6 +18,9 @@ fn verify(facts: Value) -> Result[bool, string] {
     if !text.contains("-Colors @{{ 'Command' = '#8181f7'; 'Parameter' = '#77dd77' }}") { return Ok(false) }
     if !text.contains("Set-PSReadLineKeyHandler -Chord 'UpArrow' -Function 'HistorySearchBackward'") { return Ok(false) }
     if !text.contains("Set-PSReadLineKeyHandler -Chord 'Ctrl+d,Ctrl+c' -ScriptBlock {{") { return Ok(false) }
+    // Ctrl+x and Ctrl+X are separate bindings in separate blocks.
+    if !text.contains("Set-PSReadLineKeyHandler -Chord 'Ctrl+x' -Function 'Cut'") { return Err("the Ctrl+x binding was lost") }
+    if !text.contains("Set-PSReadLineKeyHandler -Chord 'Ctrl+X' -Function 'Copy'") { return Err("the Ctrl+X binding was not written") }
     // Unset options must not appear at all.
     if text.contains("-ViModeIndicator") { return Err("an :unmanaged option was written anyway") }
     if text.contains("-DingTone") { return Err("an unset integer option was written anyway") }

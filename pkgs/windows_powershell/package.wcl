@@ -183,7 +183,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition` by asking PowerShell" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "module_path" {
@@ -224,7 +224,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "experimental_feature" {
@@ -257,7 +257,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // The Windows PowerShell compatibility layer: whether PowerShell 7 may
@@ -296,7 +296,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // The non-Windows logging block of powershell.config.json — on Windows the
@@ -341,7 +341,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -540,6 +540,18 @@ package "windows_powershell" {
   // between the markers, which is what makes them idempotent across
   // processes rather than only within one run.
   //
+  // A BEGIN marker with no matching END is an error rather than a guess:
+  // treating the rest of the file as the block would delete it. A profile
+  // with CRLF line endings keeps them. A profile Windows PowerShell 5.1
+  // loads (edition :windows_powershell, or :auto on Windows) gets a UTF-8
+  // BOM, because 5.1 reads a BOM-less script as the ANSI code page and
+  // mangles any non-ASCII text in it; a BOM already present is kept. A
+  // profile that is not UTF-8 is refused rather than rewritten.
+  //
+  // With `home` and `path` empty, the current-user profiles are the ones of
+  // the account config-weave runs as — usually SYSTEM or root. Set `home` to
+  // manage an interactive user's profile.
+  //
   // All are `global`: several of them write the same profile file.
   // ---------------------------------------------------------------------
 
@@ -583,7 +595,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is managed, e.g. Microsoft.PowerShell, Microsoft.VSCode or Microsoft.PowerShellISE" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to manage; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "profile_snippet" {
@@ -622,7 +634,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // Every documented Set-PSReadLineOption parameter, persisted as a managed
@@ -781,14 +793,14 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "psreadline_key_handler" {
     description = "Persist a Set-PSReadLineKeyHandler binding into a managed profile block, binding a chord to a named function or a script block"
     script = "resources/psreadline_key_handler.ws"
     concurrency = "global"
-    param "chord" { description = "Key chord to bind, e.g. Ctrl+d or UpArrow" type = "string" required = true }
+    param "chord" { description = "Key chord to bind, e.g. Ctrl+d or UpArrow. Case matters: Ctrl+d and Ctrl+D are different keys and get separate blocks. A block written by an older release under the lowercased name is migrated when it binds this exact chord" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -831,7 +843,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "default_parameter_values" {
@@ -880,7 +892,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "preference_variable" {
@@ -920,7 +932,7 @@ package "windows_powershell" {
       symbol "present" { description = "Set the variable" }
       symbol "absent"  { description = "Remove the block that sets it" }
     }
-    param "value" { description = "Value assigned to the variable, converted per `value_type`" type = "string" required = true }
+    param "value" { description = "Value assigned to the variable, converted per `value_type`; not needed for ensure = :absent" type = "string" default = "" }
     param "value_type" {
       description = "How `value` is rendered into the generated PowerShell"
       type = "symbol"
@@ -953,7 +965,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -1113,7 +1125,7 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "home" { description = "Home directory the :current_user module path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user module path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "script_resource" {
@@ -1266,7 +1278,7 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "home" { description = "Home directory the per-user paths are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the per-user paths are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
     returns "family" {
       description = "Operating system family the facts were gathered on"
       type = "symbol"
@@ -1395,7 +1407,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact file to read; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
     returns "exists" { description = "True when the configuration file is present" type = "bool" }
     returns "path" { description = "Path that was read" type = "string" }
     returns "settings" { description = "The whole parsed document" type = "map" }
@@ -1601,7 +1613,11 @@ package "windows_powershell" {
     group = "pwsh"
     // A pre-existing profile with a stale managed block and hand-written
     // lines around it: the snippet steps must edit only their own block.
-    setup = "mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1"
+    //
+    // Three more seeded files: one with CRLF line endings, which a rewrite
+    // must keep; one with a BEGIN marker and no END, which must be refused
+    // rather than truncated; and a preference block for the :absent step.
+    setup = "mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' '# BEGIN config-weave: preference-warning-preference' '$WarningPreference = 1' '# END config-weave: preference-warning-preference' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1 && printf '# keep\\r\\n# BEGIN config-weave: old\\r\\nWrite-Host old\\r\\n# END config-weave: old\\r\\n# keep too\\r\\n' > /cwhome/crlf_profile.ps1 && printf '# BEGIN config-weave: broken\\nWrite-Host broken\\n# hand written after the unterminated block\\n' > /cwhome/broken_profile.ps1"
     verify = "tests/profile_verify.ws"
 
     step "all_hosts_profile" {
@@ -1675,6 +1691,64 @@ package "windows_powershell" {
         home = "/cwhome"
       }
     }
+
+    // No value: removing a preference must not demand the value it removes.
+    step "warning_pref_absent" {
+      description = "Remove the preference block setup seeded"
+      resource = "preference_variable"
+      requires = ["progress_off"]
+      properties {
+        name = :warning_preference
+        ensure = :absent
+        edition = :pwsh
+        home = "/cwhome"
+      }
+    }
+
+    step "crlf_snippet" {
+      description = "Add a block to a CRLF profile, which keeps its line endings"
+      resource = "profile_snippet"
+      properties {
+        name = "crlf"
+        content = "Set-Alias gg Get-Location"
+        path = "/cwhome/crlf_profile.ps1"
+      }
+    }
+
+    step "crlf_remove" {
+      description = "Remove the seeded block from the CRLF profile"
+      resource = "profile_snippet"
+      requires = ["crlf_snippet"]
+      properties {
+        name = "old"
+        ensure = :absent
+        path = "/cwhome/crlf_profile.ps1"
+      }
+    }
+
+    step "unterminated_refused" {
+      description = "A BEGIN marker with no END is an error, not a licence to drop the rest of the file"
+      resource = "profile_snippet"
+      expect = "error"
+      properties {
+        name = "broken"
+        content = "Write-Host fixed"
+        path = "/cwhome/broken_profile.ps1"
+      }
+    }
+
+    // A Windows PowerShell 5.1 profile, written on Linux through an explicit
+    // path: 5.1 reads a BOM-less file as ANSI, so it must get a UTF-8 BOM.
+    step "winps_bom" {
+      description = "A profile for Windows PowerShell 5.1 is written with a UTF-8 BOM"
+      resource = "profile_snippet"
+      properties {
+        name = "accented"
+        content = "Write-Host 'café'"
+        edition = :windows_powershell
+        path = "/cwhome/winps_profile.ps1"
+      }
+    }
   }
 
   test "psreadline_converges" {
@@ -1711,6 +1785,32 @@ package "windows_powershell" {
       properties {
         chord = "UpArrow"
         function = "HistorySearchBackward"
+        edition = :pwsh
+        home = "/cwhome2"
+      }
+    }
+
+    // Ctrl+x and Ctrl+X are different keys to PSReadLine, so they are two
+    // blocks, not one overwriting the other.
+    step "key_handler_lower" {
+      description = "Bind Ctrl+x"
+      resource = "psreadline_key_handler"
+      requires = ["options"]
+      properties {
+        chord = "Ctrl+x"
+        function = "Cut"
+        edition = :pwsh
+        home = "/cwhome2"
+      }
+    }
+
+    step "key_handler_upper" {
+      description = "Bind Ctrl+X, which must not replace the Ctrl+x binding"
+      resource = "psreadline_key_handler"
+      requires = ["key_handler_lower"]
+      properties {
+        chord = "Ctrl+X"
+        function = "Copy"
         edition = :pwsh
         home = "/cwhome2"
       }
