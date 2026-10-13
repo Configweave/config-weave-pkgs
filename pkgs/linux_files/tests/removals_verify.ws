@@ -4,6 +4,7 @@ use fs
 fn verify(facts: Value) -> Result[bool, string] {
     if fs::exists("/tmp/cw-del.txt") { return Err("cw-del.txt still exists") }
     if fs::exists("/tmp/cw-rmdir") { return Err("cw-rmdir still exists") }
+    if !fs::is_dir("/srv") || !fs::is_dir("/usr/bin") { return Err("a refused removal deleted a top-level directory") }
     if fs::read_link("/tmp/cw-oldlink").is_ok() { return Err("cw-oldlink still exists") }
     if fs::read_link("/tmp/cw-dangling-rm").is_ok() { return Err("dangling link still exists") }
     if fs::exists("/tmp/cw-hard-link.txt") { return Err("hard link still exists") }

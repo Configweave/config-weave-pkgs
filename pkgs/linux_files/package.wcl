@@ -35,21 +35,21 @@ package "linux_files" {
   }
 
   resource "directory" {
-    description = "Ensure a directory exists or is absent"
+    description = "Ensure a directory exists, including missing parents, or is absent. Removal is recursive and refuses / and every top-level directory (/etc, /usr, /var, /home, ...). mode, owner and group apply to the directory itself, not its contents, and only the last path component gets them"
     script = "resources/directory.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute directory path" type = "string" required = true }
+    param "path" { description = "Absolute directory path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent (absent removes the directory and its contents)"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Create the directory" }
-      symbol "absent"  { description = "Delete the directory and its contents" }
+      symbol "absent"  { description = "Delete the directory and its contents; refused for / and top-level directories, and an error when path is a file or a symlink" }
     }
-    param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
-    param "owner" { description = "Optional directory owner" type = "string" default = "" }
-    param "group" { description = "Optional directory group" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0755 or 2775; symbolic modes are rejected" type = "string" default = "" }
+    param "owner" { description = "Optional directory owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional directory group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "symlink" {
@@ -233,6 +233,20 @@ TMPL
       description = "Remove a file"
       resource = "file"
       properties { path = "/tmp/cw-del.txt" ensure = :absent }
+    }
+
+    step "rm_root" {
+      description = "Removing / is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "/" ensure = :absent }
+    }
+
+    step "rm_top" {
+      description = "Removing a top-level directory is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "/srv/" ensure = :absent }
     }
 
     step "rmdir" {
