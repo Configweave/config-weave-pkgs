@@ -1,85 +1,100 @@
 package "linux_pacman" {
-  description = "Manage packages on pacman/Arch systems"
+  description = "Manage packages on pacman/Arch systems. pacman has no lock wait, so every pacman call first waits up to five minutes for /var/lib/pacman/db.lck to go; steps of different resource types can still run at the same time, so order them with requires"
 
   resource "package" {
-    description = "Ensure a pacman package is installed or absent"
+    description = "Ensure a pacman package, something an installed package provides, or a package group is installed, or that it is not. Installs with pacman -S --needed and no -y: the sync databases must already be synced, which is what cache_updated (or a pacman -Sy of your own) is for. A name in IgnorePkg (linux_pacman.hold) is not upgraded"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "A package name (tree), a name an installed package provides (sh, satisfied by bash), or a group (base-devel). A group is present when every member the sync databases list is installed. Must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "present" { description = "Install the package, the provider pacman picks, or the group's missing members" }
+      symbol "absent"  { description = "Remove the package, every installed package providing name, or the group's installed members (pacman -R). pacman refuses to remove a package other installed packages depend on, and that is an error naming them" }
     }
   }
 
   resource "cache_updated" {
-    description = "Run pacman -Sy when the index is older than max_age"
+    description = "Run pacman -Sy when the last sync this resource made is older than max_age, or when /etc/pacman.conf or /etc/pacman.d (outside the gnupg keyring) changed since. The sync time is the mtime of /var/lib/config-weave/pacman-cache-updated"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
-      description = "Refresh when the last update is older than this span"
+      description = "Sync when the last sync is older than this span"
       type = "duration"
       default = 24h
     }
   }
 
-  // Separate from `cache_updated`: an AUR helper refreshes AUR metadata that
-  // a bare `pacman -Sy` never sees, so the two windows are tracked apart.
-  //
-  // Untested by design, like every cache refresh here: it hits the network,
-  // and additionally needs an AUR helper and a non-root user with passwordless
-  // sudo — the helper shells out to pacman to write the sync databases.
+  // AUR metadata has no local database: yay and paru query the AUR live on
+  // every search and install. So this is pacman -Sy run through the helper,
+  // as the build user, with its own window.
   resource "aur_cache_updated" {
-    description = "Run the AUR helper's sync when the metadata is older than max_age"
+    description = "Run the AUR helper's -Sy, which syncs the pacman databases, as the build user when the last sync this resource made is older than max_age. AUR metadata itself is never cached: yay and paru query the AUR live. Needs the helper on the user's PATH and passwordless sudo for that user, since the helper calls sudo pacman"
     script = "resources/aur_cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
-      description = "Refresh when the last update is older than this span"
+      description = "Sync when the last sync is older than this span"
       type = "duration"
       default = 24h
     }
-    param "helper" { description = "AUR helper: auto (detect yay then paru), yay or paru" type = "string" default = "auto" }
-    param "user" { description = "Non-root user to run the helper as (yay/paru refuse to run as root)" type = "string" required = true }
+    param "helper" {
+      description = "AUR helper to run"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto" { description = "yay if it is on the user's PATH, else paru" }
+      symbol "yay"  { description = "yay" }
+      symbol "paru" { description = "paru" }
+    }
+    param "user" { description = "Non-root user to run the helper as (yay and paru refuse to run as root). Runs with sudo -H from the user's home directory, and needs passwordless sudo" type = "string" required = true }
   }
 
   resource "aur_package" {
-    description = "Ensure an AUR package is installed or absent via yay/paru"
+    description = "Ensure an AUR package is installed through yay or paru, or is absent. Checked with pacman, so a name an installed package provides counts. Removal is plain pacman -R as root and needs neither user nor helper"
     script = "resources/aur_package.ws"
     concurrency = "exclusive"
-    param "name" { description = "AUR package name" type = "string" required = true }
+    param "name" { description = "AUR package name; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Build and install the AUR package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "present" { description = "Build and install the package with the helper, as user" }
+      symbol "absent"  { description = "Remove the package with pacman -R" }
     }
-    param "helper" { description = "AUR helper: auto (detect yay then paru), yay or paru" type = "string" default = "auto" }
-    param "user" { description = "Non-root user to build/install as (AUR builds cannot run as root)" type = "string" required = true }
+    param "helper" {
+      description = "AUR helper to build with"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto" { description = "yay if it is on the user's PATH, else paru" }
+      symbol "yay"  { description = "yay" }
+      symbol "paru" { description = "paru" }
+    }
+    param "user" { description = "Non-root user to build and install as; required when :present (AUR builds cannot run as root). The helper runs with sudo -H from the user's home directory, must be on that user's PATH (/usr/local/bin counts), and needs passwordless sudo to call pacman" type = "string" default = "" }
   }
 
-  // Check-only test: installing anything needs the network, and aur_package
-  // additionally needs an AUR helper and a build user. The existence probe
-  // on a base package is the honest offline test.
-  // A real install over the container's NAT. The resource runs `pacman -S`
-  // without `-y` on purpose — syncing the package database is an operator
-  // decision, not something a convergence step should do behind your back —
-  // so setup syncs it first, exactly as a playbook would.
+  // Real installs over the container's NAT. The resource runs pacman -S
+  // without -y on purpose, so setup syncs the databases first, exactly as a
+  // playbook would with cache_updated.
   test "package_installs" {
-    description = "package installs a real package and removing it converges"
+    description = "package installs and removes real packages"
     image = "archlinux:latest"
-    setup = "pacman -Sy --noconfirm"
+    setup = "pacman -Sy --noconfirm && pacman -S --noconfirm --needed tree"
     verify = "tests/pacman_install_verify.ws"
 
     step "install" {
-      description = "Install tree"
+      description = "Install which"
       resource = "package"
-      properties { name = "tree" ensure = :present }
+      properties { name = "which" ensure = :present }
+    }
+
+    step "remove" {
+      description = "Remove tree"
+      resource = "package"
+      properties { name = "tree" ensure = :absent }
     }
 
     step "absent_stays_absent" {
@@ -99,6 +114,199 @@ package "linux_pacman" {
       resource = "package"
       expect = "already_configured"
       properties { name = "filesystem" }
+    }
+
+    step "provided" {
+      description = "sh, which bash provides, is installed"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "sh" }
+    }
+  }
+
+  // Offline apart from the sync of core and extra: setup builds tiny
+  // packages into a local file repository with bsdtar and repo-add. The
+  // vmlab container has no /dev/fd, which repo-add's process substitution
+  // needs, so setup links it.
+  test "package_names" {
+    description = "package handles provided names and groups, removes for real and guards dependents"
+    image = "archlinux:latest"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+[ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd
+d=/srv/cw-repo
+rm -rf "$d" && mkdir -p "$d"
+mk() {
+  b=$(mktemp -d) && mkdir -p "$b/usr/share/cw" && echo "$1" > "$b/usr/share/cw/$1"
+  { printf 'pkgname = %s\npkgver = 1.0-1\npkgdesc = config-weave test package\nbuilddate = 1700000000\npackager = cw\nsize = 10\narch = any\n' "$1"; [ -z "$2" ] || echo "depend = $2"; [ -z "$3" ] || echo "provides = $3"; [ -z "$4" ] || echo "group = $4"; } > "$b/.PKGINFO"
+  (cd "$b" && bsdtar -cf "$d/$1-1.0-1-any.pkg.tar" .PKGINFO usr) && rm -rf "$b"
+}
+mk cw-base "" cw-virtual ""
+mk cw-dep cw-base "" ""
+mk cw-leaf "" "" ""
+mk cw-rm "" "" ""
+mk cw-prov "" cw-virt2 ""
+mk cw-g2a "" "" cw-group2
+mk cw-g2b "" "" cw-group2
+repo-add -q "$d/cw.db.tar.gz" "$d"/*.pkg.tar
+grep -q '^\[cw\]' /etc/pacman.conf || printf '\n[cw]\nSigLevel = Optional TrustAll\nServer = file:///srv/cw-repo\n' >> /etc/pacman.conf
+pacman -Sy --noconfirm >/dev/null
+pacman -S --noconfirm --needed cw-dep cw-rm cw-prov cw-g2a >/dev/null
+SETUP
+    verify = "tests/pacman_names_verify.ws"
+
+    step "install" {
+      description = "Install a package from the local repository"
+      resource = "package"
+      properties { name = "cw-leaf" }
+    }
+
+    step "virtual" {
+      description = "A name an installed package provides is present"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-virtual" }
+    }
+
+    step "group" {
+      description = "A group with a member missing installs the rest"
+      resource = "package"
+      properties { name = "cw-group2" }
+    }
+
+    step "remove" {
+      description = "Remove an installed package"
+      resource = "package"
+      properties { name = "cw-rm" ensure = :absent }
+    }
+
+    step "remove_provided" {
+      description = "Removing a provided name removes the package providing it"
+      resource = "package"
+      properties { name = "cw-virt2" ensure = :absent }
+    }
+
+    step "guarded" {
+      description = "Removing a package cw-dep depends on is an error"
+      resource = "package"
+      expect = "error"
+      properties { name = "cw-base" ensure = :absent }
+    }
+
+    step "option_name" {
+      description = "A name pacman would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--version" }
+    }
+  }
+
+  test "cache_updated_refreshes" {
+    description = "cache_updated syncs when no sync has been recorded"
+    image = "archlinux:latest"
+    setup = "rm -f /var/lib/config-weave/pacman-cache-updated"
+    verify = "tests/pacman_cache_verify.ws"
+
+    step "refresh" {
+      description = "Sync the package databases"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated syncs when pacman.conf changed after a recent sync"
+    image = "archlinux:latest"
+    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/pacman-cache-updated && sleep 1 && touch /etc/pacman.conf"
+    verify = "tests/pacman_cache_verify.ws"
+
+    step "refresh" {
+      description = "A pacman.conf newer than the stamp forces a sync inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_fresh" {
+    description = "cache_updated leaves a recent sync with unchanged sources alone"
+    image = "archlinux:latest"
+    setup = "mkdir -p /var/lib/config-weave && touch /etc/pacman.conf && sleep 1 && touch /var/lib/config-weave/pacman-cache-updated"
+
+    step "fresh" {
+      description = "Nothing to do inside max_age"
+      resource = "cache_updated"
+      expect = "already_configured"
+    }
+  }
+
+  // No real AUR helper is installed: building yay needs the network and
+  // minutes. A stand-in yay in /usr/local/bin records how it was run and
+  // hands its arguments to sudo pacman, which is what yay does for repository
+  // packages, so the plumbing around it (finding the helper on the build
+  // user's PATH, sudo -H, a writable working directory, root-only removal)
+  // is what is tested.
+  test "aur_converges" {
+    description = "aur_package installs through the helper as the build user and removes without one"
+    image = "archlinux:latest"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+[ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd
+d=/srv/cw-repo
+rm -rf "$d" && mkdir -p "$d"
+mk() {
+  b=$(mktemp -d) && mkdir -p "$b/usr/share/cw" && echo "$1" > "$b/usr/share/cw/$1"
+  { printf 'pkgname = %s\npkgver = 1.0-1\npkgdesc = config-weave test package\nbuilddate = 1700000000\npackager = cw\nsize = 10\narch = any\n' "$1"; [ -z "$2" ] || echo "depend = $2"; [ -z "$3" ] || echo "provides = $3"; [ -z "$4" ] || echo "group = $4"; } > "$b/.PKGINFO"
+  (cd "$b" && bsdtar -cf "$d/$1-1.0-1-any.pkg.tar" .PKGINFO usr) && rm -rf "$b"
+}
+mk cw-base "" cw-virtual ""
+mk cw-dep cw-base "" ""
+mk cw-leaf "" "" ""
+mk cw-rm "" "" ""
+mk cw-prov "" cw-virt2 ""
+mk cw-g2a "" "" cw-group2
+mk cw-g2b "" "" cw-group2
+repo-add -q "$d/cw.db.tar.gz" "$d"/*.pkg.tar
+grep -q '^\[cw\]' /etc/pacman.conf || printf '\n[cw]\nSigLevel = Optional TrustAll\nServer = file:///srv/cw-repo\n' >> /etc/pacman.conf
+pacman -Sy --noconfirm >/dev/null
+pacman -S --noconfirm --needed sudo cw-rm >/dev/null
+id cwbuild >/dev/null 2>&1 || useradd -m cwbuild
+echo 'cwbuild ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/cwbuild
+cat > /usr/local/bin/yay <<'YAY'
+#!/bin/sh
+echo "user=$(id -un) home=$HOME pwd=$PWD" >> /tmp/cw-yay.log
+[ "$(id -u)" != 0 ] || { echo 'refusing to run as root' >&2; exit 1; }
+[ -w "$PWD" ] || { echo "$PWD is not writable" >&2; exit 1; }
+exec sudo pacman "$@"
+YAY
+chmod 755 /usr/local/bin/yay
+: > /tmp/cw-yay.log && chmod 666 /tmp/cw-yay.log
+rm -f /var/lib/config-weave/pacman-aur-cache-updated
+SETUP
+    verify = "tests/pacman_aur_verify.ws"
+
+    step "install" {
+      description = "Install through the helper found in /usr/local/bin"
+      resource = "aur_package"
+      properties { name = "cw-leaf" user = "cwbuild" }
+    }
+
+    step "remove" {
+      description = "Remove with no user and no helper involved"
+      resource = "aur_package"
+      properties { name = "cw-rm" ensure = :absent }
+    }
+
+    step "no_user" {
+      description = "Installing needs a build user"
+      resource = "aur_package"
+      expect = "error"
+      properties { name = "cw-prov" }
+    }
+
+    step "sync" {
+      description = "Sync through the helper as the build user"
+      resource = "aur_cache_updated"
+      properties { user = "cwbuild" }
     }
   }
 }

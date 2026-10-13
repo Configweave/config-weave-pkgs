@@ -5,9 +5,8 @@ use shell
 use time
 use common
 
-// Its own stamp, separate from `cache_updated`'s: the helper refreshes AUR
-// metadata that a bare `pacman -Sy` never touches, so one window cannot
-// stand in for the other.
+// Its own stamp, separate from cache_updated's, so a playbook that syncs
+// through the helper keeps its own window.
 fn stamp_path() -> string { "/var/lib/config-weave/pacman-aur-cache-updated" }
 
 // A `duration` param arrives as base nanoseconds.
@@ -34,13 +33,17 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    // yay and paru refuse to run as root, so the refresh runs as a normal
-    // user — the same build user `aur_package` needs.
+    // yay and paru refuse to run as root, so the sync runs as a normal user
+    // — the same build user aur_package needs. `-Sy` through either helper
+    // syncs the pacman databases (the helper calls sudo pacman); AUR
+    // metadata has no local database to refresh, since both helpers query
+    // the AUR live on every search and install.
     let user = common::param_str(params, "user", "")
     if user == "" { return Err("missing 'user' parameter (AUR helpers refuse to run as root)") }
-    let h = common::helper(params)?
-    let out = shell::bash("sudo -u " + common::q(user) + " " + h + " -Sy --noconfirm", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    common::user_name(user)?
+    let h = common::helper(params, user)?
+    let out = shell::bash(common::as_user(user, h + " -Sy --noconfirm"), Value::Null)?
+    if !out.success { return Err(common::cmd_err(h + " -Sy", out)) }
     let stamp = stamp_path()
     fs::mkdir(path::parent(stamp))?
     // Rewriting the stamp truncates it and so refreshes its mtime, which is

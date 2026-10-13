@@ -7,8 +7,13 @@ use common
 
 // The stamp file's mtime records the last refresh this resource performed.
 // It is per manager: one machine may run more than one, and a refresh of
-// pacman's index says nothing about anyone else's.
+// pacman's databases says nothing about anyone else's.
 fn stamp_path() -> string { "/var/lib/config-weave/pacman-cache-updated" }
+
+// What decides which databases pacman -Sy fetches and from where. A file
+// added, changed or removed under these after the last refresh means the
+// databases are out of date whatever their age.
+fn sources() -> string { "/etc/pacman.conf /etc/pacman.d" }
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
@@ -25,17 +30,24 @@ fn last_refresh() -> Result[int, string] {
     Ok(0)
 }
 
+// The keyring under /etc/pacman.d/gnupg changes on every pacman run that
+// verifies a signature (trustdb, random seed), so it is left out.
+fn sources_changed() -> Result[bool, string] {
+    let cmd = "find " + sources() + " -path /etc/pacman.d/gnupg -prune -o -newer " + common::q(stamp_path()) + " -print 2>/dev/null | head -n 1"
+    Ok(shell::bash(cmd, Value::Null)?.stdout.trim() != "")
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     if !fs::is_file(stamp_path()) { return Ok(CheckResult::NotConfigured) }
     if time::now_millis() / 1000 - last_refresh()? > max_age_secs(params) {
         return Ok(CheckResult::NotConfigured)
     }
+    if sources_changed()? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let out = shell::bash("pacman -Sy --noconfirm", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    common::output("pacman -Sy", common::pacman("-Sy"))?
     let stamp = stamp_path()
     fs::mkdir(path::parent(stamp))?
     // Rewriting the stamp truncates it and so refreshes its mtime, which is

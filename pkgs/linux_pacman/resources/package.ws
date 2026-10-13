@@ -1,26 +1,27 @@
 use value
-use shell
 use common
 
-fn installed(name: string) -> Result[bool, string] {
-    Ok(shell::bash("pacman -Q " + common::q(name) + " >/dev/null 2>&1", Value::Null)?.success)
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::operand("name", name)?
+    Ok(name)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = common::param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if installed(name)? == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let name = validate(params)?
+    let ok = if common::want_present(params)? { common::present(name)? } else { common::absent(name)? }
+    if ok { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
+// -S without -y on purpose: syncing the package databases is
+// cache_updated's job, not something a package step does behind your back.
+// --needed leaves the installed members of a group alone.
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = common::param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmd = if common::want_present(params)? {
-        "pacman -S --noconfirm " + common::q(name)
-    } else {
-        "pacman -R --noconfirm " + common::q(name)
+    let name = validate(params)?
+    if common::want_present(params)? {
+        common::run("pacman -S", common::pacman("-S --needed " + common::q(name)))?
+        return Ok(ApplyResult::Success)
     }
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    common::remove(name)?
     Ok(ApplyResult::Success)
 }
