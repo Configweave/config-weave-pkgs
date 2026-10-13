@@ -246,7 +246,7 @@ TMPL
     description = "Removal and extraction resources converge"
     image = "debian:12"
     group = "files"
-    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; mkdir -p /tmp/cw-arch-src/sub; echo deep > /tmp/cw-arch-src/sub/deep.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt sub; mkdir -p /tmp/cw-prepop; echo mine > /tmp/cw-prepop/existing.txt; mkdir -p /tmp/cw-changed; echo stale > /tmp/cw-changed/inside.txt; echo 0000 > /tmp/cw-changed/.config-weave-archive; mkdir -p /tmp/cw-arch-rm/x; echo y > /tmp/cw-arch-rm/x/y.txt; useradd -u 1234 -U -M cwuser"
+    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; mkdir -p /tmp/cw-arch-src/sub; echo deep > /tmp/cw-arch-src/sub/deep.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt sub; mkdir -p /tmp/cw-prepop; echo mine > /tmp/cw-prepop/existing.txt; mkdir -p /tmp/cw-changed; echo stale > /tmp/cw-changed/inside.txt; echo 0000 > /tmp/cw-changed/.config-weave-archive; mkdir -p /tmp/cw-arch-rm/x; echo y > /tmp/cw-arch-rm/x/y.txt; { id cwuser >/dev/null 2>&1 || useradd -u 1234 -U -M cwuser; }"
     verify = "tests/removals_verify.ws"
 
     gather "seed_stat" {
@@ -370,7 +370,7 @@ TMPL
     description = "mode, owner and group converge by name, by id, through a symlink and on paths with spaces"
     image = "debian:12"
     group = "files"
-    setup = "useradd -u 1234 -U -M cwuser && mkdir -p /tmp/cw-attrs && printf 'r\\n' > /tmp/cw-attrs/real.txt && chmod 600 /tmp/cw-attrs/real.txt && ln -s /tmp/cw-attrs/real.txt /tmp/cw-attrs/link.txt"
+    setup = "{ id cwuser >/dev/null 2>&1 || useradd -u 1234 -U -M cwuser; } && mkdir -p /tmp/cw-attrs && printf 'r\\n' > /tmp/cw-attrs/real.txt && chmod 600 /tmp/cw-attrs/real.txt && ln -s /tmp/cw-attrs/real.txt /tmp/cw-attrs/link.txt"
     verify = "tests/attrs_verify.ws"
 
     step "named" {
