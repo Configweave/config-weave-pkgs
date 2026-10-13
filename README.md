@@ -260,6 +260,47 @@ minor upgrades, so it must not stay in a temp directory.
 no longer runs `path` with `args` to uninstall. It now uses `uninstall_path`
 or the registered uninstall command, or `path` with `uninstall_args`.
 
+### `windows_packages`
+
+Chocolatey, Scoop and winget, one set of resources per manager:
+
+- Chocolatey: `chocolatey_package` (with a `version` hold),
+  `chocolatey_source` (URL and `enabled`), `chocolatey_updated` and the
+  `chocolatey_packages` gatherer. A package installed at another version is
+  moved with `choco upgrade --version --allow-downgrade`, so the hold works
+  in both directions. Chocolatey 1.x and 2.x are both supported: 1.x gets
+  `--local-only` on every listing.
+- Scoop: `scoop_package` (accepts `bucket/app`), `scoop_bucket` (compares
+  the clone's origin with `url`), `scoop_cache_updated` and the
+  `scoop_packages` gatherer. Scoop is per-user, so everything happens under
+  the scoop root (`SCOOP`, else `~\scoop`) of the account config-weave runs
+  as. The refresh stamp is kept there too. For SYSTEM that root is under
+  `System32`, where scoop's shim executables cannot start, so the resources
+  put scoop's own git first on `PATH` (every bucket operation needs git).
+  Apps installed for SYSTEM still have broken shims, so prefer Chocolatey
+  or winget there.
+- winget: `winget_package` (with a `version` hold), `winget_source` (URL
+  and `type`), `winget_cache_updated` and the `winget_packages` gatherer.
+  Detection uses the `Microsoft.WinGet.Client` module if it is installed,
+  else `winget export`. The `winget list` table is never parsed, because
+  its headers are localized and its columns are truncated. When winget is
+  not on `PATH` (it never is for SYSTEM), the newest App Installer copy
+  under `WindowsApps` is used. That copy starts for SYSTEM only after the
+  Visual C++ 2015-2022 x64 runtime is installed machine-wide.
+
+Every source and bucket resource takes `ensure`. Names compare
+case-insensitively, as the managers compare them. Every script forces UTF-8
+output, so a non-ASCII package name cannot blank a listing. Chocolatey and
+Scoop are found on `PATH` first and then in their default locations, so a
+manager installed earlier in the same run is usable at once. A missing
+manager makes a removal converged, makes a gatherer return the empty shape,
+and makes an install fail with a clear error.
+
+`concurrency = "exclusive"` serialises steps of one resource type only. Two
+steps for the same manager but of different types, such as a source and a
+package, can run at once. Chain them with `requires` when one depends on
+the other.
+
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
