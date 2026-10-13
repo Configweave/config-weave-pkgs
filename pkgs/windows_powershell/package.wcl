@@ -89,11 +89,17 @@ package "windows_powershell" {
     param "skip_network_profile_check" { description = "Enable remoting even on a public network profile (-SkipNetworkProfileCheck)" type = "bool" default = false }
   }
 
+  // Every param is compared on an existing endpoint, not only at creation:
+  // access_mode through Enabled and the NETWORK deny entry -AccessMode Local
+  // adds, `path` by the hash of the .pssc copy the endpoint keeps. Several
+  // settings can only be given at registration, so an endpoint that drifted
+  // is unregistered and registered again — which also resets any permission
+  // changed by hand with Set-PSSessionConfiguration -ShowSecurityDescriptorUI.
   resource "session_configuration" {
     description = "Ensure a WinRM session configuration (a remoting endpoint) is registered with the given settings, or unregistered"
     script = "resources/session_configuration.ws"
     concurrency = "global"
-    param "name" { description = "Session configuration name, e.g. RestrictedAdmin" type = "string" required = true }
+    param "name" { description = "Session configuration name, e.g. RestrictedAdmin; wildcard characters are rejected" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -102,14 +108,13 @@ package "windows_powershell" {
       symbol "present" { description = "Register the session configuration" }
       symbol "absent"  { description = "Unregister the session configuration" }
     }
-    param "path" { description = "Session configuration file (.pssc) the endpoint is built from; empty registers a plain endpoint" type = "string" default = "" }
+    param "path" { description = "Session configuration file (.pssc) the endpoint is built from, compared by content; empty registers a plain endpoint, and an endpoint built from a file is drift" type = "string" default = "" }
     param "session_type" {
-      description = "Type of session the endpoint creates (the -SessionType enum). A constrained RestrictedRemoteServer endpoint is described by a session configuration file instead — point `path` at a .pssc"
+      description = "Type of session the endpoint creates (the -SessionType enum, Windows PowerShell only). A constrained or empty endpoint is described by a session configuration file instead — point `path` at a .pssc"
       type = "symbol"
       default = :unmanaged
 
       symbol "default_remote_shell"  { description = "A full PowerShell session — the cmdlet's default" }
-      symbol "empty"                 { description = "An empty session, to be populated by the startup script" }
       symbol "workflow"              { description = "A workflow-hosting session" }
       symbol "unmanaged"             { description = "Leave the session type at the cmdlet default" }
     }
@@ -123,9 +128,19 @@ package "windows_powershell" {
       symbol "disabled"  { description = "Nobody — the endpoint exists but is disabled" }
       symbol "unmanaged" { description = "Leave the access mode alone" }
     }
-    param "startup_script" { description = "Script run when a session starts; empty leaves it unset" type = "string" default = "" }
+    param "startup_script" { description = "Script run when a session starts; empty means none, and an endpoint with one is drift" type = "string" default = "" }
     param "max_received_data_size_mb" { description = "MaximumReceivedDataSizePerCommandMB limit; -1 leaves it unmanaged" type = "int" default = -1 }
-    param "psversion" { description = "PSVersion the endpoint hosts, e.g. 5.1; empty leaves it at the default" type = "string" default = "" }
+    param "psversion" { description = "PSVersion the endpoint hosts, e.g. 5.1, compared by major.minor (Windows PowerShell only); empty leaves it at the default" type = "string" default = "" }
+    param "edition" {
+      description = "Which PowerShell registers and hosts the endpoint"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"               { description = "Windows PowerShell on Windows, pwsh elsewhere" }
+      symbol "pwsh"               { description = "PowerShell 7 — no session_type or psversion" }
+      symbol "pwsh_preview"       { description = "The PowerShell preview build" }
+      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -2484,16 +2499,20 @@ package "windows_powershell" {
   }
 
   test "pwsh7_session_configuration" {
-    description = "Session configuration registration and the machine execution policy converge under PowerShell 7"
+    description = "Session configuration registration and drift, remoting removal and the PowerShell 7 machine execution policy converge"
     template = "x86_64/windows-server-2025"
     group = "win2025ps7"
     memory = "4GiB"
+    // Two endpoints to converge away from: one registered for remote access
+    // that the step wants local-only, and one the :absent step removes.
+    setup = "powershell -NoProfile -NonInteractive -Command \"Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart | Out-Null; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart | Out-Null\""
+    verify = "tests/pwsh7_session_verify.ws"
 
     // Not :remote_signed — the PowerShell 7 MSI already leaves the machine
     // preference there, so that value would report already_configured and
     // prove nothing about the resource.
     step "machine_policy" {
-      description = "Set the machine execution policy preference for PowerShell 7"
+      description = "Set the machine execution policy preference for PowerShell 7, in $PSHOME/powershell.config.json"
       resource = "execution_policy"
       properties {
         policy = :all_signed
@@ -2509,14 +2528,45 @@ package "windows_powershell" {
         name = "cwtest.restricted"
         session_type = :default_remote_shell
         access_mode = :local
+        max_received_data_size_mb = 20
+        edition = :windows_powershell
       }
+    }
+
+    step "endpoint_drift" {
+      description = "An existing remote-access endpoint is re-registered local-only"
+      resource = "session_configuration"
+      properties {
+        name = "cwtest.drift"
+        access_mode = :local
+        edition = :windows_powershell
+      }
+    }
+
+    step "endpoint_absent" {
+      description = "Unregister the endpoint setup registered"
+      resource = "session_configuration"
+      properties { name = "cwtest.gone" ensure = :absent edition = :windows_powershell }
     }
 
     step "ghost_endpoint_absent" {
       description = "An endpoint that was never registered is already absent"
       resource = "session_configuration"
       expect = "already_configured"
-      properties { name = "cwtest.never" ensure = :absent }
+      properties { name = "cwtest.never" ensure = :absent edition = :windows_powershell }
+    }
+
+    // Windows Server ships with Windows PowerShell remoting enabled. This VM
+    // is throwaway, and the guest agent does not use WinRM.
+    step "remoting_absent" {
+      description = "Disable the Windows PowerShell remoting endpoint"
+      resource = "psremoting"
+      requires = ["endpoint", "endpoint_drift", "endpoint_absent", "ghost_endpoint_absent"]
+      properties {
+        ensure = :absent
+        edition = :windows_powershell
+        configuration_name = "microsoft.powershell"
+      }
     }
   }
 }
