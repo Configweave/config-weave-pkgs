@@ -1,6 +1,7 @@
 use value
 use fs
 use shell
+use path
 use json
 
 fn at(doc: Value, keys: List[string]) -> Value {
@@ -9,6 +10,24 @@ fn at(doc: Value, keys: List[string]) -> Value {
         if let Some(next) = cur.get(k) { cur = next } else { return Value::Null }
     }
     cur
+}
+
+// The values PowerShell's own configuration reader returns for a file.
+// Console.Out rather than Write-Output: the file replaces PSModulePath, so
+// Microsoft.PowerShell.Utility may not load.
+fn parsed_settings(file: string) -> Result[List[string], string] {
+    let dir = fs::temp_dir()?
+    let script = path::join(dir, "parse.ps1")
+    fs::write(script, "$ErrorActionPreference = 'Stop'\n$t = [psobject].Assembly.GetType('System.Management.Automation.Configuration.PowerShellConfig')\n$i = $t.GetField('Instance', [Reflection.BindingFlags]'Static,NonPublic').GetValue($null)\n$f = [Reflection.BindingFlags]'Instance,NonPublic'\n$ch = $t.GetMethod('GetLogChannels', $f).Invoke($i, $null)\n$kw = $t.GetMethod('GetLogKeywords', $f).Invoke($i, $null)\n$cht = $ch.GetType(); $kwt = $kw.GetType()\n[Console]::Out.WriteLine([string]$t.GetMethod('GetLogLevel', $f).Invoke($i, $null))\n[Console]::Out.WriteLine([string]([long]$ch -eq ([long][enum]::Parse($cht, 'Operational') -bor [long][enum]::Parse($cht, 'Analytic'))))\n[Console]::Out.WriteLine([string]([long]$kw -eq ([long][enum]::Parse($kwt, 'Runspace') -bor [long][enum]::Parse($kwt, 'Pipeline'))))\n[Console]::Out.WriteLine([string]$t.GetMethod('GetSysLogIdentity', $f).Invoke($i, $null))\n[Console]::Out.WriteLine([string]$t.GetMethod('GetExecutionPolicy', $f).Invoke($i, @([System.Management.Automation.Configuration.ConfigScope]::AllUsers, 'Microsoft.PowerShell')))\n")?
+    let out = shell::run("pwsh -NoProfile -NonInteractive -SettingsFile " + file + " -File " + script, Value::Null)
+    fs::delete_dir(dir)?
+    let result = out?
+    if !result.success { return Err("PowerShell could not read the configuration back: " + result.stderr.trim() + " " + result.stdout.trim()) }
+    let lines: List[string] = []
+    for line in result.stdout.split("\n") {
+        if line.trim() != "" { lines.push(line.trim()) }
+    }
+    Ok(lines)
 }
 
 fn verify(facts: Value) -> Result[bool, string] {
@@ -66,14 +85,21 @@ fn verify(facts: Value) -> Result[bool, string] {
     }
     if deny != ["PSScheduledJob", "BitsTransfer"] { return Ok(false) }
 
-    // log_setting
+    // log_setting writes the lists as the comma-separated strings PowerShell
+    // parses — a JSON array is not read at all.
     if at(doc, ["LogLevel"]).as_string().unwrap_or("") != "Informational" { return Ok(false) }
     if at(doc, ["LogIdentity"]).as_string().unwrap_or("") != "cwtest" { return Ok(false) }
-    let keywords: List[string] = []
-    if let Some(items) = at(doc, ["LogKeywords"]).as_list() {
-        for item in items { keywords.push(item.as_string().unwrap_or("")) }
-    }
-    if keywords != ["Runspace", "Pipeline"] { return Ok(false) }
+    let channels = at(doc, ["LogChannels"]).as_string().unwrap_or("")
+    if channels != "Operational, Analytic" { return Err("LogChannels is not the expected string: " + json::to_string(at(doc, ["LogChannels"]))) }
+    let keywords = at(doc, ["LogKeywords"]).as_string().unwrap_or("")
+    if keywords != "Runspace, Pipeline" { return Err("LogKeywords is not the expected string: " + json::to_string(at(doc, ["LogKeywords"]))) }
 
+    // And PowerShell itself reads every one of them back, through the same
+    // internal configuration reader it logs with. -SettingsFile points its
+    // all-users file at the scratch one.
+    let parsed = parsed_settings("/etc/cw/powershell.config.json")?
+    if parsed != ["Informational", "True", "True", "cwtest", "RemoteSigned"] {
+        return Err("PowerShell parsed the scratch configuration as " + parsed.join(" | ") + " (level, channels match, keywords match, identity, execution policy)")
+    }
     Ok(true)
 }

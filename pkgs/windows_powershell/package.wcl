@@ -301,7 +301,9 @@ package "windows_powershell" {
 
   // The non-Windows logging block of powershell.config.json — on Windows the
   // equivalent settings are the Group Policy keys the policy resources below
-  // manage instead.
+  // manage instead. PowerShell reads these four keys from the all-users
+  // $PSHOME file only, and reads LogChannels and LogKeywords as one string
+  // split on spaces, commas or pipes.
   resource "log_setting" {
     description = "Configure the Linux and macOS logging settings in powershell.config.json — LogLevel, LogChannels, LogKeywords and LogIdentity"
     script = "resources/log_setting.ws"
@@ -311,7 +313,7 @@ package "windows_powershell" {
       type = "symbol"
       default = :unmanaged
 
-      symbol "none"          { description = "Log nothing" }
+      symbol "none"          { description = "Only events logged unconditionally — written as LogAlways, since PowerShell has no None level and reads an unknown name as Informational" }
       symbol "critical"      { description = "Critical only" }
       symbol "error"         { description = "Error and above" }
       symbol "warning"       { description = "Warning and above" }
@@ -320,17 +322,16 @@ package "windows_powershell" {
       symbol "debug"         { description = "Everything, including debug" }
       symbol "unmanaged"     { description = "Leave the setting alone" }
     }
-    param "log_channels" { description = "LogChannels, from Operational and Analytic; an empty list leaves the key alone unless `manage_lists` is set" type = "list" }
-    param "log_keywords" { description = "LogKeywords, from Runspace, Pipeline, Protocol, Transport, Host, Cmdlet, Serializer, Session and ManagedPlugin" type = "list" }
+    param "log_channels" { description = "LogChannels, from Operational and Analytic, written as the comma-separated string PowerShell parses; an empty list leaves the key alone unless `manage_lists` is set" type = "list" }
+    param "log_keywords" { description = "LogKeywords, from Runspace, Pipeline, Protocol, Transport, Host, Cmdlet, Serializer, Session and ManagedPlugin, written as one comma-separated string" type = "list" }
     param "log_identity" { description = "LogIdentity written into each record; empty leaves the key alone" type = "string" default = "" }
-    param "manage_lists" { description = "Write the two lists even when they are empty, which is how a list is cleared" type = "bool" default = false }
+    param "manage_lists" { description = "Manage the two lists even when they are empty: an empty list removes the key, which restores PowerShell's default" type = "bool" default = false }
     param "scope" {
-      description = "Which configuration file is edited"
+      description = "Which configuration file is edited. PowerShell reads the logging settings only from the all-users file, so it is the only scope"
       type = "symbol"
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -1586,7 +1587,7 @@ package "windows_powershell" {
       requires = ["win_compat_block"]
       properties {
         log_level = :informational
-        log_channels = ["Operational"]
+        log_channels = ["Operational", "Analytic"]
         log_keywords = ["Runspace", "Pipeline"]
         log_identity = "cwtest"
         manage_lists = true
