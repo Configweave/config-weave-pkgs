@@ -43,22 +43,34 @@ fn git_opts(params: Value) -> Value {
     Value::Map(#{ "env": Value::Map(#{ "GIT_CONFIG_GLOBAL": Value::String(h + "/.gitconfig") }) })
 }
 
-fn git(params: Value, args: string) -> Result[CmdOutput, string] {
-    shell::run("git config " + scope_flag(params)? + " " + args, git_opts(params))
+// `flags` go before the key; `--` ends option parsing, so a key can never
+// be read as a switch. Values need no such guard: git config stops parsing
+// options at its first positional.
+fn git(params: Value, flags: string, key: string, rest: string) -> Result[CmdOutput, string] {
+    let cmd = "git config " + scope_flag(params)? + " " + flags + " -- " + q(key)
+    if rest != "" { return shell::run(cmd + " " + rest, git_opts(params)) }
+    shell::run(cmd, git_opts(params))
+}
+
+// A failed command's error: stderr, else stdout, always with the exit code.
+fn cmd_err(what: string, out: CmdOutput) -> string {
+    let text = if out.stderr.trim() != "" { out.stderr.trim() } else { out.stdout.trim() }
+    let head = what + " failed (exit " + str(out.code) + ")"
+    if text == "" { head } else { head + ": " + text }
 }
 
 // exit 0 = a value, 1 = the key is unset, anything else is a real failure.
 fn cfg_get(params: Value, key: string) -> Result[Option[string], string] {
-    let out = git(params, "--get " + q(key))?
+    let out = git(params, "--get", key, "")?
     if out.code == 0 { return Ok(Some(out.stdout.trim())) }
     if out.code == 1 { return Ok(None) }
-    Err("git config --get " + key + " failed: " + out.stderr.trim())
+    Err(cmd_err("git config --get " + key, out))
 }
 
 fn cfg_get_all(params: Value, key: string) -> Result[List[string], string] {
-    let out = git(params, "--get-all " + q(key))?
+    let out = git(params, "--get-all", key, "")?
     if out.code == 1 { return Ok([]) }
-    if out.code != 0 { return Err("git config --get-all " + key + " failed: " + out.stderr.trim()) }
+    if out.code != 0 { return Err(cmd_err("git config --get-all " + key, out)) }
     let vals: List[string] = []
     for line in out.stdout.split("\n") {
         if line.trim() != "" { vals.push(line.trim()) }
@@ -75,32 +87,32 @@ fn ensure_parent(params: Value) -> Result[unit, string] {
 
 fn cfg_set(params: Value, key: string, value: string) -> Result[unit, string] {
     ensure_parent(params)?
-    let out = git(params, "--replace-all " + q(key) + " " + q(value))?
+    let out = git(params, "--replace-all", key, q(value))?
     if out.success { return Ok(()) }
-    Err("git config --replace-all " + key + " failed: " + out.stderr.trim())
+    Err(cmd_err("git config --replace-all " + key, out))
 }
 
 fn cfg_add(params: Value, key: string, value: string) -> Result[unit, string] {
     ensure_parent(params)?
-    let out = git(params, "--add " + q(key) + " " + q(value))?
+    let out = git(params, "--add", key, q(value))?
     if out.success { return Ok(()) }
-    Err("git config --add " + key + " failed: " + out.stderr.trim())
+    Err(cmd_err("git config --add " + key, out))
 }
 
 // exit 5 = the key was already gone, which is the converged state.
 fn cfg_unset(params: Value, key: string) -> Result[unit, string] {
-    let out = git(params, "--unset-all " + q(key))?
+    let out = git(params, "--unset-all", key, "")?
     if out.success || out.code == 5 { return Ok(()) }
-    Err("git config --unset-all " + key + " failed: " + out.stderr.trim())
+    Err(cmd_err("git config --unset-all " + key, out))
 }
 
 // Drop one occurrence of a multi-valued key, matching the value literally
 // rather than as a regex. --fixed-value has to precede --unset: after it,
 // git counts it as a positional and rejects the argument count.
 fn cfg_unset_value(params: Value, key: string, value: string) -> Result[unit, string] {
-    let out = git(params, "--fixed-value --unset " + q(key) + " " + q(value))?
+    let out = git(params, "--fixed-value --unset", key, q(value))?
     if out.success || out.code == 5 { return Ok(()) }
-    Err("git config --unset " + key + " failed: " + out.stderr.trim())
+    Err(cmd_err("git config --unset " + key, out))
 }
 
 // Fold git's boolean spellings so a config holding "yes" does not churn
