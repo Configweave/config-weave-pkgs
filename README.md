@@ -70,6 +70,50 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 
+### `linux_systemd`, `linux_openrc`, `linux_runit` and `linux_sysvinit`
+
+One package per init system, each with a `service` resource of the same
+shape: `name`, `ensure`, a body (`unit`, `script` or `run`) that is written
+only when set, and `state` and `enabled`, both defaulting to `:unmanaged`.
+The four behave the same way where their init systems allow it:
+
+- `name` is a plain name. A `/`, whitespace, glob characters, or a leading
+  `.` or `-` is an error in both check and apply.
+- A missing exec bit on the script is drift and is restored with
+  `chmod a+x` (OpenRC, runit and SysV).
+- When the body changes and `state = :running`, a running service is
+  restarted. systemd, OpenRC and runit also detect a service still running
+  from an older file (the file is newer than the service's last start) and
+  restart it. SysV has no start time to compare against, so it restarts
+  only on the run that rewrote the script.
+- `ensure = :absent` stops the service first, removes every trace of its
+  enablement, and deletes the file. `state` and `enabled` are ignored.
+
+Differences:
+
+- `linux_systemd` needs systemd running as PID 1. Enablement is the unit
+  file state `systemctl is-enabled` prints. Static, indirect, masked and
+  transient units already satisfy `:disabled`. Enabling a static unit, or
+  disabling a generated or alias unit, is an error. `name` may end in
+  `.service`. `:absent` deletes only the `/etc/systemd/system` copy: a
+  vendor unit under `/usr/lib` is stopped and disabled but stays.
+  `unit_file` writes any unit type or drop-in (`foo.service.d/x.conf`),
+  takes `ensure`, and skips `daemon_reload` when systemd is not running.
+- `linux_openrc` reads `rc-service status` exit codes. A crashed service
+  (32) is zapped, then started for `:running` or left stopped for
+  `:stopped`. `enabled` manages one `runlevel` (default `default`).
+  `:absent` removes the service from every runlevel.
+- `linux_runit` links `sv_dir/<name>` into `service_dir`. A wrong link is
+  replaced, and a real directory at the link path is an error. `:stopped`
+  and `:running` also manage a `down` file, so the state holds across runsv
+  restarts and reboots. `:running` needs the service linked. On an unlinked
+  service, `:stopped` means the down file alone. `:absent` waits for runsv
+  to exit before it deletes the definition.
+- `linux_sysvinit` uses update-rc.d (Debian) or chkconfig (RHEL family).
+  `:disabled` turns start links into kill links. `:enabled` errors when the
+  script's LSB `Default-Start` is empty. `:absent` removes start and kill
+  links, even when the script is already gone.
+
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting
