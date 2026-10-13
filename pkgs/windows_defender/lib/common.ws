@@ -56,9 +56,11 @@ fn guard() -> string {
 
 // Run `script` after the guard. A failure is reported as its message alone,
 // without the source line PowerShell 5.1 prints after it.
+// Success exits 0 explicitly: the exit code would otherwise follow $? of
+// the last statement, which a deliberately caught not-found leaves false.
 fn ps(what: string, script: string) -> Result[string, string] {
     let full = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; " +
-        "try {{ " + guard() + script + " }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+        "try {{ " + guard() + script + "\nexit 0 }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
     let out = shell::powershell(full, Value::Null)?
     if !out.success { return Err(failure(what, out)) }
     Ok(out.stdout.trim())

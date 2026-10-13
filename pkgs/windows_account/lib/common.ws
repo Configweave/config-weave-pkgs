@@ -96,9 +96,12 @@ fn preamble() -> string {
 }
 
 // Report a failure as its message alone. PowerShell 5.1 would otherwise
-// print the offending source line and a position marker after it.
+// print the offending source line and a position marker after it. Success
+// exits 0 explicitly: the exit code would otherwise follow $? of the last
+// statement, which an exception caught on purpose (a not-found probe)
+// leaves false.
 fn wrap(script: string) -> string {
-    "try {{ " + script + " }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+    "try {{ " + script + "\nexit 0 }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
 }
 
 // Run `script`, passing `secrets` as environment variables. A password is
