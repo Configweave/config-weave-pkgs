@@ -380,9 +380,9 @@ fn create(params: Value, su: string) -> Result[unit, string] {
     // Automatic and then leaves it alone. Delayed start is set afterwards.
     let create_type = ps_startup_type(if su == "unmanaged" { "automatic" } else { su })
     let script = "$p = @{{ Name = $env:CW_NAME; BinaryPathName = $env:CW_BINPATH; StartupType = '" + create_type + "' }}\n" +
-        "if ($env:CW_DISPLAY -ne '') {{ $p.DisplayName = $env:CW_DISPLAY }}\n" +
-        "if ($env:CW_DESC -ne '') {{ $p.Description = $env:CW_DESC }}\n" +
-        "if ($env:CW_USER -ne '') {{\n" +
+        "if ([string]$env:CW_DISPLAY -ne '') {{ $p.DisplayName = $env:CW_DISPLAY }}\n" +
+        "if ([string]$env:CW_DESC -ne '') {{ $p.Description = $env:CW_DESC }}\n" +
+        "if ([string]$env:CW_USER -ne '') {{\n" +
         // Built-in accounts have no password; PSCredential still needs a
         // (then empty) SecureString.
         "  $sec = if ([string]$env:CW_SECRET -ne '') {{ ConvertTo-SecureString $env:CW_SECRET -AsPlainText -Force }} else {{ New-Object System.Security.SecureString }}\n" +
