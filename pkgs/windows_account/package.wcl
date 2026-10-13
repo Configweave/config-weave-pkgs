@@ -292,4 +292,14 @@ package "windows_account" {
       properties { name = "weave-rm-grp" ensure = :absent }
     }
   }
+
+  // The AD resources against a real directory: one server promoted to a
+  // DC by plain PowerShell. Users, groups and memberships converge, have
+  // drift seeded behind their backs (password, display name, enabled, OU,
+  // a Global-to-DomainLocal scope change), converge again, and are removed.
+  scenario "ad_accounts" {
+    description = "ad_user, ad_group and ad_group_member converge, reconcile and remove against a real DC"
+    lab = "tests/ad-lab"
+    script = "tests/ad_accounts.ws"
+  }
 }
