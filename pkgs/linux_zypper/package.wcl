@@ -1,24 +1,26 @@
 package "linux_zypper" {
-  description = "Manage packages on zypper/SUSE systems"
+  description = "Manage packages, repositories, signing keys and locks on zypper/SUSE systems"
 
   resource "package" {
-    description = "Ensure an rpm package is installed or absent via zypper"
+    description = "Ensure an rpm package is installed, at a given version if one is set, or absent, through zypper. name is resolved the way zypper install resolves it, against what installed packages provide, so a capability or a file path works too. Licenses are accepted automatically. zypper exit codes 100-103 count as success, and 102 (reboot needed) is reported as RebootRequired; 107 (a package scriptlet failed) is an error. A lock (linux_zypper.lock) makes zypper refuse to change the package; release it first. zypper waits up to five minutes for another zypp process's lock"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "Package name, capability or file path; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "absent"  { description = "Remove every installed package that provides name, without loading repository metadata. zypper remove also removes every package that depends on it, so this is refused when anything does, unless remove_dependents is true" }
     }
-    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+    param "version" { description = "Exact version to install when present: VERSION (any release), VERSION-RELEASE or EPOCH:VERSION-RELEASE; matched against every installed instance. Use it with a package name. A version below the installed one is installed as a downgrade (--oldpackage). This installs a version once; it does not stop later upgrades, which is what linux_zypper.lock is for. Empty means any version" type = "string" default = "" }
+    param "remove_dependents" { description = "When :absent, let zypper remove every installed package that depends on this one as well. false checks with rpm -e --test first and fails, naming them, if anything depends on it" type = "bool" default = false }
+    param "gpg_auto_import_keys" { description = "Pass --gpg-auto-import-keys, trusting any new repository signing key zypper meets. This weakens the trust chain; prefer importing keys with linux_zypper.gpg_key" type = "bool" default = false }
   }
 
   resource "cache_updated" {
-    description = "Run zypper refresh when the index is older than max_age"
+    description = "Run zypper refresh when the last refresh this resource made is older than max_age, or when /etc/zypp/repos.d changed since. A repository that fails to refresh is an error, so a partial refresh is never recorded as fresh. The refresh time is the mtime of /var/lib/config-weave/zypper-cache-updated"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
@@ -26,24 +28,362 @@ package "linux_zypper" {
       type = "duration"
       default = 24h
     }
+    param "gpg_auto_import_keys" { description = "Pass --gpg-auto-import-keys, trusting any new repository signing key. This weakens the trust chain; prefer linux_zypper.gpg_key" type = "bool" default = false }
   }
 
-  // Check-only test: installing/refreshing needs the network, so the
-  // existence probe on a base package is the honest offline test.
-  // No real-install test: a first `zypper install` in the Leap container
-  // spends over two minutes refreshing repository metadata before it does
-  // any work, which is too slow and too network-dependent to be worth a
-  // convergence test. The check paths below cover the resource's logic; the
-  // apply path is the same `zypper install` every other manager wraps.
+  resource "repository" {
+    description = "Ensure a zypper repository is defined with exactly these settings, or removed. Settings are read from the repository's section in /etc/zypp/repos.d and reconciled with zypper modifyrepo; a changed url, which modifyrepo cannot change, removes and adds the repository again. The URL is not probed when the repository is added"
+    script = "resources/repository.ws"
+    concurrency = "exclusive"
+    param "alias" { description = "Repository alias, its identity: letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the repository, or bring its settings in line" }
+      symbol "absent"  { description = "Remove the repository (zypper removerepo)" }
+    }
+    param "url" { description = "Repository URL, such as https://download.opensuse.org/repositories/X/15.6/ or dir:/srv/repo (required when present)" type = "string" default = "" }
+    param "name" { description = "Display name; empty means the alias" type = "string" default = "" }
+    param "enabled" { description = "Whether the repository is enabled" type = "bool" default = true }
+    param "autorefresh" { description = "Whether zypper refreshes its metadata automatically" type = "bool" default = true }
+    param "gpgcheck" { description = "Whether zypper checks signatures for this repository" type = "bool" default = true }
+  }
+
+  resource "gpg_key" {
+    description = "Ensure an RPM signing key is imported into the rpm database, with its armored copy at /etc/pki/rpm-gpg/<name>.asc, or that both are gone. Present checks the rpm database as well as the file, so a key removed with rpm -e is imported again. A url is downloaded once, and its stored copy stands for it afterwards: a key changed at the url is not noticed until the file is deleted"
+    script = "resources/gpg_key.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Key file basename under /etc/pki/rpm-gpg; .asc is appended. Letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Import the key and keep its file" }
+      symbol "absent"  { description = "Remove the key from the rpm database and delete the file. The keys removed are those in content when it is given, else those in the existing file" }
+    }
+    param "content" { description = "ASCII-armored GPG public key. When present, set exactly one of content and url" type = "string" default = "" }
+    param "url" { description = "http:// or https:// URL to fetch the armored key from, once" type = "string" default = "" }
+  }
+
+  resource "lock" {
+    description = "Ensure a zypper package lock (zypper addlock) is present or absent. A lock stops zypper installing, upgrading or removing the package, linux_zypper.package included. The name is matched exactly against the package locks zypper locks lists"
+    script = "resources/lock.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Package name to lock; must not start with '-'" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Lock the package" }
+      symbol "absent"  { description = "Remove the lock" }
+    }
+  }
+
+  // Every test runs offline. Installing needs repository metadata, and a
+  // first refresh of the Leap repositories takes minutes, so the install
+  // path is not tested; removal, checks, a local plaindir repository and
+  // the other resources need no network.
   test "zypper_existing_package" {
     description = "zypper/rpm installed package checks work in openSUSE"
     image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
 
     step "filesystem-installed" {
       description = "filesystem is installed in openSUSE"
       resource = "package"
       expect = "already_configured"
       properties { name = "filesystem" }
+    }
+  }
+
+  // gpg-pubkey is installed once per imported key, with the key id as its
+  // version, so two imported test keys give a multi-instance package whose
+  // versions are fixed.
+  test "package_checks" {
+    description = "package matches VERSION and VERSION-RELEASE pins on every instance, and capabilities and paths"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = <<'SETUP'
+cat > /tmp/cw-key1.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+cat > /tmp/cw-key2.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG
+FK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh
+dmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0
+AhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU
+w2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO
+Y0X6rHp4dyxEoO/QAw==
+=n4ju
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+rpm --import /tmp/cw-key1.asc /tmp/cw-key2.asc
+SETUP
+
+    step "pin_version" {
+      description = "VERSION pin on a multi-instance package"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "gpg-pubkey" version = "9f64a8a0" }
+    }
+
+    step "pin_version_release" {
+      description = "VERSION-RELEASE pin on a multi-instance package"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "gpg-pubkey" version = "65aa662b-6acdeb34" }
+    }
+
+    step "path" {
+      description = "A file path resolves to the package that owns it"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "/usr/bin/bash" }
+    }
+
+    step "capability_absent" {
+      description = "Nothing provides an unknown capability"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-capability(x)" ensure = :absent }
+    }
+  }
+
+  test "package_removes" {
+    description = "package removes a package offline and refuses to take dependents with it"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    verify = "tests/zypper_remove_verify.ws"
+
+    step "remove" {
+      description = "Remove the preinstalled timezone package"
+      resource = "package"
+      properties { name = "timezone" ensure = :absent }
+    }
+
+    step "guarded" {
+      description = "aaa_base needs ncurses-utils' tput, so removing it is refused"
+      resource = "package"
+      expect = "error"
+      properties { name = "ncurses-utils" ensure = :absent }
+    }
+
+    step "option_name" {
+      description = "A name zypper would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--version" }
+    }
+  }
+
+  // A local plaindir repository stands in for the network ones, which
+  // setup disables.
+  test "cache_updated_refreshes" {
+    description = "cache_updated refreshes when no refresh has been recorded"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /srv/cw-plain && zypper -q mr --all --disable >/dev/null && zypper -q rr cw-broken >/dev/null 2>&1; zypper lr cw-plain >/dev/null 2>&1 || zypper -q ar --no-check -t plaindir dir:/srv/cw-plain cw-plain; zypper -q mr --enable cw-plain && rm -f /var/lib/config-weave/zypper-cache-updated && rm -rf /var/cache/zypp/raw/cw-plain"
+    verify = "tests/zypper_cache_verify.ws"
+
+    step "refresh" {
+      description = "Refresh the repositories"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated refreshes when a repository changed after a recent refresh"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /srv/cw-plain && zypper -q mr --all --disable >/dev/null && zypper -q rr cw-broken >/dev/null 2>&1; zypper lr cw-plain >/dev/null 2>&1 || zypper -q ar --no-check -t plaindir dir:/srv/cw-plain cw-plain; zypper -q mr --enable cw-plain && mkdir -p /var/lib/config-weave && touch -d '-1 hour' /var/lib/config-weave/zypper-cache-updated && touch /etc/zypp/repos.d/cw-plain.repo && rm -rf /var/cache/zypp/raw/cw-plain"
+    verify = "tests/zypper_cache_verify.ws"
+
+    step "refresh" {
+      description = "A .repo file newer than the stamp forces a refresh inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_broken_repo" {
+    description = "A repository that fails to refresh is an error, not a fresh cache"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /srv/cw-plain && zypper -q mr --all --disable >/dev/null && zypper -q rr cw-broken >/dev/null 2>&1; zypper lr cw-plain >/dev/null 2>&1 || zypper -q ar --no-check -t plaindir dir:/srv/cw-plain cw-plain; zypper -q mr --enable cw-plain && zypper -q ar --no-check -t plaindir dir:/srv/cw-nonexistent cw-broken && rm -f /var/lib/config-weave/zypper-cache-updated"
+    verify = "tests/zypper_cache_broken_verify.ws"
+
+    step "refresh" {
+      description = "Refresh with one broken repository"
+      resource = "cache_updated"
+      expect = "error"
+    }
+  }
+
+  // Setup removes what the steps create and seeds the drift, the moved
+  // repository and the one to remove.
+  test "repositories_converge" {
+    description = "repository adds, reconciles settings, re-adds a moved URL and removes"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /srv/cw-plain /srv/cw-old && for r in cw-broken cw-new cw-drift cw-moved cw-gone; do zypper -q rr $r >/dev/null 2>&1; done; zypper -q ar --no-check --disable --no-gpgcheck -n Drifted dir:/srv/cw-plain cw-drift && zypper -q ar --no-check dir:/srv/cw-old cw-moved && zypper -q ar --no-check dir:/srv/cw-plain cw-gone"
+    verify = "tests/zypper_repository_verify.ws"
+
+    step "add" {
+      description = "Add a repository"
+      resource = "repository"
+      properties { alias = "cw-new" url = "dir:/srv/cw-plain" name = "CW New" }
+    }
+
+    step "drift" {
+      description = "Name, enabled, autorefresh and gpgcheck are brought back in line"
+      resource = "repository"
+      properties { alias = "cw-drift" url = "dir:/srv/cw-plain" name = "CW Drift" }
+    }
+
+    step "moved" {
+      description = "A changed URL re-adds the repository"
+      resource = "repository"
+      properties { alias = "cw-moved" url = "dir:/srv/cw-plain" enabled = false autorefresh = false gpgcheck = false }
+    }
+
+    step "remove" {
+      description = "Remove a repository"
+      resource = "repository"
+      properties { alias = "cw-gone" ensure = :absent }
+    }
+
+    step "traversal" {
+      description = "An alias that is not a plain name is rejected"
+      resource = "repository"
+      expect = "error"
+      properties { alias = "../cw-evil" url = "dir:/srv/cw-plain" }
+    }
+  }
+
+  // Real rpm --import of generated test keys. Setup leaves cw-reimport's
+  // file in place but its key out of the rpm database, and imports
+  // cw-gone's key with its file.
+  test "gpg_keys_converge" {
+    description = "gpg_key imports keys, re-imports a key missing from the rpm database and removes keys"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = <<'SETUP'
+mkdir -p /etc/pki/rpm-gpg
+cat > /etc/pki/rpm-gpg/cw-reimport.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+cat > /etc/pki/rpm-gpg/cw-gone.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG
+FK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh
+dmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0
+AhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU
+w2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO
+Y0X6rHp4dyxEoO/QAw==
+=n4ju
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+rpm -q gpg-pubkey-65aa662b-6acdeb34 >/dev/null 2>&1 && rpm -e --allmatches gpg-pubkey-65aa662b-6acdeb34
+rpm --import /etc/pki/rpm-gpg/cw-gone.asc
+rm -f /etc/pki/rpm-gpg/cw-bad.asc /etc/pki/rpm-gpg/.cw-bad.asc.cw-tmp
+echo stale-key > /etc/pki/rpm-gpg/cw-stale.asc
+SETUP
+    verify = "tests/zypper_gpg_verify.ws"
+
+    step "reimport" {
+      description = "A key whose file is current but which is missing from the rpm database is imported"
+      resource = "gpg_key"
+      properties {
+        name = "cw-reimport"
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd\nzWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu\naW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD\nBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7\nHNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F\newM6ysPM6bWFBw==\n=9OGa\n-----END PGP PUBLIC KEY BLOCK-----\n"
+      }
+    }
+
+    step "remove" {
+      description = "Remove an imported key and its file"
+      resource = "gpg_key"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "rm_stale" {
+      description = "Remove a seeded key file that holds no key"
+      resource = "gpg_key"
+      properties { name = "cw-stale" ensure = :absent }
+    }
+
+    step "invalid" {
+      description = "Content that is not a key is an error and writes nothing"
+      resource = "gpg_key"
+      expect = "error"
+      properties { name = "cw-bad" content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nnot a key\n-----END PGP PUBLIC KEY BLOCK-----\n" }
+    }
+
+    step "both_sources" {
+      description = "content and url together are rejected"
+      resource = "gpg_key"
+      expect = "error"
+      properties { name = "cw-both" content = "x" url = "https://example.invalid/key.asc" }
+    }
+  }
+
+  // A lock on cw-lock-newer must not read as a lock on cw-lock-new.
+  test "locks_converge" {
+    description = "lock adds and removes package locks, matching names exactly"
+    image = "opensuse/leap:15.6"
+    group = "leap"
+    memory = "2GiB"
+    setup = "zypper -q removelock cw-lock-new >/dev/null 2>&1; zypper -q addlock cw-lock-newer cw-lock-gone >/dev/null"
+    verify = "tests/zypper_lock_verify.ws"
+
+    step "lock" {
+      description = "Lock a package whose name is a prefix of a locked one"
+      resource = "lock"
+      properties { name = "cw-lock-new" }
+    }
+
+    step "unlock" {
+      description = "Remove the lock setup placed"
+      resource = "lock"
+      properties { name = "cw-lock-gone" ensure = :absent }
+    }
+
+    step "option_name" {
+      description = "A name zypper would read as an option is rejected"
+      resource = "lock"
+      expect = "error"
+      properties { name = "--help" }
     }
   }
 }
