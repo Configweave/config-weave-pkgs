@@ -54,10 +54,10 @@ package "linux_apt" {
   }
 
   resource "signing_key" {
-    description = "Ensure an apt signing key under /etc/apt/keyrings exists or is absent"
+    description = "Ensure an apt signing key under /etc/apt/keyrings exists or is absent. The ASCII-armored key is written to <name>.asc, which apt reads directly through signed-by (apt 1.4+). With dearmor = true a binary <name>.gpg keyring is also kept in step with it, for older apt or tools that need one; that needs gpg installed"
     script = "resources/signing_key.ws"
     concurrency = "exclusive"
-    param "name" { description = "Keyring basename" type = "string" required = true }
+    param "name" { description = "Keyring basename: letters, digits, '_', '-' and '.', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent (removes both .asc and .gpg)"
       type = "symbol"
@@ -67,7 +67,7 @@ package "linux_apt" {
       symbol "absent"  { description = "Remove the key, both .asc and .gpg" }
     }
     param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
-    param "dearmor" { description = "Also produce a binary .gpg keyring via gpg --dearmor" type = "bool" default = true }
+    param "dearmor" { description = "Also keep a binary <name>.gpg keyring, made with gpg --dearmor and checked against the .asc on every run. Needs gpg (the gpg package), which minimal images lack. false leaves any existing .gpg alone" type = "bool" default = false }
   }
 
   resource "hold" {
@@ -266,27 +266,67 @@ SETUP
     }
   }
 
-  test "repositories_and_keys_converge" {
-    description = "signing_key add and remove converge"
+  // A real key, so gpg --dearmor has something to decode. Setup installs
+  // gpg over the container's NAT and seeds a stale .gpg beside a current
+  // .asc: only the dearmored keyring has drifted.
+  test "signing_keys_converge" {
+    description = "signing_key writes armored keys, keeps a dearmored keyring current and removes both"
     image = "debian:12"
     group = "debian"
-    setup = "mkdir -p /etc/apt/keyrings && echo stale-key > /etc/apt/keyrings/cw-stale.asc"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+command -v gpg >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gpg >/dev/null; }
+mkdir -p /etc/apt/keyrings
+rm -f /etc/apt/keyrings/cw-plain.gpg
+echo stale-key > /etc/apt/keyrings/cw-stale.asc
+echo stale-keyring > /etc/apt/keyrings/cw-stale.gpg
+cat > /etc/apt/keyrings/cw-dearmor.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+echo stale-keyring > /etc/apt/keyrings/cw-dearmor.gpg
+SETUP
     verify = "tests/apt_key_verify.ws"
 
     step "key" {
-      description = "Install an apt signing key (armored, no dearmor)"
+      description = "Install an armored key; dearmor defaults to false"
       resource = "signing_key"
       properties {
-        name = "cw-test"
-        dearmor = false
-        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        name = "cw-plain"
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG\nFK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh\ndmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0\nAhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU\nw2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO\nY0X6rHp4dyxEoO/QAw==\n=n4ju\n-----END PGP PUBLIC KEY BLOCK-----\n"
+      }
+    }
+
+    step "dearmor" {
+      description = "A .gpg keyring that does not match the .asc is rebuilt"
+      resource = "signing_key"
+      properties {
+        name = "cw-dearmor"
+        dearmor = true
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd\nzWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu\naW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD\nBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7\nHNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F\newM6ysPM6bWFBw==\n=9OGa\n-----END PGP PUBLIC KEY BLOCK-----\n"
       }
     }
 
     step "rm_key" {
-      description = "Remove the seeded stale key"
+      description = "Remove the seeded stale key, .asc and .gpg"
       resource = "signing_key"
       properties { name = "cw-stale" ensure = :absent }
+    }
+
+    step "traversal" {
+      description = "A name that leaves /etc/apt/keyrings is rejected"
+      resource = "signing_key"
+      expect = "error"
+      properties { name = "../trusted.gpg.d/cw-evil" content = "x" }
     }
   }
 
