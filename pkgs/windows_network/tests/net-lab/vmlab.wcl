@@ -6,6 +6,10 @@ import <vmlab.wcl>
 
 lab "cw-windows-network" {
 
+  // A guest agent refresh that fails leaves the agent unable to answer the
+  // first exec; keep the agent the template sealed.
+  agent_update = false
+
   segment "lan" {
     subnet = "10.74.0.0/24"
     nat = true

@@ -10,6 +10,10 @@ import <vmlab.wcl>
 
 lab "cw-windows-domain" {
 
+  // A guest agent refresh that fails leaves the agent unable to answer the
+  // first exec; keep the agent the template sealed.
+  agent_update = false
+
   segment "corp" {
     subnet = "10.50.0.0/24"
     nat = true
