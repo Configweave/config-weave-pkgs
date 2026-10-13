@@ -3,19 +3,7 @@ use fs
 use path
 use shell
 use time
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
-}
-
-fn dnf_bin() -> Result[string, string] {
-    if fs::exists("/usr/bin/dnf5") { return Ok("dnf5") }
-    if fs::exists("/usr/bin/dnf") { return Ok("dnf") }
-    if fs::exists("/usr/bin/microdnf") { return Ok("microdnf") }
-    if fs::exists("/usr/bin/yum") { return Ok("yum") }
-    Err("no dnf-family package manager found (dnf5, dnf, microdnf or yum)")
-}
+use common
 
 // The stamp file's mtime records the last refresh this resource performed.
 // It is per manager: one machine may run more than one, and a refresh of
@@ -24,7 +12,7 @@ fn stamp_path() -> string { "/var/lib/config-weave/dnf-cache-updated" }
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
-    param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
+    common::param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
 }
 
 fn last_refresh() -> Result[int, string] {
@@ -46,7 +34,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let bin = dnf_bin()?
+    let bin = common::dnf_bin()?
     // microdnf has no -y for makecache
     let cmd = if bin == "microdnf" { "microdnf makecache" } else { bin + " makecache -y" }
     let out = shell::bash(cmd, Value::Null)?
