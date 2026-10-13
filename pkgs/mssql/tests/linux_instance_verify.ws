@@ -26,7 +26,6 @@ fn verify(facts: Value) -> Result[bool, string] {
 fn assertions() -> Result[unit, string] {
     expect("collation", q1("SELECT CAST(SERVERPROPERTY('Collation') AS nvarchar(128));")?, "Latin1_General_CI_AS")?
     expect("major version", q1("SELECT CAST(SERVERPROPERTY('ProductMajorVersion') AS nvarchar(8));")?, "17")?
-    expect("cw_vm_login", q1("SELECT CAST(COUNT(*) AS varchar(4)) FROM sys.sql_logins WHERE name = N'cw_vm_login';")?, "1")?
     let svc = shell::bash("systemctl is-enabled mssql-server", Value::Null)?
     expect("mssql-server enabled", svc.stdout.trim(), "enabled")?
     Ok(())

@@ -826,8 +826,10 @@ SETUP
   // The Linux install path on a real VM: the repository is derived from
   // /etc/os-release (Ubuntu 24.04 has SQL Server 2025 but no 2022), the
   // collation is set by mssql-conf setup, and sqlcmd comes with the instance.
+  // No T-SQL step follows it: in the check-only run neither sqlcmd nor the
+  // engine exists yet, so such a step could not report not_configured.
   test "linux_instance" {
-    description = "Install SQL Server 2025 and mssql-tools18 on Ubuntu 24.04, then create a login through the installed sqlcmd"
+    description = "Install SQL Server 2025 and mssql-tools18 on Ubuntu 24.04; verify queries the engine through the installed sqlcmd"
     template = "x86_64/ubuntu-24.04"
     memory = "6GiB"
     verify = "tests/linux_instance_verify.ws"
@@ -836,13 +838,6 @@ SETUP
       description = "Install and set up the engine with a non-default collation"
       resource = "instance"
       properties { version = "2025" sa_password = "Str0ng!Passw0rd" collation = "Latin1_General_CI_AS" }
-    }
-
-    step "login" {
-      description = "A T-SQL resource works against the new engine"
-      resource = "login"
-      requires = ["instance"]
-      properties { name = "cw_vm_login" auth = :sql password = "Vm!Passw0rd123" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
   }
 
