@@ -116,6 +116,18 @@ fn ps_hash(rows: List[List[string]]) -> string {
     "@{{" + parts.join("; ") + "}}"
 }
 
+// The -AtElement form of key rows: strings escaped, since -AtElement
+// matches them as wildcard patterns.
+fn at_hash(rows: List[List[string]]) -> string {
+    let parts: List[string] = []
+    for r in rows {
+        let kind = r.get(1).unwrap_or("")
+        let lit = if kind == "str" || kind == "sym" { common::ps_at(r.get(2).unwrap_or("")) } else { ps_literal(kind, r.get(2).unwrap_or("")) }
+        parts.push(r.get(0).unwrap_or("") + "=" + lit)
+    }
+    "@{{" + parts.join("; ") + "}}"
+}
+
 // The collection's own filter: the section itself when the section IS the
 // collection, as system.webServer/handlers is, otherwise the named child.
 fn coll_filter(spec: CollectionSpec) -> string {
@@ -241,7 +253,7 @@ fn apply(params: Value, spec: CollectionSpec) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing element from " + coll_filter(spec))
         common::ps_run("Remove-WebConfigurationProperty" + spec.scope + " -Filter " + filter +
-            " -Name '.' -AtElement " + ps_hash(live_keys(params, spec, json::parse(st)?)))?
+            " -Name '.' -AtElement " + at_hash(live_keys(params, spec, json::parse(st)?)))?
         return Ok(ApplyResult::Success)
     }
     if st == "ABSENT" {

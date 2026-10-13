@@ -183,8 +183,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         }
         log::info("removing " + proto + " binding " + live)
         common::ps_run("Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            filter + " -Name '.' -AtElement @{{protocol=" + common::ps_q(proto) +
-            "; bindingInformation=" + common::ps_q(live) + "}}")?
+            filter + " -Name '.' -AtElement @{{protocol=" + common::ps_at(proto) +
+            "; bindingInformation=" + common::ps_at(live) + "}}")?
         return Ok(ApplyResult::Success)
     }
     let flags = ssl_flags(params)?

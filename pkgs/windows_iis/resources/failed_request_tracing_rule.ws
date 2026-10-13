@@ -152,7 +152,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing failed request tracing rule for " + path)
         common::ps_run("Remove-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
-            " -Name '.' -AtElement @{{path=" + common::ps_q(common::get_str(json::parse(st)?, "path")) + "}}")?
+            " -Name '.' -AtElement @{{path=" + common::ps_at(common::get_str(json::parse(st)?, "path")) + "}}")?
         return Ok(ApplyResult::Success)
     }
     if converged(params, st)? { return Ok(ApplyResult::Success) }

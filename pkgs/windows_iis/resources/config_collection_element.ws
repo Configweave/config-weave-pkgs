@@ -108,7 +108,8 @@ fn probe(params: Value) -> Result[string, string] {
 // in case is the same element to IIS, but an XPath predicate or -AtElement
 // spelled the step's way would miss it. -AtElement matches an enum key only
 // by its ordinal — given the name it warns "Property . is not found" and
-// removes nothing — so an enum key's literal is the raw number.
+// removes nothing — so an enum key's literal is the raw number, and it
+// matches strings as wildcard patterns, so a string key is escaped.
 fn live_keys(params: Value, have: Value) -> Result[List[List[string]], string] {
     let out: List[List[string]] = []
     for p in key_pairs(params)? {
@@ -116,7 +117,7 @@ fn live_keys(params: Value, have: Value) -> Result[List[List[string]], string] {
         let v = common::get_str(have, "__key_" + a)
         let lit = p.get(1).unwrap_or("")
         if common::get_str(have, "__kind_" + a) != "" { lit = common::get_str(have, "__raw_" + a) }
-        else if lit.starts_with("'") { lit = common::ps_q(v) }
+        else if lit.starts_with("'") { lit = common::ps_at(v) }
         out.push([a, lit, v])
     }
     Ok(out)

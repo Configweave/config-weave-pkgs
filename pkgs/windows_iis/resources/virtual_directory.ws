@@ -124,7 +124,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         log::info("removing virtual directory " + path)
         common::ps_run("Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
             filter + " -Name '.' -AtElement @{{path=" +
-            common::ps_q(common::get_str(json::parse(st)?, "path")) + "}}")?
+            common::ps_at(common::get_str(json::parse(st)?, "path")) + "}}")?
         return Ok(ApplyResult::Success)
     }
     let physical = common::param_str(params, "physical_path", "")

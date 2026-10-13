@@ -212,6 +212,13 @@ fn set_prop(scope: string, qfilter: string, attr: string, lit: string, have: str
     set + lit + "; "
 }
 
+// A string for -AtElement, which matches its values as wildcard patterns:
+// removing the header "X-*" by name would otherwise remove every header
+// starting X-, and the binding "*:443:" every binding on port 443.
+fn ps_at(s: string) -> string {
+    "([Management.Automation.WildcardPattern]::Escape(" + ps_q(s) + "))"
+}
+
 fn secret_env(value: string) -> Value {
     Value::Map(#{ "CW_SECRET": Value::String(value) })
 }

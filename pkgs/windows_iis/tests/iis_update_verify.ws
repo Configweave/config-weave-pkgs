@@ -24,7 +24,8 @@ fn config_checks() -> Result[List[string], string] {
         "$ErrorActionPreference='Stop'; Import-Module WebAdministration; " +
         "function T($ok, $what) {{ if ($ok) {{ 'ok ' + $what }} else {{ 'FAIL ' + $what }} }}; " +
         "$rules = @((Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Location 'weave-site' -Filter 'system.webServer/rewrite/rules').Collection); " +
-        "T ($rules.Count -gt 0 -and [string]$rules[0].name -eq 'weave-rewrite') 'weave-rewrite is still the first rule'; " +
+        "$before = (Get-Content -Raw C:\\weave-iis\\rule-order.txt).Trim(); $after = (@($rules | ForEach-Object {{ [string]$_.name }}) -join ','); " +
+        "T ($before -eq $after) ('the rewrite rules kept their order (' + $before + ' -> ' + $after + ')'); " +
         "$ips = @((Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Location 'weave-site/secure' -Filter 'system.webServer/security/ipSecurity').Collection | " +
         "Where-Object {{ [string]$_.ipAddress -eq '127.0.0.1' }}); " +
         "T ($ips.Count -eq 2) 'both 127.0.0.1 entries exist'; " +

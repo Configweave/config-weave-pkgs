@@ -124,7 +124,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if !exists(params)? { return Ok(ApplyResult::Success) }
         log::info("removing application " + path)
         common::ps_run("Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            common::ps_q(site_filter(params)?) + " -Name '.' -AtElement @{{path=" + common::ps_q(path) + "}}")?
+            common::ps_q(site_filter(params)?) + " -Name '.' -AtElement @{{path=" + common::ps_at(path) + "}}")?
         return Ok(ApplyResult::Success)
     }
     let physical = common::param_str(params, "physical_path", "")

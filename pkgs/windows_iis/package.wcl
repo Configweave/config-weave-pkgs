@@ -3821,11 +3821,12 @@ package "windows_iis" {
     // than && so a directory left by an earlier run does not stop the rest.
     // The PowerShell part seeds the drift the steps below must find: a
     // stale password for the user the vdir step names, and a self-signed
-    // certificate two days from expiry bound to an SNI binding.
+    // certificate two days from expiry bound to an SNI binding. It also
+    // records the rewrite rule order, which verify compares afterwards.
     // The CCS account's password must not contain its own name or a part
     // of it ("weave", "ccs"), or net user rejects it under the default
     // complexity policy.
-    setup = "mkdir C:\\weave-iis\\tls & mkdir C:\\weave-iis\\ccs & echo weave-tls-ok>C:\\weave-iis\\tls\\index.html & net user weave-ccs Lattice-91x! /add & powershell -NoProfile -Command Import-Module WebAdministration; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name userName -Value weave-unc; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name password -Value stale-pass; $c = New-SelfSignedCertificate -DnsName weave-renew.local -CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddDays(2); New-WebBinding -Name weave-site -Protocol https -Port 8444 -HostHeader weave-renew.local -SslFlags 1; (Get-WebBinding -Name weave-site -Port 8444).AddSslCertificate($c.Thumbprint, 'My')"
+    setup = "mkdir C:\\weave-iis\\tls & mkdir C:\\weave-iis\\ccs & echo weave-tls-ok>C:\\weave-iis\\tls\\index.html & net user weave-ccs Lattice-91x! /add & powershell -NoProfile -Command Import-Module WebAdministration; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name userName -Value weave-unc; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name password -Value stale-pass; $c = New-SelfSignedCertificate -DnsName weave-renew.local -CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddDays(2); New-WebBinding -Name weave-site -Protocol https -Port 8444 -HostHeader weave-renew.local -SslFlags 1; (Get-WebBinding -Name weave-site -Port 8444).AddSslCertificate($c.Thumbprint, 'My'); $n = @((Get-WebConfiguration -PSPath MACHINE/WEBROOT/APPHOST -Location weave-site -Filter system.webServer/rewrite/rules).Collection).name -join ','; Set-Content -Path C:\\weave-iis\\rule-order.txt -Value $n"
     verify = "tests/iis_update_verify.ws"
 
     // The username already matches what setup wrote; only the password is
@@ -3912,7 +3913,7 @@ package "windows_iis" {
 
     // The first inbound rule gains a condition whose regex holds a "|", a
     // server variable, and a match_url differing only in case. Verify
-    // asserts it is still the first rule and still rewrites.
+    // asserts the rule order is what setup recorded and it still rewrites.
     step "rewrite_rule_update" {
       description = "An existing rewrite rule is patched in place, keeping its position"
       resource = "rewrite_rule"

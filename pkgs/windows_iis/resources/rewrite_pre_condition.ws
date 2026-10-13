@@ -69,7 +69,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing rewrite pre-condition " + name)
         common::ps_run("Remove-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(pre_filter()) +
-            " -Name '.' -AtElement @{{name=" + common::ps_q(common::get_str(json::parse(st)?, "name")) + "}}")?
+            " -Name '.' -AtElement @{{name=" + common::ps_at(common::get_str(json::parse(st)?, "name")) + "}}")?
         return Ok(ApplyResult::Success)
     }
     if converged(params, st)? { return Ok(ApplyResult::Success) }
