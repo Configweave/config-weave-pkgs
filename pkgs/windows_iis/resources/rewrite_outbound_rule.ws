@@ -37,7 +37,7 @@ fn probe(params: Value) -> Result[string, string] {
         "filter_by_tags = CwV($x.match.filterByTags); pattern = CwV($x.match.pattern); " +
         "ignore_case = CwV($x.match.ignoreCase); negate = CwV($x.match.negate); " +
         "conditions_logical_grouping = CwV($x.conditions.logicalGrouping); " +
-        "action_value = CwV($x.action.value); " +
+        "action_type = CwV($x.action.type); action_value = CwV($x.action.value); " +
         "replace_server_variable = CwV($x.action.replace); " +
         "conditions = " + rewrite::read_conditions("$x.conditions.Collection") +
         " }} | ConvertTo-Json -Compress -Depth 5 }}")
@@ -66,6 +66,12 @@ fn wanted(params: Value) -> Result[List[List[string]], string] {
     if grouping != "" {
         out.push(["conditions_logical_grouping", grouping, "/conditions", "logicalGrouping", "sym"])
     }
+    // action.type defaults to None in the schema, so a rule that never sets
+    // it matches and changes nothing; it is always written.
+    let atype = common::param_str(params, "action_type", "rewrite")
+    if atype == "rewrite" { out.push(["action_type", "Rewrite", "/action", "type", "sym"]) }
+    else if atype == "none" { out.push(["action_type", "None", "/action", "type", "sym"]) }
+    else { return Err("invalid 'action_type' value '" + atype + "' (expected :rewrite or :none)") }
     let value = common::param_str(params, "action_value", "")
     if value != "" { out.push(["action_value", value, "/action", "value", "str"]) }
     if let Some(r) = rewrite::bool_row(params, "replace_server_variable", false, "/action", "replace") { out.push(r) }

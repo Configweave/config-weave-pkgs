@@ -179,7 +179,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // endpoint still exists — unless another https binding shares it.
         if sc != "" && sc != "ccs" && common::get_str(b, "shared") == "0" {
             log::info("removing the HTTP.sys certificate binding for " + proto + " binding " + live)
-            common::ps_run(find_binding(params)? + "$b.RemoveSslCertificate()")?
+            common::ps_run(find_binding(params)? + "CwDelSsl (CwEp $b)")?
         }
         log::info("removing " + proto + " binding " + live)
         common::ps_run("Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +

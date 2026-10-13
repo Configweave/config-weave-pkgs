@@ -121,7 +121,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
             "foreach ($b in @($all | Where-Object {{ ([string]$_.ItemXPath).ToLower().Contains($tag) }})) {{ " +
             "$ep = CwEp $b; if ($ep -eq '') {{ continue }}; " +
             "$others = @($all | Where-Object {{ -not ([string]$_.ItemXPath).ToLower().Contains($tag) -and (CwEp $_) -eq $ep }}); " +
-            "if ($others.Count -eq 0) {{ try {{ $b.RemoveSslCertificate() }} catch {{ }} }} }}; " +
+            "if ($others.Count -eq 0) {{ CwDelSsl $ep }} }}; " +
             "$sm = CwSm; $sm.Sites.Remove($sm.Sites[" + qn + "]); $sm.CommitChanges()")?
         return Ok(ApplyResult::Success)
     }
@@ -193,6 +193,14 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if script != "" {
         log::info("updating site " + name)
         common::ps_run(script)?
+    }
+    // Renumbering a site stops it. A site that was running, and whose state
+    // this step does not manage, is started again rather than left down.
+    let renumbered = id != 0 && common::get_str(s, "id") != common::itoa(id)
+    if renumbered && desired_state(params)? == "unmanaged" && common::get_str(s, "state").to_lower() == "started" {
+        log::info("restarting site " + name + " after renumbering it")
+        common::ps_run("for ($i = 0; $i -lt 20; $i++) {{ try {{ $x = (CwSm).Sites[" + qn + "]; " +
+            "if ([string]$x.State -eq 'Started') {{ break }}; [void]$x.Start() }} catch {{ }}; Start-Sleep -Milliseconds 500 }}")?
     }
     let st = desired_state(params)?
     if st != "unmanaged" && common::get_str(probe(params)?, "state").to_lower() != st {

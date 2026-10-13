@@ -10,9 +10,11 @@ fn curl(args: string) -> Result[CmdOutput, string] {
     shell::run("curl.exe --silent --show-error --insecure --max-time 30 " + args, Value::Null)
 }
 
+// A request that cannot connect is a finding like any other, so it is
+// reported in the status text rather than ending the verify early.
 fn status(url: string) -> Result[string, string] {
     let out = curl("--output NUL --write-out %{{http_code}} " + url)?
-    if !out.success { return Err("curl " + url + " failed: " + out.stderr.trim()) }
+    if !out.success { return Ok("no response (" + out.stderr.trim() + ")") }
     Ok(out.stdout.trim())
 }
 

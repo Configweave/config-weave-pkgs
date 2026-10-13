@@ -105,7 +105,9 @@ fn hms(ns: int) -> string {
 // lives on — "sni:<host>:<port>" with SNI, "ip:<address>:<port>" without, ""
 // with the central certificate store, which keeps none — and CwHttps lists
 // every https binding element on every site, so a removal can tell whether
-// another binding still uses an endpoint.
+// another binding still uses an endpoint. CwDelSsl deletes the HTTP.sys
+// certificate binding for such an endpoint with netsh, quietly when there is
+// none.
 fn ps_head() -> string {
     "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
     "Import-Module WebAdministration; " +
@@ -124,6 +126,9 @@ fn ps_head() -> string {
     "if (($f -band 2) -ne 0) {{ return '' }}; " +
     "if (($f -band 1) -ne 0) {{ return ('sni:' + ($p[2..($p.Count - 1)] -join ':') + ':' + $p[1]).ToLower() }}; " +
     "return ('ip:' + $i + ':' + $p[1]) }}; " +
+    "function CwDelSsl($ep) {{ if ($ep.StartsWith('ip:')) {{ $a = 'ipport=' + $ep.Substring(3) }} " +
+    "elseif ($ep.StartsWith('sni:')) {{ $a = 'hostnameport=' + $ep.Substring(4) }} else {{ return }}; " +
+    "$o = & netsh http delete sslcert $a 2>&1; if ($LASTEXITCODE -ne 0 -and -not (($o -join ' ') -match 'cannot find')) {{ throw ('netsh http delete sslcert ' + $a + ': ' + ($o -join ' ')) }} }}; " +
     "function CwHttps {{ @(Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/site/bindings/binding' | " +
     "Where-Object {{ [string]$_.protocol -eq 'https' }}) }}; " +
     "function CwKind($el, $name) {{ try {{ $sch = $el.Schema.AttributeSchemas[$name]; " +

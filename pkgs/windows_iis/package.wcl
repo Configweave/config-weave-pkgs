@@ -1958,6 +1958,14 @@ package "windows_iis" {
       symbol "match_any" { description = "Any one condition is enough" }
     }
     param "action_value" { description = "action.value: the replacement, with back-references such as {R:1}" type = "string" default = "" }
+    param "action_type" {
+      description = "action.type: what the rule does to a match. IIS's own default is None, which matches and changes nothing, so this resource writes :rewrite unless told otherwise"
+      type = "symbol"
+      default = :rewrite
+
+      symbol "rewrite" { description = "Replace the matched value with action_value" }
+      symbol "none"    { description = "Do nothing, which paired with stop_processing exempts a value from the rules below" }
+    }
     param "replace_server_variable" { description = "action.replace: replace the whole variable rather than only the matched part" type = "bool" }
   }
 
@@ -3814,7 +3822,10 @@ package "windows_iis" {
     // The PowerShell part seeds the drift the steps below must find: a
     // stale password for the user the vdir step names, and a self-signed
     // certificate two days from expiry bound to an SNI binding.
-    setup = "mkdir C:\\weave-iis\\tls & mkdir C:\\weave-iis\\ccs & echo weave-tls-ok>C:\\weave-iis\\tls\\index.html & net user weave-ccs Weave-ccs-1! /add & powershell -NoProfile -Command Import-Module WebAdministration; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name userName -Value weave-unc; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name password -Value stale-pass; $c = New-SelfSignedCertificate -DnsName weave-renew.local -CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddDays(2); New-WebBinding -Name weave-site -Protocol https -Port 8444 -HostHeader weave-renew.local -SslFlags 1; (Get-WebBinding -Name weave-site -Port 8444).AddSslCertificate($c.Thumbprint, 'My')"
+    // The CCS account's password must not contain its own name or a part
+    // of it ("weave", "ccs"), or net user rejects it under the default
+    // complexity policy.
+    setup = "mkdir C:\\weave-iis\\tls & mkdir C:\\weave-iis\\ccs & echo weave-tls-ok>C:\\weave-iis\\tls\\index.html & net user weave-ccs Lattice-91x! /add & powershell -NoProfile -Command Import-Module WebAdministration; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name userName -Value weave-unc; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name password -Value stale-pass; $c = New-SelfSignedCertificate -DnsName weave-renew.local -CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddDays(2); New-WebBinding -Name weave-site -Protocol https -Port 8444 -HostHeader weave-renew.local -SslFlags 1; (Get-WebBinding -Name weave-site -Port 8444).AddSslCertificate($c.Thumbprint, 'My')"
     verify = "tests/iis_update_verify.ws"
 
     // The username already matches what setup wrote; only the password is
@@ -4022,7 +4033,7 @@ package "windows_iis" {
       description = "Enable the central certificate store on a local directory as a local account"
       resource = "central_certificate_store"
       requires = ["cert_provider_feature"]
-      properties { cert_store_location = "C:\\weave-iis\\ccs" username = "weave-ccs" password = "Weave-ccs-1!" private_key_password = "weave-pk" }
+      properties { cert_store_location = "C:\\weave-iis\\ccs" username = "weave-ccs" password = "Lattice-91x!" private_key_password = "weave-pk" }
     }
 
     // StaticFileModule is enabled in <modules>; unregistering it would stop
