@@ -1158,7 +1158,7 @@ package "git" {
   // can no longer be expressed as erroring steps. config-weave's own suite
   // covers that check.
   test "invalid_input_errors" {
-    description = "Missing values are rejected"
+    description = "Missing values and malformed keys are rejected"
     image = "debian:12"
     group = "git"
     setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/errors"
@@ -1175,6 +1175,29 @@ package "git" {
       resource = "config_entry"
       expect = "error"
       properties { key = "core.editor" home = "/root/errors" }
+    }
+
+    // git exits 1 for a malformed key exactly as for an unset one, so a
+    // typo in an :absent step used to report converged forever.
+    step "entry_absent_no_section" {
+      description = "Removing a key with no section is an error, not a no-op"
+      resource = "config_entry"
+      expect = "error"
+      properties { key = "editor" ensure = :absent home = "/root/errors" }
+    }
+
+    step "entry_absent_bad_name" {
+      description = "Removing a key whose name holds a space is an error, not a no-op"
+      resource = "config_entry"
+      expect = "error"
+      properties { key = "core.bad name" ensure = :absent home = "/root/errors" }
+    }
+
+    step "alias_dotted_name" {
+      description = "An alias name containing a dot is rejected"
+      resource = "alias"
+      expect = "error"
+      properties { name = "a.b" command = "status" home = "/root/errors" }
     }
   }
 

@@ -10,7 +10,7 @@ use common
 // exactly one value, which is what the length check asserts.
 fn check(params: Value) -> Result[CheckResult, string] {
     let key = common::param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
+    common::check_key(key)?
     let value = common::param_str(params, "value", "")
     let current = common::cfg_get_all(params, key)?
     if !common::want_present(params)? {
@@ -31,7 +31,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let key = common::param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
+    common::check_key(key)?
     let value = common::param_str(params, "value", "")
     if !common::want_present(params)? {
         log::info("removing " + key)

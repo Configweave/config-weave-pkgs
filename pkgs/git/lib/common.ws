@@ -61,11 +61,16 @@ fn cmd_err(what: string, out: CmdOutput) -> string {
 
 // Every value of `key`, exactly as git stores it. -z ends each value with a
 // NUL instead of a newline, so edge whitespace and multi-line values come
-// back intact and an explicitly empty value is still one entry. Exit 1 =
-// the key is unset; anything else non-zero is a real failure.
+// back intact and an explicitly empty value is still one entry.
+//
+// git exits 1 both for an unset key and for a malformed one; only the
+// malformed case writes to stderr, and that is an error, not "unset".
 fn cfg_get_all(params: Value, key: string) -> Result[List[string], string] {
     let out = git(params, "-z --get-all", key, "")?
-    if out.code == 1 { return Ok([]) }
+    if out.code == 1 {
+        if out.stderr.trim() == "" { return Ok([]) }
+        return Err(cmd_err("git config --get-all " + key, out))
+    }
     if out.code != 0 { return Err(cmd_err("git config --get-all " + key, out)) }
     let vals: List[string] = []
     let parts = out.stdout.split("\0")
@@ -130,4 +135,25 @@ fn norm(v: string) -> string {
     if l == "true" || l == "yes" || l == "on" || l == "1" { return "true" }
     if l == "false" || l == "no" || l == "off" || l == "0" { return "false" }
     v
+}
+
+// A config variable name: section, optional subsection, name. Section and
+// name are alphanumeric or '-', and the name starts with a letter (git's
+// own rules); the subsection is free text without line breaks.
+fn check_key(key: string) -> Result[unit, string] {
+    if key == "" { return Err("missing 'key' parameter") }
+    let bad = Err("invalid key '" + key + "': expected section.name or section.subsection.name")
+    if key.contains("\n") || key.contains("\r") || key.contains("\0") { return bad }
+    let parts = key.split(".")
+    if parts.len() < 2 { return bad }
+    let name = parts.get(parts.len() - 1).unwrap_or("")
+    if !valid_word(parts.get(0).unwrap_or("")) || !valid_word(name) { return bad }
+    let c = name.chars().first().unwrap_or('0')
+    if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { return bad }
+    Ok(())
+}
+
+fn valid_word(w: string) -> bool {
+    if w == "" { return false }
+    w.chars().all(|c| (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-')
 }
