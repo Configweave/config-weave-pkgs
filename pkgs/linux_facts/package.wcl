@@ -45,9 +45,9 @@ package "linux_facts" {
   }
 
   gatherer "services" {
-    description = "List systemd services and their active state"
+    description = "List systemd services: every loaded service unit (systemctl list-units --all) plus every installed unit file that is not loaded (list-unit-files), with their active and enabled state. Template units (foo@.service) are left out; their instances appear once loaded"
     script = "gatherers/services.ws"
-    returns "services" { description = "One { name, active, sub } map per service unit; empty without systemd" type = "list" }
+    returns "services" { description = "One { name, active, sub, enabled } map per service. enabled is the unit-file state (enabled, disabled, static, masked, ...), empty for a unit with no unit file; a unit file that is not loaded reads active = inactive, sub = dead. Empty without a reachable systemd" type = "list" }
   }
 
   gatherer "mounts" {

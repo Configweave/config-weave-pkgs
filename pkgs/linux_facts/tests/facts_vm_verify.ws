@@ -34,16 +34,21 @@ fn verify(facts: Value) -> Result[bool, string] {
     }
     if !active.get(0).unwrap_or(false) { return Err("no service reported as active") }
 
+    // enabled comes from list-unit-files and is filled in for real units
+    if !services.any(|s| s.get("enabled").is_some() && s.get("enabled").unwrap_or(Value::Null).as_string().unwrap_or("") == "enabled") {
+        return Err("no service reported as enabled")
+    }
+
     let ifaces = if let Some(l) = list_at(facts, "net", "interfaces") { l } else {
         return Err("network returned no interfaces list")
     }
-    let non_loopback = [false]
+    let routable = [false]
     for i in ifaces {
-        if let Some(n) = i.get("name") {
-            if n.as_string().unwrap_or("") != "lo" { non_loopback.set(0, true) }
-        }
+        let name = if let Some(n) = i.get("name") { n.as_string().unwrap_or("") } else { "" }
+        let v4 = if let Some(l) = i.get("ipv4") { l.as_list().unwrap_or([]) } else { [] }
+        if name != "lo" && !v4.is_empty() { routable.set(0, true) }
     }
-    if !non_loopback.get(0).unwrap_or(false) { return Err("only loopback was enumerated") }
+    if !routable.get(0).unwrap_or(false) { return Err("no non-loopback interface has an IPv4 address") }
 
     let mounts = if let Some(l) = list_at(facts, "mnt", "mounts") { l } else {
         return Err("mounts did not return a list")
