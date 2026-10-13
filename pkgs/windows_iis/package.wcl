@@ -1765,20 +1765,19 @@ package "windows_iis" {
     param "renew_before" { description = "Replace the certificate once it expires within this span, so a long-lived host rolls over on its own" type = "duration" default = 30d }
   }
 
-  // The one resource in this package with no test. Enabling the provider needs
-  // a UNC share plus an account that can read it, which a single disposable
-  // instance cannot supply, and the credentials are write-only so there would
-  // be nothing to assert afterwards either. Its shape follows
-  // Enable-/Disable-WebCentralCertProvider directly; see the script's header.
+  // The provider's passwords are stored encrypted and cannot be read back,
+  // so a salted hash of the ones last written here is kept under
+  // HKLM\\SOFTWARE\\ConfigWeave\\windows_iis and compared instead; a password
+  // changed outside config-weave is not detected. See the script's header.
   resource "central_certificate_store" {
     description = "Ensure the IIS central certificate store's enabled state, share and credentials"
     script = "resources/central_certificate_store.ws"
     concurrency = "global"
-    param "enabled" { description = "Enable the central certificate provider; needs the :cert_provider role service" type = "bool" }
-    param "cert_store_location" { description = "Local path or UNC share holding the .pfx files. IIS picks a certificate by matching the request's host name to the file name, so www.example.com needs www.example.com.pfx and a wildcard needs _.example.com.pfx" type = "string" default = "" }
-    param "username" { description = "Account used to read the share; required for a UNC path" type = "string" default = "" }
-    param "password" { description = "Password for username" type = "string" default = "" }
-    param "private_key_password" { description = "Password protecting the private keys in the .pfx files; empty when they are unprotected" type = "string" default = "" }
+    param "enabled" { description = "Enable or disable the central certificate provider; needs the :cert_provider role service. Omitted with cert_store_location set means enabled; false disables it and ignores the other params" type = "bool" }
+    param "cert_store_location" { description = "Local path or UNC share holding the .pfx files; required to enable. IIS picks a certificate by matching the request's host name to the file name, so www.example.com needs www.example.com.pfx and a wildcard needs _.example.com.pfx" type = "string" default = "" }
+    param "username" { description = "Account the provider reads the store as, local or domain; required to enable, for a local path too" type = "string" default = "" }
+    param "password" { description = "Password for username; required to enable. Passed through the environment, never logged, and compared through a stored salted hash" type = "string" default = "" }
+    param "private_key_password" { description = "Password protecting the private keys in the .pfx files; empty when they are unprotected. Handled like password" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
