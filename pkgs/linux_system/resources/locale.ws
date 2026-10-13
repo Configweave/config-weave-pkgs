@@ -104,6 +104,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if on && generated(name)? { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
+    if !common::on_path("localedef") {
+        return Err("cannot manage locales here: neither locale-gen nor localedef is installed")
+    }
     if generated(name)? == present { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
