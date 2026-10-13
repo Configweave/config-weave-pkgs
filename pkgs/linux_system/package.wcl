@@ -25,10 +25,10 @@ package "linux_system" {
   }
 
   resource "timezone" {
-    description = "Ensure system timezone"
+    description = "Ensure the system timezone: /etc/localtime must point at (or hold the bytes of) /usr/share/zoneinfo/<name>, and /etc/timezone, where that file exists, must hold the name. Uses timedatectl when systemd is PID 1, otherwise links /etc/localtime directly, so it works in containers and under other init systems. Needs tzdata installed; an unknown zone is an error"
     script = "resources/timezone.ws"
     concurrency = "global"
-    param "name" { description = "Timezone such as UTC or Australia/Brisbane" type = "string" required = true }
+    param "name" { description = "IANA zone name such as UTC or Australia/Brisbane, as found under /usr/share/zoneinfo" type = "string" required = true }
   }
 
   resource "locale" {
@@ -108,7 +108,7 @@ package "linux_system" {
   }
 
   test "singletons_converge" {
-    description = "hostname, timezone and locale converge"
+    description = "hostname and locale converge"
     image = "debian:12"
     group = "system"
     setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen"
@@ -118,12 +118,6 @@ package "linux_system" {
       description = "Write /etc/hostname"
       resource = "hostname"
       properties { name = "cw-test-host" }
-    }
-
-    step "timezone" {
-      description = "Set the timezone via /etc/timezone and /etc/localtime"
-      resource = "timezone"
-      properties { name = "Australia/Brisbane" }
     }
 
     step "locale" {
@@ -232,6 +226,30 @@ SH
       description = "Remove a drop-in"
       resource = "sysctl"
       properties { key = "net.ipv4.tcp_syncookies" ensure = :absent }
+    }
+  }
+
+  // /etc/timezone already names the zone, which the old check accepted on
+  // its own, while /etc/localtime is a dangling link that fs::exists missed.
+  test "timezone_converge" {
+    description = "timezone repairs a dangling /etc/localtime that /etc/timezone disagrees with, and rejects an unknown zone"
+    image = "debian:12"
+    group = "system"
+    setup = "echo Australia/Brisbane > /etc/timezone && ln -sfn /usr/share/zoneinfo/Nowhere/Gone /etc/localtime"
+    verify = "tests/timezone_verify.ws"
+
+    step "timezone" {
+      description = "Set the timezone"
+      resource = "timezone"
+      properties { name = "Australia/Brisbane" }
+    }
+
+    step "unknown" {
+      description = "A zone with no zoneinfo file is an error, not a success"
+      resource = "timezone"
+      requires = ["timezone"]
+      expect = "error"
+      properties { name = "Mars/Olympus_Mons" }
     }
   }
 }
