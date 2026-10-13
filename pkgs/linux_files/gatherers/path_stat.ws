@@ -1,13 +1,9 @@
 use value
 use fs
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
+use common
 
 fn gather(params: Value) -> Result[Value, string] {
-    let p = param_str(params, "path", "")
+    let p = common::param_str(params, "path", "")
     if p == "" { return Err("missing 'path' parameter") }
     if !fs::exists(p) {
         return Ok(Value::Map(#{
