@@ -5,9 +5,10 @@ use common
 // The escape hatch for the ~900 config variables with no typed resource,
 // and the only way to remove a key a section resource can set.
 //
-// Reads go through --get-all rather than --get: --get exits 2 on a
-// multi-valued key, and "converged" for a --replace-all write means
-// exactly one value, which is what the length check asserts.
+// Reads go through --get-all rather than --get: --get returns only the last
+// value of a multi-valued key (exit 0), which would hide the extra values,
+// and "converged" for a --replace-all write means exactly one value, which
+// is what the length check asserts.
 fn check(params: Value) -> Result[CheckResult, string] {
     let key = common::param_str(params, "key", "")
     common::check_key(key)?
