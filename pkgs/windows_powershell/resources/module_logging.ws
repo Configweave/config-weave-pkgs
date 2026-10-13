@@ -1,94 +1,71 @@
 use value
 use registry
+use common
+use policy
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn param_list(params: Value, key: string) -> List[string] {
-    let out: List[string] = []
-    if let Some(v) = params.get(key) {
-        if let Some(items) = v.as_list() {
-            for item in items {
-                if let Some(s) = item.as_string() { out.push(s) }
-            }
-        }
-    }
-    out
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn policy_root(params: Value) -> Result[string, string] {
-    let edition = param_str(params, "edition", "windows_powershell")
-    if edition == "windows_powershell" { return Ok(registry::HKLM + "\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell") }
-    if edition == "pwsh" { return Ok(registry::HKLM + "\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore") }
-    Err("invalid 'edition' value '" + edition + "' (expected :windows_powershell or :pwsh)")
-}
-
-fn current_dword(key: string, name: string) -> Result[int, string] {
-    if let Some(v) = registry::read(key, name)? {
-        if let Some(n) = v.as_int() { return Ok(n) }
-    }
-    Ok(-1)
+fn key(params: Value) -> Result[string, string] {
+    Ok(policy::policy_root(common::param_str(params, "edition", "windows_powershell"), registry::HKLM)? + "\\ModuleLogging")
 }
 
 // An empty list means the * wildcard, which is how the policy says
 // "every module".
 fn wanted_modules(params: Value) -> List[string] {
-    if !want_present(params).unwrap_or(true) {
-        let none: List[string] = []
-        return none
-    }
-    let names = param_list(params, "module_names")
+    let names = common::param_list(params, "module_names")
     if names.is_empty() { return ["*"] }
     names
 }
 
-fn check(params: Value) -> Result[CheckResult, string] {
-    let root = policy_root(params)?
-    let key = root + "\\ModuleLogging"
-    let enabled = if want_present(params)? { 1 } else { 0 }
-    if current_dword(key, "EnableModuleLogging")? != enabled { return Ok(CheckResult::NotConfigured) }
+// The registry host module reads a value by name and cannot list a key's
+// values, so the list is read through Windows PowerShell, which every
+// Windows machine has.
+fn listed_modules(names_key: string) -> Result[List[string], string] {
+    let provider_path = "Registry::" + names_key.replace("HKLM\\", "HKEY_LOCAL_MACHINE\\")
+    let script = "$k = " + common::ps_q(provider_path) + "\nif (Test-Path -LiteralPath $k) {{ (Get-Item -LiteralPath $k).GetValueNames() | Where-Object {{ $_ -ne '' }} }}"
+    if let Some(text) = common::query("windows_powershell", script)? { return Ok(common::lines_of(text)) }
+    Err(common::not_installed("windows_powershell"))
+}
 
-    // Each module is its own value under ModuleNames, whose data repeats the
-    // name — that is the shape Group Policy writes.
-    let names_key = key + "\\ModuleNames"
-    let wanted = wanted_modules(params)
-    if !registry::key_exists(names_key)? { return Ok(if wanted.is_empty() { CheckResult::AlreadyConfigured } else { CheckResult::NotConfigured }) }
-    for name in wanted {
-        if let Some(v) = registry::read(names_key, name)? {
-            if v.as_string().unwrap_or("") != name { return Ok(CheckResult::NotConfigured) }
-        } else {
-            return Ok(CheckResult::NotConfigured)
-        }
+fn same_set(a: List[string], b: List[string]) -> bool {
+    if a.len() != b.len() { return false }
+    let lower: List[string] = []
+    for x in b { lower.push(x.to_lower()) }
+    for x in a {
+        if !lower.contains(x.to_lower()) { return false }
+    }
+    true
+}
+
+fn check(params: Value) -> Result[CheckResult, string] {
+    let k = key(params)?
+    let present = common::want_present(params)?
+    if !policy::switch_converged(policy::current_dword(k, "EnableModuleLogging")?, present) { return Ok(CheckResult::NotConfigured) }
+    let names_key = k + "\\ModuleNames"
+    let exists = registry::key_exists(names_key)?
+    if !present {
+        if exists { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    if !exists { return Ok(CheckResult::NotConfigured) }
+    // The list is compared exactly, as a set: an extra name is drift too.
+    if !same_set(listed_modules(names_key)?, wanted_modules(params)) { return Ok(CheckResult::NotConfigured) }
+    // Each value's data repeats its name — the shape Group Policy writes.
+    for name in wanted_modules(params) {
+        if policy::current_sz(names_key, name)? != name { return Ok(CheckResult::NotConfigured) }
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let root = policy_root(params)?
-    let key = root + "\\ModuleLogging"
-    registry::create_key(key)?
-    let present = want_present(params)?
-    registry::write(key, "EnableModuleLogging", Value::Int(if present { 1 } else { 0 }), "dword")?
-    let names_key = key + "\\ModuleNames"
-    if !present {
-        // Disabling clears the list outright, so a later re-enable does not
-        // silently inherit whoever was listed before.
-        if registry::key_exists(names_key)? { registry::delete_key(names_key)? }
-        return Ok(ApplyResult::Success)
-    }
-    // Recreated rather than merged, so the list ends up exactly `wanted`.
-    // (`check` can only prove the wanted names are present: the registry host
-    // module reads a value by name and cannot enumerate a key's values.)
+    let k = key(params)?
+    registry::create_key(k)?
+    let present = common::want_present(params)?
+    registry::write(k, "EnableModuleLogging", Value::Int(if present { 1 } else { 0 }), "dword")?
+    let names_key = k + "\\ModuleNames"
+    // Disabling clears the list outright, so a later re-enable does not
+    // silently inherit whoever was listed before. Enabling recreates it, so
+    // the list ends up exactly `module_names`.
     if registry::key_exists(names_key)? { registry::delete_key(names_key)? }
+    if !present { return Ok(ApplyResult::Success) }
     registry::create_key(names_key)?
     for name in wanted_modules(params) {
         registry::write(names_key, name, Value::String(name), "sz")?

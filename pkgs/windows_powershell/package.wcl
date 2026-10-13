@@ -354,24 +354,40 @@ package "windows_powershell" {
   //
   // `edition` picks the policy key — Windows PowerShell 5.1 reads
   // ...\Policies\Microsoft\Windows\PowerShell, PowerShell 7 reads
-  // ...\Policies\Microsoft\PowerShellCore.
+  // ...\Policies\Microsoft\PowerShellCore. Protected event logging is the
+  // exception: both read ...\Policies\Microsoft\Windows\EventLog. The
+  // console session configuration policy exists for PowerShell 7 only.
+  //
+  // Every ensure-driven switch writes 0 for :absent, and a policy that was
+  // never written already satisfies :absent — unset and 0 both mean off.
   // ---------------------------------------------------------------------
 
+  // `edition` also decides where the two preference scopes live: Windows
+  // PowerShell 5.1 keeps LocalMachine and CurrentUser under its ShellIds
+  // registry key, PowerShell 7 in the Microsoft.PowerShell:ExecutionPolicy
+  // key of powershell.config.json ($PSHOME's, or the user's). The two Group
+  // Policy scopes are registry keys for both.
   resource "execution_policy" {
-    description = "Ensure the PowerShell execution policy for one scope has the given value (the registry backing of Set-ExecutionPolicy)"
+    description = "Ensure the PowerShell execution policy for one scope has the given value, or is unset (what Set-ExecutionPolicy writes)"
     script = "resources/execution_policy.ws"
     concurrency = "global"
-    param "policy" {
-      description = "Execution policy to set"
+    param "ensure" {
+      description = "Desired state: :present sets `policy`, :absent removes the scope's value so the next scope in the chain decides"
       type = "symbol"
-      required = true
+      default = :present
+
+      symbol "present" { description = "Set the policy" }
+      symbol "absent"  { description = "Remove the policy value (Undefined)" }
+    }
+    param "policy" {
+      description = "Execution policy to set; required when ensure is :present"
+      type = "symbol"
 
       symbol "restricted"    { description = "Restricted — no script runs" }
       symbol "all_signed"    { description = "AllSigned — every script must be signed by a trusted publisher" }
       symbol "remote_signed" { description = "RemoteSigned — downloaded scripts must be signed" }
       symbol "unrestricted"  { description = "Unrestricted — all scripts run, with a prompt for downloaded ones" }
       symbol "bypass"        { description = "Bypass — nothing is blocked and nothing warns" }
-      symbol "undefined"     { description = "Undefined — remove the value so the next scope in the chain decides" }
     }
     param "scope" {
       description = "Scope the policy is written to, in the precedence order MachinePolicy, UserPolicy, CurrentUser, LocalMachine"
@@ -380,8 +396,8 @@ package "windows_powershell" {
 
       symbol "machine_policy" { description = "The machine Group Policy scope — HKLM policy key, highest precedence" }
       symbol "user_policy"    { description = "The user Group Policy scope — HKCU policy key" }
-      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds" }
-      symbol "local_machine"  { description = "The machine preference — HKLM ShellIds" }
+      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds for 5.1, the user's powershell.config.json for PowerShell 7" }
+      symbol "local_machine"  { description = "The machine preference — HKLM ShellIds for 5.1, $PSHOME/powershell.config.json for PowerShell 7" }
     }
     param "edition" {
       description = "Which PowerShell reads the policy"
@@ -389,8 +405,10 @@ package "windows_powershell" {
       default = :windows_powershell
 
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
+      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key, or powershell.config.json for the preference scopes" }
     }
+    param "path" { description = "PowerShell 7 preference scopes only — exact powershell.config.json to edit; empty resolves it from `scope` by asking pwsh" type = "string" default = "" }
+    param "home" { description = "PowerShell 7 :current_user only — home directory the user's powershell.config.json is derived from; empty asks pwsh, which answers for the account config-weave runs as — usually SYSTEM or root" type = "string" default = "" }
   }
 
   resource "script_block_logging" {
@@ -436,7 +454,7 @@ package "windows_powershell" {
       symbol "present" { description = "EnableModuleLogging = 1" }
       symbol "absent"  { description = "EnableModuleLogging = 0 and the module list is cleared" }
     }
-    param "module_names" { description = "Modules to log, each written as a ModuleNames value whose data is its own name; an empty list means the * wildcard. Applying rewrites the list exactly, but a check can only prove the listed names are present — the registry is read by value name and cannot be enumerated" type = "list" }
+    param "module_names" { description = "Modules to log, each written as a ModuleNames value whose data is its own name; an empty list means the * wildcard. The list is kept exact: a name nobody asked for is drift. Reading it back lists the key through Windows PowerShell, since the registry host module cannot enumerate values" type = "list" }
     param "edition" {
       description = "Which PowerShell reads the policy"
       type = "symbol"
@@ -480,7 +498,7 @@ package "windows_powershell" {
   }
 
   resource "protected_event_logging" {
-    description = "Enable or disable protected event logging, which encrypts logged event data to a CMS certificate"
+    description = "Enable or disable protected event logging, which encrypts logged event data to a CMS certificate. One policy key — HKLM\\Software\\Policies\\Microsoft\\Windows\\EventLog\\ProtectedEventLogging — serves both Windows PowerShell 5.1 and PowerShell 7"
     script = "resources/protected_event_logging.ws"
     concurrency = "global"
     param "ensure" {
@@ -491,19 +509,11 @@ package "windows_powershell" {
       symbol "present" { description = "EnableProtectedEventLogging = 1" }
       symbol "absent"  { description = "EnableProtectedEventLogging = 0" }
     }
-    param "encryption_certificate" { description = "EncryptionCertificate: the public certificate, as PEM text or a thumbprint, event data is encrypted to; required when :present" type = "string" default = "" }
-    param "edition" {
-      description = "Which PowerShell reads the policy"
-      type = "symbol"
-      default = :windows_powershell
-
-      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
-    }
+    param "encryption_certificate" { description = "EncryptionCertificate: the public certificate, as PEM text (one MULTI_SZ entry per line) or a thumbprint, event data is encrypted to; required when :present" type = "string" default = "" }
   }
 
   resource "console_session_configuration" {
-    description = "Ensure the console session configuration policy is enabled with the given endpoint name, so local consoles run inside that session configuration"
+    description = "Ensure the PowerShell 7 console session configuration policy is enabled with the given endpoint name, so local pwsh consoles run inside that session configuration"
     script = "resources/console_session_configuration.ws"
     concurrency = "global"
     param "ensure" {
@@ -516,12 +526,11 @@ package "windows_powershell" {
     }
     param "name" { description = "ConsoleSessionConfigurationName the console is launched in; required when :present" type = "string" default = "" }
     param "edition" {
-      description = "Which PowerShell reads the policy"
+      description = "Which PowerShell reads the policy. Only PowerShell 7 has this policy — Windows PowerShell 5.1 has no equivalent"
       type = "symbol"
-      default = :windows_powershell
+      default = :pwsh
 
-      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
+      symbol "pwsh" { description = "PowerShell 7 — the PowerShellCore policy key" }
     }
   }
 
@@ -1456,7 +1465,7 @@ package "windows_powershell" {
     group = "pwsh"
     // Seeds the drift each :absent step converges away from. Run 1 checks
     // every step before any apply, so the seeded keys must exist up front.
-    setup = "mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json"
+    setup = "mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json && printf '%s' '{\"Microsoft.PowerShell:ExecutionPolicy\":\"Bypass\",\"CWKeep\":1}' > /etc/cw/ep.config.json"
     verify = "tests/config_verify.ws"
 
     step "execution_policy_key" {
@@ -1592,6 +1601,31 @@ package "windows_powershell" {
         log_identity = "cwtest"
         manage_lists = true
         path = "/etc/cw/powershell.config.json"
+      }
+    }
+
+    // PowerShell 7 keeps the two preference scopes of its execution policy in
+    // powershell.config.json, not in the 5.1 ShellIds registry key — which is
+    // also why these run on Linux at all.
+    step "pwsh_user_execution_policy" {
+      description = "Set the PowerShell 7 current-user execution policy in the user's configuration file"
+      resource = "execution_policy"
+      properties {
+        policy = :all_signed
+        scope = :current_user
+        edition = :pwsh
+        home = "/cwep"
+      }
+    }
+
+    step "pwsh_machine_execution_policy_absent" {
+      description = "Remove the machine execution policy setup seeded, leaving the rest of the file"
+      resource = "execution_policy"
+      properties {
+        ensure = :absent
+        scope = :local_machine
+        edition = :pwsh
+        path = "/etc/cw/ep.config.json"
       }
     }
 
@@ -2165,7 +2199,11 @@ package "windows_powershell" {
     description = "The registry-backed policy resources, profiles and detection paths converge on Windows"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & exit 0"
+    // Seeds the drift the steps converge away from: a user-policy execution
+    // policy for PowerShell 7 to remove, a PowerShell 7 module-logging list
+    // that is enabled with the two wanted names plus one nobody asked for,
+    // and Windows PowerShell module logging to switch off.
+    setup = "mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & reg add HKCU\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore /v ExecutionPolicy /t REG_SZ /d Restricted /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v Microsoft.PowerShell.Utility /t REG_SZ /d Microsoft.PowerShell.Utility /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v PSReadLine /t REG_SZ /d PSReadLine /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v CwExtra /t REG_SZ /d CwExtra /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames /v CwSeeded /t REG_SZ /d CwSeeded /f & exit 0"
     verify = "tests/windows_verify.ws"
 
     step "user_execution_policy" {
@@ -2197,8 +2235,20 @@ package "windows_powershell" {
       }
     }
 
+    step "user_policy_absent" {
+      description = "Remove the PowerShell 7 user-policy execution policy setup seeded"
+      resource = "execution_policy"
+      properties {
+        ensure = :absent
+        scope = :user_policy
+        edition = :pwsh
+      }
+    }
+
+    // setup enabled the list with both names plus CwExtra, so this converges
+    // only because the extra name is detected as drift.
     step "module_logging" {
-      description = "Turn on module logging for two named modules"
+      description = "Turn on module logging for exactly two named modules"
       resource = "module_logging"
       properties {
         module_names = ["Microsoft.PowerShell.Utility", "PSReadLine"]
@@ -2220,7 +2270,28 @@ package "windows_powershell" {
       description = "Protected event logging was never enabled, so :absent is already configured"
       resource = "protected_event_logging"
       expect = "already_configured"
-      properties { ensure = :absent edition = :pwsh }
+      properties { ensure = :absent }
+    }
+
+    // Never-written switches already satisfy :absent — unset means off.
+    step "script_block_logging_unset_absent" {
+      description = "Script block logging that was never configured is already absent"
+      resource = "script_block_logging"
+      expect = "already_configured"
+      properties { ensure = :absent edition = :windows_powershell }
+    }
+
+    step "transcription_unset_absent" {
+      description = "Transcription that was never configured is already absent"
+      resource = "transcription"
+      expect = "already_configured"
+      properties { ensure = :absent edition = :windows_powershell }
+    }
+
+    step "module_logging_absent" {
+      description = "Switch off the Windows PowerShell module logging setup seeded, clearing its list"
+      resource = "module_logging"
+      properties { ensure = :absent edition = :windows_powershell }
     }
 
     step "console_session" {
@@ -2299,7 +2370,7 @@ package "windows_powershell" {
       description = "An in-box module is detected as installed"
       resource = "module"
       expect = "already_configured"
-      properties { name = "PackageManagement" edition = :windows_powershell }
+      properties { name = "PackageManagement" scope = :all_users edition = :windows_powershell }
     }
 
     step "ghost_module_absent" {

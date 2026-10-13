@@ -29,6 +29,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     if dword(core + "\\ScriptBlockLogging", "EnableScriptBlockLogging")? != 1 { return Ok(false) }
     if dword(core + "\\ScriptBlockLogging", "EnableScriptBlockInvocationLogging")? != 1 { return Ok(false) }
     if dword(core + "\\ModuleLogging", "EnableModuleLogging")? != 1 { return Ok(false) }
+    if registry::read(core + "\\ModuleLogging\\ModuleNames", "CwExtra")?.is_some() { return Err("the module-logging name nobody asked for was left in the list") }
+    if sz(registry::HKCU + "\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore", "ExecutionPolicy")? != "" { return Err("the seeded user-policy execution policy was not removed") }
+    let winps = registry::HKLM + "\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell"
+    if dword(winps + "\\ModuleLogging", "EnableModuleLogging")? != 0 { return Err("Windows PowerShell module logging was not switched off") }
+    if registry::key_exists(winps + "\\ModuleLogging\\ModuleNames")? { return Err("switching module logging off left its module list behind") }
     if sz(core + "\\ModuleLogging\\ModuleNames", "PSReadLine")? != "PSReadLine" { return Err("the module list was not written as name = name values") }
     if dword(core + "\\Transcription", "EnableTranscripting")? != 1 { return Ok(false) }
     if sz(core + "\\Transcription", "OutputDirectory")? != "C:\\weave-ps\\transcripts" { return Ok(false) }

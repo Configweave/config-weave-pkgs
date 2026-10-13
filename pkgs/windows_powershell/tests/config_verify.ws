@@ -85,6 +85,14 @@ fn verify(facts: Value) -> Result[bool, string] {
     }
     if deny != ["PSScheduledJob", "BitsTransfer"] { return Ok(false) }
 
+    // execution_policy wrote PowerShell 7's preference scopes into the
+    // configuration files, not the registry.
+    let user_cfg = json::parse(fs::read("/cwep/.config/powershell/powershell.config.json")?)?
+    if at(user_cfg, ["Microsoft.PowerShell:ExecutionPolicy"]).as_string().unwrap_or("") != "AllSigned" { return Err("the PowerShell 7 current-user execution policy was not written to the user's configuration file") }
+    let ep = json::parse(fs::read("/etc/cw/ep.config.json")?)?
+    if !at(ep, ["Microsoft.PowerShell:ExecutionPolicy"]).is_null() { return Err("the seeded machine execution policy was not removed") }
+    if at(ep, ["CWKeep"]).as_int().unwrap_or(0) != 1 { return Err("removing the execution policy lost another key") }
+
     // log_setting writes the lists as the comma-separated strings PowerShell
     // parses — a JSON array is not read at all.
     if at(doc, ["LogLevel"]).as_string().unwrap_or("") != "Informational" { return Ok(false) }
