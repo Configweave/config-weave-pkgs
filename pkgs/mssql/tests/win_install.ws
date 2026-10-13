@@ -72,13 +72,16 @@ fn run(lab: Lab) -> Result[bool, string] {
         "Dismount-DiskImage -ImagePath C:\\media\\sql.iso | Out-Null; " +
         "if(-not (Test-Path C:\\sqlsetup\\SETUP.EXE)){{throw 'setup.exe not found in media'}}")?
 
+    // Scenario properties reach the engine as strings, and a string is not
+    // accepted for a symbol param, so this driver sticks to the symbol
+    // defaults: Windows authentication, with every T-SQL resource connecting
+    // through integrated auth as the guest agent (an Administrators member,
+    // hence sysadmin).
     lab.log("installing SQL Server with mssql.instance (silent)")
     let install = Value::Map(#{
         "setup_path": s("C:\\sqlsetup\\SETUP.EXE"),
         "features": s("SQLENGINE"),
         "edition": s("Developer"),
-        "security_mode": s("sql"),
-        "sa_password": s("Str0ng!Passw0rd"),
         "tcp_enabled": b(true),
         "instance": s("MSSQLSERVER")
     })
@@ -96,9 +99,9 @@ fn run(lab: Lab) -> Result[bool, string] {
     if rc.status != "already_configured" {
         return Err("instance is not idempotent: " + rc.status + " (" + rc.message + ")")
     }
-    // The instance installs go-sqlcmd itself (install_tools), and setup read
-    // the sa password from a ConfigurationFile.ini that is gone again.
-    psh(m, "sqlcmd installed", "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{throw 'sqlcmd not installed'}}")?
+    // sqlcmd is there for the T-SQL resources: SQL Server 2022 setup ships
+    // the ODBC one, and install_tools adds go-sqlcmd when it is missing.
+    psh(m, "sqlcmd installed", "if(-not ((Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe') -or (Test-Path 'C:\\Program Files\\Microsoft SQL Server\\Client SDK\\ODBC\\*\\Tools\\Binn\\SQLCMD.EXE'))){{throw 'sqlcmd not installed'}}")?
     lab.log("SQL Server installed")
 
     // Reconcile the existing instance: a new backup directory (registry +
@@ -106,8 +109,6 @@ fn run(lab: Lab) -> Result[bool, string] {
     psh(m, "backup dir", "New-Item -ItemType Directory -Force -Path C:\\SQLBackup | Out-Null")?
     let reinstall = Value::Map(#{
         "setup_path": s("C:\\sqlsetup\\SETUP.EXE"),
-        "security_mode": s("sql"),
-        "sa_password": s("Str0ng!Passw0rd"),
         "backup_dir": s("C:\\SQLBackup"),
         "sql_sysadmin_accounts": s("BUILTIN\\Administrators,NT AUTHORITY\\SYSTEM")
     })
@@ -115,20 +116,17 @@ fn run(lab: Lab) -> Result[bool, string] {
 
     lab.log("converging configuration")
     let db = Value::Map(#{
-        "name": s("weave_app_db"), "recovery_model": s("simple"),
-        "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
+        "name": s("weave_app_db"), "compatibility_level": i(150)
     })
     converge(m, "mssql.database", db)?
 
     let setting = Value::Map(#{
-        "name": s("cost threshold for parallelism"), "value": i(50),
-        "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
+        "name": s("cost threshold for parallelism"), "value": i(50)
     })
     converge(m, "mssql.server_setting", setting)?
 
     let cdc = Value::Map(#{
-        "database": s("weave_app_db"),
-        "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
+        "database": s("weave_app_db")
     })
     converge(m, "mssql.database_cdc", cdc)?
 
@@ -141,8 +139,7 @@ fn run(lab: Lab) -> Result[bool, string] {
 
     // Enabling HADR restarts the engine and the group is created in the same run.
     let ag = Value::Map(#{
-        "name": s("cw_ag"),
-        "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
+        "name": s("cw_ag")
     })
     converge(m, "mssql.availability_group", ag)?
 
