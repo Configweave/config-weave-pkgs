@@ -70,6 +70,47 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 
+### `linux_apt`, `linux_dnf` and `linux_zypper`
+
+The three rpm and deb managers share a shape: `package`, `cache_updated`,
+`repository`, a signing key resource and a hold or lock.
+
+- `package` installs, pins an exact version, or removes. A pin below the
+  installed version is installed as a downgrade (`--allow-downgrades`,
+  `downgrade`, `--oldpackage`); a pin installs once and does not stop
+  upgrades, which is what the hold or lock is for. `:absent` refuses to
+  remove a package that other installed packages depend on, since every
+  manager would silently take them too, unless `remove_dependents = true`.
+  A held or locked package is an error to change. On dnf and zypper, `name`
+  may also be a capability or file path, and `version` matches `VERSION`,
+  `VERSION-RELEASE` or `EPOCH:VERSION-RELEASE` on any installed instance.
+  apt treats a removed package whose conffiles remain (`rc`) as absent.
+- `cache_updated` refreshes when its own stamp is older than `max_age`, or
+  when the manager's sources changed since (`/etc/apt/sources.list*`,
+  `keyrings` and `trusted.gpg.d`; `/etc/yum.repos.d`; `/etc/zypp/repos.d`).
+  dnf forces the refresh past `metadata_expire`; zypper treats a repository
+  that fails to refresh as an error.
+- `repository` — apt writes `<name>.list` or, with `format = :deb822`,
+  `<name>.sources`; dnf writes a `.repo` file; zypper manages a repository
+  by alias with `url`, `name`, `enabled`, `autorefresh` and `gpgcheck`.
+- apt `signing_key` writes an armored `.asc` for `signed-by`; `dearmor =
+  true` (default false, needs gpg) also keeps a binary `.gpg` current.
+  dnf and zypper `gpg_key` import a key into the rpm database and check it
+  there as well as its `/etc/pki/rpm-gpg/<name>.asc` copy; zypper's can
+  fetch the key once from a `url`. No gpg is needed.
+- apt `hold` (`apt-mark`), dnf `hold` (versionlock: needs dnf5-plugins,
+  python3-dnf-plugin-versionlock or yum-plugin-versionlock) and zypper
+  `lock` (`addlock`) match names exactly.
+- apt `debconf_selection` pre-seeds an answer, compares its type, passes
+  values through the environment (safe for `:password`), and with
+  `:absent` unregisters the question.
+- zypper: exit codes 100-103 are success and 102 reports `RebootRequired`;
+  `gpg_auto_import_keys` opts in to `--gpg-auto-import-keys`.
+
+apt waits up to five minutes for the dpkg lock and zypper for the zypp
+lock, but steps of different resource types in one package can still run
+at the same time, so order them with `requires`.
+
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting
