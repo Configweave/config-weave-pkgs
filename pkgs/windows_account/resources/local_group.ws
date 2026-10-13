@@ -1,75 +1,55 @@
 use value
-use shell
-use json
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::account_name("name", name)?
+    common::single_line("description", common::param_str(params, "description", ""))?
+    Ok(name)
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
-}
-
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
+// PowerShell binding $g to the group, or $null when it does not exist. Only
+// "not found" reads as absent; access denied or any other failure throws.
+fn fetch(name: string) -> string {
+    "$g = $null; try {{ $g = Get-LocalGroup -Name " + common::ps_q(name) + " }} " +
+    "catch [Microsoft.PowerShell.Commands.GroupNotFoundException] {{ }}; "
 }
 
 // 'ABSENT' or a JSON object { description }.
 fn probe(name: string) -> Result[string, string] {
-    ps_out(
-        "$g = Get-LocalGroup -Name " + ps_q(name) + " -ErrorAction SilentlyContinue; " +
+    common::ps("reading local group '" + name + "'",
+        fetch(name) +
         "if ($null -eq $g) {{ 'ABSENT' }} else {{ " +
-        "[pscustomobject]@{{ description = \"$($g.Description)\" }} | ConvertTo-Json -Compress }}"
+        "[pscustomobject]@{{ description = [string]$g.Description }} | ConvertTo-Json -Compress }}"
     )
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
+    let name = validate(params)?
     let st = probe(name)?
-    if !want_present(params)? {
+    if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    let desc = param_str(params, "description", "")
-    if desc != "" && get_str(json::parse(st)?, "description") != desc { return Ok(CheckResult::NotConfigured) }
+    let desc = common::param_str(params, "description", "")
+    if desc != "" && common::get_str(common::parse_json(st)?, "description") != desc { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let qn = ps_q(name)
-    if !want_present(params)? {
-        ps_run("if (Get-LocalGroup -Name " + qn + " -ErrorAction SilentlyContinue) {{ Remove-LocalGroup -Name " + qn + " }}")?
+    let name = validate(params)?
+    let qn = common::ps_q(name)
+    if !common::want_present(params)? {
+        common::ps("removing local group '" + name + "'", fetch(name) + "if ($g) {{ Remove-LocalGroup -SID $g.SID }}")?
         return Ok(ApplyResult::Success)
     }
-    let desc = param_str(params, "description", "")
-    let desc_arg = if desc != "" { " -Description " + ps_q(desc) } else { "" }
-    let update = if desc != "" { "Set-LocalGroup -Name " + qn + desc_arg } else { "" }
-    ps_run(
-        "if ($null -eq (Get-LocalGroup -Name " + qn + " -ErrorAction SilentlyContinue)) {{ " +
-        "New-LocalGroup -Name " + qn + desc_arg + " | Out-Null }} " +
+    let desc = common::param_str(params, "description", "")
+    let desc_arg = if desc != "" { " -Description " + common::ps_q(desc) } else { "" }
+    let update = if desc != "" { "Set-LocalGroup -SID $g.SID" + desc_arg } else { "" }
+    common::ps("configuring local group '" + name + "'",
+        fetch(name) +
+        "if ($null -eq $g) {{ New-LocalGroup -Name " + qn + desc_arg + " | Out-Null }} " +
         "else {{ " + update + " }}"
     )?
     Ok(ApplyResult::Success)
