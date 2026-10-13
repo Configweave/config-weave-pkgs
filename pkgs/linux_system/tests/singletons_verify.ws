@@ -15,7 +15,5 @@ fn verify(facts: Value) -> Result[bool, string] {
     if !gen.contains("en_AU.UTF-8 UTF-8") { return Err("locale not enabled in /etc/locale.gen") }
     let de_gone = !gen.contains("\nde_DE.UTF-8 UTF-8") && !gen.starts_with("de_DE.UTF-8 UTF-8")
     if !de_gone { return Err("seeded locale still enabled in /etc/locale.gen") }
-    if !has_fstab_line("tmpfs /mnt/cw-test tmpfs defaults 0 0")? { return Err("fstab entry missing") }
-    if has_fstab_line("tmpfs /mnt/cw-seeded tmpfs defaults 0 0")? { return Err("seeded fstab entry still present") }
     Ok(true)
 }

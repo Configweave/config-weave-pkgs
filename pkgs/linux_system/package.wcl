@@ -59,24 +59,24 @@ package "linux_system" {
   }
 
   resource "fstab_mount" {
-    description = "Ensure an /etc/fstab entry exists or is absent, and optionally (un)mount it"
+    description = "Ensure exactly one /etc/fstab entry for a mount point, or none, and optionally keep it mounted or unmounted. A second entry for the same mount point is drift and is removed. fstab is rewritten through a temp file and rename. A space, tab or backslash in spec or mountpoint is written as its fstab octal escape (\\040, \\011, \\134); whitespace in fstype or options is rejected. With mount = true, a changed entry that is already mounted is remounted with the new options, or unmounted and mounted again when spec or fstype changed; options changed at runtime by hand, with fstab untouched, are not detected"
     script = "resources/fstab_mount.ws"
     concurrency = "global"
-    param "mountpoint" { description = "Mount point; identifies the entry, so it is the only field needed to remove one" type = "string" required = true }
+    param "mountpoint" { description = "Absolute mount point (or none/swap for swap); identifies the entry, so it is the only field needed to remove one. A trailing slash is ignored" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Write the fstab entry, replacing any existing entry for this mount point" }
-      symbol "absent"  { description = "Remove the fstab entry for this mount point" }
+      symbol "present" { description = "Write the fstab entry, replacing every existing entry for this mount point" }
+      symbol "absent"  { description = "Remove every fstab entry for this mount point" }
     }
-    param "spec" { description = "Filesystem spec (required when :present)" type = "string" default = "" }
+    param "spec" { description = "Filesystem spec such as UUID=..., /dev/sdb1 or tmpfs (required when :present)" type = "string" default = "" }
     param "fstype" { description = "Filesystem type (required when :present)" type = "string" default = "" }
-    param "options" { description = "Mount options" type = "string" default = "defaults" }
+    param "options" { description = "Comma-separated mount options, no whitespace" type = "string" default = "defaults" }
     param "dump" { description = "Dump field" type = "int" default = 0 }
     param "pass" { description = "Pass field" type = "int" default = 0 }
-    param "mount" { description = "Mount after adding the entry, or unmount before removing it" type = "bool" default = false }
+    param "mount" { description = "Also manage the live mount: when :present the mount point is created if missing and mounted (check fails while it is not mounted); when :absent it is unmounted first. false leaves /proc/mounts alone" type = "bool" default = false }
   }
 
   test "cron_job_converge" {
@@ -102,10 +102,10 @@ package "linux_system" {
   // sysctl stays untested here: /proc/sys is read-only in unprivileged
   // containers, so its runtime write cannot converge honestly in docker.
   test "singletons_converge" {
-    description = "hostname, timezone, locale and fstab file edits converge"
+    description = "hostname, timezone and locale converge"
     image = "debian:12"
     group = "system"
-    setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen && printf 'tmpfs /mnt/cw-seeded tmpfs defaults 0 0\\n' >> /etc/fstab"
+    setup = "printf '# de_DE.UTF-8 UTF-8\\nde_DE.UTF-8 UTF-8\\n' > /etc/locale.gen"
     verify = "tests/singletons_verify.ws"
 
     step "hostname" {
@@ -132,6 +132,23 @@ package "linux_system" {
       requires = ["locale"]
       properties { name = "de_DE.UTF-8" ensure = :absent }
     }
+  }
+
+  // vmlab containers are micro-VMs with their own kernel and full
+  // capabilities, so tmpfs mounts are real here: mount = true is exercised
+  // in a container rather than a full VM.
+  test "fstab_converge" {
+    description = "fstab_mount edits entries and mounts, remounts and unmounts them"
+    image = "debian:12"
+    group = "system"
+    setup = <<'SH'
+printf 'tmpfs /mnt/cw-seeded tmpfs defaults 0 0\n' >> /etc/fstab
+mkdir -p /mnt/cw-opts && printf 'tmpfs /mnt/cw-opts tmpfs size=1m 0 0\n' >> /etc/fstab && mount /mnt/cw-opts
+printf 'tmpfs /mnt/cw-dup tmpfs defaults 0 0\ntmpfs\t/mnt/cw-dup/  tmpfs size=3m 0 0\n' >> /etc/fstab
+mkdir -p /mnt/cw-um && printf 'tmpfs /mnt/cw-um tmpfs defaults 0 0\n' >> /etc/fstab && mount /mnt/cw-um
+mkdir -p /mnt/cw-unmounted && printf 'tmpfs /mnt/cw-unmounted tmpfs defaults 0 0\n' >> /etc/fstab
+SH
+    verify = "tests/fstab_verify.ws"
 
     step "fstab" {
       description = "Add an fstab entry without mounting it"
@@ -140,13 +157,48 @@ package "linux_system" {
     }
 
     // The mount point alone identifies the entry, so removal needs no spec
-    // or fstype — and `mount = false` leaves /proc/mounts alone, which is
-    // what makes this safe in a container.
+    // or fstype, and `mount = false` leaves /proc/mounts alone.
     step "rm_fstab" {
       description = "Remove the fstab entry seeded during setup"
       resource = "fstab_mount"
-      requires = ["fstab"]
       properties { mountpoint = "/mnt/cw-seeded" ensure = :absent mount = false }
+    }
+
+    step "new_mount" {
+      description = "Add and mount an entry whose mount point has a space and does not exist yet"
+      resource = "fstab_mount"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw new" fstype = "tmpfs" options = "size=1m" mount = true }
+    }
+
+    step "opts" {
+      description = "Change the options of a mounted entry, which remounts it"
+      resource = "fstab_mount"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw-opts" fstype = "tmpfs" options = "size=2m" mount = true }
+    }
+
+    step "dup" {
+      description = "Collapse two entries for one mount point into one"
+      resource = "fstab_mount"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw-dup" fstype = "tmpfs" }
+    }
+
+    step "unmounted" {
+      description = "A correct entry that is not mounted is drift when mount = true"
+      resource = "fstab_mount"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw-unmounted" fstype = "tmpfs" mount = true }
+    }
+
+    step "um" {
+      description = "Unmount and remove a mounted entry"
+      resource = "fstab_mount"
+      properties { mountpoint = "/mnt/cw-um" ensure = :absent mount = true }
+    }
+
+    step "bad_options" {
+      description = "Whitespace in options is rejected rather than written"
+      resource = "fstab_mount"
+      expect = "error"
+      properties { spec = "tmpfs" mountpoint = "/mnt/cw-bad" fstype = "tmpfs" options = "size=1m, mode=0755" }
     }
   }
 }
