@@ -163,36 +163,71 @@ the IIS management scripting tools (`feature` with `:scripting_tools`, or
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
-and **Linux** (the Microsoft repo plus `mssql-conf`), then converge a broad set
-of T-SQL-driven settings via `sqlcmd`:
+and **Linux** (the Microsoft repository plus `mssql-conf`), then converge
+T-SQL-driven settings through `sqlcmd`. Every resource compares every param it
+takes on an object that already exists and fixes the difference, and every
+resource that creates something takes `ensure = :absent`.
 
-- `instance` — silent install/uninstall (`ensure = :present|:absent`), feature
-  selection, edition, collation, service accounts, TCP and a
-  `ConfigurationFile.ini` passthrough on Windows.
-- `server_setting` — any `sp_configure` value (compares the running
-  `value_in_use`).
-- `login`, `database`, `database_user` — principals, databases (recovery
-  model, owner, compatibility level) and role membership; `login` and
-  `database` drop via `ensure = :absent`.
-- `database_cdc`, `cdc_table` — Change Data Capture at the database and table
+- `instance`: install, reconcile or uninstall an instance, with `sqlcmd`
+  (`install_tools`: go-sqlcmd on Windows, mssql-tools18 on Linux). Windows
+  setup reads a generated `ConfigurationFile.ini` that only SYSTEM and
+  Administrators can read, so `sa_password` never reaches a command line.
+  Linux derives the repository from `/etc/os-release` and sets the collation
+  at `mssql-conf setup`. On an existing instance it reconciles security mode,
+  TCP, default directories, sysadmin accounts and the sa password (Windows),
+  and the edition and sa password (Linux).
+- `server_setting`: any `sp_configure` value. It compares the configured value,
+  so a restart-only option converges and warns until SQL Server restarts.
+- `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),
+  enabled state, default database and language, password policy and server
+  roles.
+- `database`: recovery model, collation (`ALTER DATABASE … COLLATE`), owner
+  and compatibility level.
+- `database_user`: login mapping (repairs orphaned users), default schema and
+  roles.
+- `database_cdc`, `cdc_table`: Change Data Capture at the database and table
   level.
-- `tcp` — the TCP/IP protocol and static port (registry on Windows, `mssql-conf`
-  on Linux), restarting the engine so the change takes effect.
-- `replication_distributor`, `replication_publisher` — distributor setup and
-  enabling a database for transactional or merge replication.
-- `database_mail`, `agent_job` — Database Mail profiles and SQL Agent jobs
-  (`agent_job` deletes via `ensure = :absent`).
-- `availability_group` — enable Always On HADR and create an availability group
-  on the primary (multi-node joins are a scenario concern).
-- `instance_info` gatherer — version, edition, collation and HADR state.
+- `tcp`: the TCP/IP protocol and static port (registry on Windows,
+  `mssql-conf` on Linux), then an engine restart that brings SQL Server Agent
+  back if it was running.
+- `replication_distributor`, `replication_publisher`: a local distributor
+  (retried until this server is registered as its publisher) and publishing
+  databases.
+- `database_mail`: a Database Mail profile and SMTP account.
+- `agent_job`: a single-step Agent job with an optional managed schedule.
+- `availability_group`: enable HADR (waiting for the restart) and create a
+  single-replica availability group, `CLUSTER_TYPE = NONE` by default. Linux
+  endpoints need `endpoint_certificate`.
+- `instance_info` gatherer: version, edition, collation and HADR state.
 
-Connection parameters (`server`, `instance`, `sql_user`, `sql_password`) are
-declared on every T-SQL resource; omit `sql_user` to use integrated (Windows)
-authentication. **Known limits:** SQL/SMTP/sa passwords cannot be read back, so
-password drift is undetectable (use the `force_password` / `force` flags to
-re-apply); database collation is enforced only at create; the Windows install and
-availability groups may require a reboot and are covered by the `win_install`
-vmlab scenario rather than the container `test`.
+Every T-SQL resource takes `server`, `instance`, `sql_user`, `sql_password` and
+`trust_server_certificate`. Omit `sql_user` to use integrated (Windows)
+authentication. `sql_password` reaches `sqlcmd` through `SQLCMDPASSWORD`, and
+batches go in on stdin, so neither appears on a command line.
+`trust_server_certificate` defaults to true for a local engine's self-signed
+certificate; set it false for a remote server with a CA-issued one. Every
+T-SQL resource needs `sqlcmd`, so run `instance` first or install the tools
+yourself.
+
+**Not changed in place.** These differences are reported as errors, never
+ignored:
+
+- a server collation (needs the system databases rebuilt);
+- a Windows edition (needs `setup.exe /ACTION=EditionUpgrade` with a key);
+- a Linux major version (a one-way upgrade);
+- a login's authentication type, unless `recreate_on_auth_change` is set;
+- a CDC capture instance's options, unless `recreate_on_change` is set;
+- an availability group's cluster type;
+- the distribution database of a configured publisher.
+
+Windows `features` apply at install only. Database Mail cannot read back an
+SMTP password, so bump `password_revision` to push a new one.
+
+Tests: five container tests (`config_converges`, `reconcile`, `replication`,
+`replication_absent`, `availability_group`) run against the official 2022
+image. Two Ubuntu 24.04 VM tests cover the Linux install and removal, and the
+`win_install` vmlab scenario covers the Windows install, instance reconcile,
+TCP restart and availability group.
 
 ## Development
 
