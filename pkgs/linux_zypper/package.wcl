@@ -83,10 +83,8 @@ package "linux_zypper" {
     }
   }
 
-  // Every test runs offline. Installing needs repository metadata, and a
-  // first refresh of the Leap repositories takes minutes, so the install
-  // path is not tested; removal, checks, a local plaindir repository and
-  // the other resources need no network.
+  // Every test but package_installs runs offline: removal, checks, a
+  // local plaindir repository and the other resources need no network.
   test "zypper_existing_package" {
     description = "zypper/rpm installed package checks work in openSUSE"
     image = "opensuse/leap:15.6"
@@ -98,6 +96,32 @@ package "linux_zypper" {
       resource = "package"
       expect = "already_configured"
       properties { name = "filesystem" }
+    }
+  }
+
+  // Real installs over the container's NAT, in their own instance. Only the
+  // main and update repositories are refreshed, which takes seconds; all
+  // of the image's repositories take minutes. timezone 2024a is the
+  // version in the frozen 15.6 main repository, below the update one the
+  // image ships.
+  test "package_installs" {
+    description = "package installs a package and downgrades to a pinned version"
+    image = "opensuse/leap:15.6"
+    group = "leap-net"
+    memory = "2GiB"
+    setup = "zypper -q mr --all --disable >/dev/null && zypper -q mr --enable repo-oss repo-update >/dev/null && zypper -q --non-interactive refresh >/dev/null && if rpm -q hello >/dev/null; then zypper -q --non-interactive remove hello; fi"
+    verify = "tests/zypper_install_verify.ws"
+
+    step "install" {
+      description = "Install hello"
+      resource = "package"
+      properties { name = "hello" }
+    }
+
+    step "downgrade" {
+      description = "Pin timezone below the installed version, as VERSION"
+      resource = "package"
+      properties { name = "timezone" version = "2024a" }
     }
   }
 
