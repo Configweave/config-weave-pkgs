@@ -2,12 +2,11 @@ use value
 use log
 use common
 
-// The alias name is the last part of the key alias.<name>, so it follows
-// git's variable-name rules: no dots, spaces or line breaks.
+// The key is alias.<name>, so the name follows git's key rules. A dotted
+// name is legal: "a.b" is stored as [alias "a"] b, and `git a.b` finds it.
 fn alias_name(params: Value) -> Result[string, string] {
     let name = common::param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    if name.contains(".") { return Err("invalid alias name '" + name + "': it may not contain '.'") }
     common::check_key("alias." + name)?
     Ok(name)
 }

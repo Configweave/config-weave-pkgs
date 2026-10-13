@@ -734,7 +734,7 @@ package "git" {
     description = "Ensure a git alias is present in or absent from the global or system config"
     script = "resources/alias.ws"
     concurrency = "global"
-    param "name" { description = "Alias name, as in git <name>: letters, digits and -, starting with a letter" type = "string" required = true }
+    param "name" { description = "Alias name, as in git <name>: letters, digits and -, starting with a letter (a dotted name such as a.b is stored as [alias \"a\"] b)" type = "string" required = true }
     param "command" { description = "Command the alias expands to; prefix with ! for a shell command (required when present)" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -1250,11 +1250,11 @@ package "git" {
       properties { key = "core.bad name" ensure = :absent home = "/root/errors" }
     }
 
-    step "alias_dotted_name" {
-      description = "An alias name containing a dot is rejected"
+    step "alias_bad_name" {
+      description = "An alias name containing a space is rejected"
       resource = "alias"
       expect = "error"
-      properties { name = "a.b" command = "status" home = "/root/errors" }
+      properties { name = "bad name" command = "status" home = "/root/errors" }
     }
   }
 
