@@ -39,7 +39,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         return Ok(ApplyResult::Success)
     }
     if value == "" { return Err("missing 'value' parameter") }
-    log::info("setting " + key + " = " + value)
+    // The key only: this is where http.extraHeader tokens and credentialed
+    // URLs go, and a log line would leak them.
+    log::info("setting " + key)
     common::cfg_set(params, key, value)?
     Ok(ApplyResult::Success)
 }
