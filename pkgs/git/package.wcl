@@ -1116,14 +1116,21 @@ package "git" {
   }
 
   // Seeded with values that are already correct but spelled differently:
-  // git stores "yes"/"on"/"1" verbatim, so without norm() folding these
-  // steps would rewrite the file on every run. `already_configured` means
-  // converged in all three runs, i.e. nothing was rewritten.
+  // git stores "yes"/"on"/"1" verbatim, so without folding these steps
+  // would rewrite the file on every run. `already_configured` means
+  // converged in all three runs, i.e. nothing was rewritten. bool and int
+  // params read back through git's own --type, so git decides what a
+  // spelling means; strings and symbols fold only yes/on/no/off.
+  //
+  // The last two steps are the other side: values that a blanket 1/0 fold
+  // used to call equal, which git reads differently. They expect the
+  // default not_configured -> configured -> already_configured.
   test "converged_state_is_detected" {
-    description = "Equivalent boolean spellings and hyphenated symbols do not churn"
+    description = "Equivalent spellings do not churn, and values git reads differently are drift"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/converged && printf '[core]\\n\\tfileMode = yes\\n\\tcompression = 9\\n[pull]\\n\\tautoStash = on\\n[fetch]\\n\\tprune = 1\\n\\trecurseSubmodules = on-demand\\n' > /root/converged/.gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/converged && printf '[core]\\n\\tfileMode = yes\\n\\tcompression = 9\\n[pull]\\n\\tautoStash = on\\n[fetch]\\n\\tprune = 1\\n\\trecurseSubmodules = on-demand\\n\\tparallel = true\\n[status]\\n\\tshort\\n[merge]\\n\\tlog = true\\n[cw]\\n\\tcount = true\\n\\tflag = yes\\n' > /root/converged/.gitconfig"
+    verify = "tests/converged_verify.ws"
 
     step "core_folded" {
       description = "core.fileMode = yes already satisfies file_mode = true"
@@ -1144,6 +1151,42 @@ package "git" {
       resource = "fetch"
       expect = "already_configured"
       properties { prune = true recurse_submodules = :on_demand home = "/root/converged" }
+    }
+
+    // A bare `short` line is git's spelling of true; it reads back as "".
+    step "status_implicit_true" {
+      description = "A bare status.short line already satisfies short = true"
+      resource = "status"
+      expect = "already_configured"
+      properties { short = true home = "/root/converged" }
+    }
+
+    // merge.log = true means 20 shortlog entries; "1" means one.
+    step "merge_log_count" {
+      description = "merge.log = true does not satisfy log = \"1\""
+      resource = "merge"
+      properties { log = "1" home = "/root/converged" }
+    }
+
+    // fetch.parallel is an int; "true" is not a number git accepts there.
+    step "fetch_parallel_int" {
+      description = "fetch.parallel = true does not satisfy parallel = 1"
+      resource = "fetch"
+      properties { parallel = 1 home = "/root/converged" }
+    }
+
+    // config_entry has no type to go on, so it folds words only.
+    step "entry_words_folded" {
+      description = "A raw entry holding yes already satisfies true"
+      resource = "config_entry"
+      expect = "already_configured"
+      properties { key = "cw.flag" value = "true" home = "/root/converged" }
+    }
+
+    step "entry_digit_not_folded" {
+      description = "A raw entry holding true does not satisfy 1"
+      resource = "config_entry"
+      properties { key = "cw.count" value = "1" home = "/root/converged" }
     }
   }
 

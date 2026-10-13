@@ -21,7 +21,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     }
     let command = common::param_str(params, "command", "")
     if command == "" { return Err("missing 'command' parameter") }
-    // Compared literally, not through norm(): an alias is arbitrary text.
+    // Compared literally, not through fold_words(): an alias is arbitrary text.
     if have.unwrap_or("") == command { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }

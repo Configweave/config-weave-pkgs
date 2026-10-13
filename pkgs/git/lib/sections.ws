@@ -10,18 +10,19 @@ use common
 // themselves live in package.wcl, where config-weave validates them and
 // the docs list them.
 
-// A typed param rendered as the text git stores. None = the step omitted
-// the param, which means "leave this setting alone" — the only way a bool
-// or int param can express that, since a declared default would instead
-// mean "set it to false" / "set it to 0".
-fn to_cfg(params: Value, name: string) -> Option[string] {
+// A typed param as [text git stores, kind], where kind is "bool", "int" or
+// "text" (strings and symbols). None = the step omitted the param, which
+// means "leave this setting alone" — the only way a bool or int param can
+// express that, since a declared default would instead mean "set it to
+// false" / "set it to 0".
+fn to_cfg(params: Value, name: string) -> Option[List[string]] {
     if let Some(v) = params.get(name) {
-        if let Some(s) = v.as_string() { return Some(s) }
+        if let Some(s) = v.as_string() { return Some([s, "text"]) }
         if let Some(b) = v.as_bool() {
-            if b { return Some("true") }
-            return Some("false")
+            if b { return Some(["true", "bool"]) }
+            return Some(["false", "bool"])
         }
-        if let Some(i) = v.as_int() { return Some(json::to_string(Value::Int(i))) }
+        if let Some(i) = v.as_int() { return Some([json::to_string(Value::Int(i)), "int"]) }
     }
     None
 }
@@ -39,8 +40,8 @@ fn snake(k: string) -> string {
     out
 }
 
-// The [git key, desired text] pairs this step actually asks for. Params the
-// step omitted are absent from `params` and so are skipped entirely.
+// The [git key, desired text, kind] triples this step actually asks for.
+// Params the step omitted are absent from `params` and so are skipped.
 //
 // config-weave validates a symbol param against the `symbol` values the
 // package declares, so all that is left here is spelling: WCL symbols
@@ -51,33 +52,45 @@ fn snake(k: string) -> string {
 fn desired(params: Value, section: string, keys: List[string], hyphenated: List[string]) -> List[List[string]] {
     let out: List[List[string]] = []
     for key in keys {
-        if let Some(raw) = to_cfg(params, snake(key)) {
-            let value = raw
-            if hyphenated.contains(key) { value = raw.replace("_", "-") }
-            out.push([section + "." + key, value])
+        if let Some(cfg) = to_cfg(params, snake(key)) {
+            let value = cfg.get(0).unwrap_or("")
+            if hyphenated.contains(key) { value = value.replace("_", "-") }
+            out.push([section + "." + key, value, cfg.get(1).unwrap_or("text")])
         }
     }
     out
 }
 
+// Converged = exactly one value, equal to the desired one, since apply
+// writes with --replace-all. bool and int params are read back through
+// git's --type, so git does the canonicalising; strings and symbols fold
+// only the word spellings of a boolean, never digits, because many of
+// them (merge.log, status.submoduleSummary) are bool-or-int.
+fn matches(params: Value, triple: List[string]) -> Result[bool, string] {
+    let key = triple.get(0).unwrap_or("")
+    let want = triple.get(1).unwrap_or("")
+    let kind = triple.get(2).unwrap_or("text")
+    let have = if kind == "text" { common::cfg_get_all(params, key)? } else { common::cfg_get_typed(params, key, kind)? }
+    if have.len() != 1 { return Ok(false) }
+    let got = have.get(0).unwrap_or("")
+    if kind == "text" { return Ok(common::fold_words(got) == common::fold_words(want)) }
+    Ok(got == want)
+}
+
 // An explicit empty string reads back as "unset" and so is a no-op here;
 // use git.config_entry with ensure = :absent to remove a key.
 fn check(params: Value, section: string, keys: List[string], hyphenated: List[string]) -> Result[CheckResult, string] {
-    for pair in desired(params, section, keys, hyphenated) {
-        let key = pair.get(0).unwrap_or("")
-        let want = pair.get(1).unwrap_or("")
-        let have = common::cfg_get(params, key)?
-        if common::norm(have.unwrap_or("")) != common::norm(want) { return Ok(CheckResult::NotConfigured) }
+    for triple in desired(params, section, keys, hyphenated) {
+        if !matches(params, triple)? { return Ok(CheckResult::NotConfigured) }
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value, section: string, keys: List[string], hyphenated: List[string]) -> Result[ApplyResult, string] {
-    for pair in desired(params, section, keys, hyphenated) {
-        let key = pair.get(0).unwrap_or("")
-        let want = pair.get(1).unwrap_or("")
-        let have = common::cfg_get(params, key)?
-        if common::norm(have.unwrap_or("")) != common::norm(want) {
+    for triple in desired(params, section, keys, hyphenated) {
+        if !matches(params, triple)? {
+            let key = triple.get(0).unwrap_or("")
+            let want = triple.get(1).unwrap_or("")
             log::info("setting " + key + " = " + want)
             common::cfg_set(params, key, want)?
         }

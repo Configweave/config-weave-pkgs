@@ -62,14 +62,29 @@ fn cmd_err(what: string, out: CmdOutput) -> string {
 // Every value of `key`, exactly as git stores it. -z ends each value with a
 // NUL instead of a newline, so edge whitespace and multi-line values come
 // back intact and an explicitly empty value is still one entry.
-//
+fn cfg_get_all(params: Value, key: string) -> Result[List[string], string] {
+    read_all(params, key, "")
+}
+
+// Every value of `key` as git reads it for `kind`, "bool" or "int". git does
+// the canonicalising ("yes", "on", "1" and a bare `key` line are all
+// "true"; "1k" is "1024"), so a stored value is compared the way git itself
+// interprets it. A value git cannot read as that type comes back as
+// "<invalid>", which matches nothing and so counts as drift.
+fn cfg_get_typed(params: Value, key: string, kind: string) -> Result[List[string], string] {
+    read_all(params, key, "--type=" + kind)
+}
+
 // git exits 1 both for an unset key and for a malformed one; only the
 // malformed case writes to stderr, and that is an error, not "unset".
-fn cfg_get_all(params: Value, key: string) -> Result[List[string], string] {
-    let out = git(params, "-z --get-all", key, "")?
+fn read_all(params: Value, key: string, type_flag: string) -> Result[List[string], string] {
+    let out = git(params, (type_flag + " -z --get-all").trim(), key, "")?
     if out.code == 1 {
         if out.stderr.trim() == "" { return Ok([]) }
         return Err(cmd_err("git config --get-all " + key, out))
+    }
+    if type_flag != "" && out.code == 128 && out.stderr.contains("bad ") && out.stderr.contains(" config value") {
+        return Ok(["<invalid>"])
     }
     if out.code != 0 { return Err(cmd_err("git config --get-all " + key, out)) }
     let vals: List[string] = []
@@ -128,12 +143,14 @@ fn cfg_unset_value(params: Value, key: string, value: string) -> Result[unit, st
     Err(cmd_err("git config --unset " + key, out))
 }
 
-// Fold git's boolean spellings so a config holding "yes" does not churn
-// against a desired "true". Comparison only — never what gets written.
-fn norm(v: string) -> string {
+// Fold git's word spellings of a boolean, so a symbol or string holding
+// "yes" does not churn against a desired "true". Digits are left alone: in a
+// bool-or-int key such as merge.log, "1" is a count, not "true".
+// Comparison only — never what gets written.
+fn fold_words(v: string) -> string {
     let l = v.to_lower()
-    if l == "true" || l == "yes" || l == "on" || l == "1" { return "true" }
-    if l == "false" || l == "no" || l == "off" || l == "0" { return "false" }
+    if l == "true" || l == "yes" || l == "on" { return "true" }
+    if l == "false" || l == "no" || l == "off" { return "false" }
     v
 }
 

@@ -23,7 +23,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         return Ok(CheckResult::AlreadyConfigured)
     }
     if value == "" { return Err("missing 'value' parameter") }
-    if current.len() == 1 && common::norm(current.get(0).unwrap_or("")) == common::norm(value) {
+    if current.len() == 1 && common::fold_words(current.get(0).unwrap_or("")) == common::fold_words(value) {
         return Ok(CheckResult::AlreadyConfigured)
     }
     Ok(CheckResult::NotConfigured)
