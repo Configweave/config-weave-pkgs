@@ -39,14 +39,6 @@ fn sym_map() -> List[List[string]] { [] }
 // empty, so an inherited value can be cleared rather than kept.
 fn always_write() -> List[string] { [] }
 
-// Checked before apply mutates anything.
-fn precondition(params: Value) -> Result[unit, string] {
-    if common::want_present(params)? && common::param_str(params, "image", "") == "" {
-        return Err("'image' is required when ensure is :present")
-    }
-    Ok(())
-}
-
 fn spec(params: Value) -> Result[CollectionSpec, string] {
     Ok(CollectionSpec {
         section: section(params)?,
@@ -56,6 +48,7 @@ fn spec(params: Value) -> Result[CollectionSpec, string] {
         attrs: attrs(params)?,
         syms: sym_map(),
         always_write: always_write(),
+        required: ["image"],
     })
 }
 
@@ -64,6 +57,5 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    precondition(params)?
     collection::apply(params, spec(params)?)
 }

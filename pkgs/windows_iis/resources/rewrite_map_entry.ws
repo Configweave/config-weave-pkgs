@@ -53,6 +53,7 @@ fn spec(params: Value) -> Result[CollectionSpec, string] {
         attrs: attrs(params)?,
         syms: sym_map(),
         always_write: always_write(),
+        required: ["value"],
     })
 }
 

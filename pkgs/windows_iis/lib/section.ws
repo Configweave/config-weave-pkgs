@@ -14,11 +14,20 @@ use common
 //         common::scope_apphost.
 // attrs:  [param, IIS attribute, kind] rows.
 // syms:   [param, symbol value, IIS token] rows.
+// extra:  [param, IIS attribute, kind, text] rows wanted whatever the params
+//         say — how a script writes a value the params cannot spell, such as
+//         the empty userName that selects the pool identity.
+//
+// Kinds: bool, int, str, sym, flags (compared as a set), vlist (an ordered
+// collection of value= entries), dur (a TimeSpan), dur_sec and dur_ms (an
+// integer from a duration param), and secret (a str that is masked in the log
+// and passed to PowerShell through the environment).
 struct SectionSpec {
     filter: string,
     scope: string,
     attrs: List[List[string]],
     syms: List[List[string]],
+    extra: List[List[string]],
 }
 
 // The IIS spelling of a symbol value. Symbols are validated against the
@@ -65,6 +74,7 @@ fn wanted(params: Value, spec: SectionSpec) -> List[List[string]] {
             out.push([name, a.get(1).unwrap_or(""), kind, text])
         }
     }
+    for e in spec.extra { out.push(e) }
     out
 }
 
@@ -103,15 +113,7 @@ fn probe(spec: SectionSpec, rows: List[List[string]]) -> Result[Value, string] {
 // IIS reports a flags attribute in its own order and spacing, and a symbol
 // one with the schema's capitalisation, so neither is compared as text.
 fn same(kind: string, have: string, want: string) -> bool {
-    if kind == "flags" {
-        let h: List[string] = []
-        for p in have.split(",") { if p.trim() != "" { h.push(p.trim().to_lower()) } }
-        let w: List[string] = []
-        for p in want.split(",") { if p.trim() != "" { w.push(p.trim().to_lower()) } }
-        if h.len() != w.len() { return false }
-        for x in w { if !h.contains(x) { return false } }
-        return true
-    }
+    if kind == "flags" { return common::same_flags(have, want) }
     if kind == "bool" || kind == "sym" {
         return have.replace(" ", "").to_lower() == want.replace(" ", "").to_lower()
     }
@@ -144,33 +146,51 @@ fn check(params: Value, spec: SectionSpec) -> Result[CheckResult, string] {
 
 // Writes every attribute that differs. True when anything was written, so a
 // script with follow-up work (a service restart) knows to run it.
+//
+// A "secret" attribute is a string that never reaches the script text or the
+// log: its value travels in an environment variable the script reads.
 fn apply(params: Value, spec: SectionSpec) -> Result[bool, string] {
     let rows = wanted(params, spec)
     if rows.is_empty() { return Ok(false) }
     let have = probe(spec, rows)?
     let filter = common::ps_q(spec.filter)
     let script = ""
+    let env: Map[string, Value] = #{}
     for r in rows {
         let name = r.get(0).unwrap_or("")
         let attr = r.get(1).unwrap_or("")
         let kind = r.get(2).unwrap_or("")
         let want = r.get(3).unwrap_or("")
         if same(kind, common::get_str(have, name), want) { continue }
-        log::info("setting " + attr + " = " + want)
-        if kind == "vlist" {
-            // Set-WebConfigurationProperty on a collection name REPLACES the
-            // collection, which is what an ordered list needs: appending
-            // would leave the inherited entries in front.
+        let set = "Set-WebConfigurationProperty" + spec.scope + " -Filter " + filter + " -Name " + common::ps_q(attr)
+        if kind == "secret" {
+            log::info("setting " + attr + " = ********")
+            let var = "CW_SECRET_" + common::itoa(env.len())
+            env.insert(var, Value::String(want))
+            script = script + set + " -Value $env:" + var + "; "
+        } else if kind == "vlist" {
+            log::info("setting " + attr + " = [" + want + "]")
             let parts: List[string] = []
             for v in want.split(",") { if v != "" { parts.push("@{{value=" + common::ps_q(v) + "}}") } }
-            script = script + "Set-WebConfigurationProperty" + spec.scope + " -Filter " + filter +
-                " -Name " + common::ps_q(attr) + " -Value @(" + parts.join(",") + "); "
+            if parts.is_empty() {
+                // An empty list. Set-WebConfigurationProperty -Value @()
+                // throws a NullReferenceException; removing every entry
+                // writes <clear/>, so nothing is inherited either.
+                // Clear-WebConfiguration would revert to the inherited list.
+                script = script + "Remove-WebConfigurationProperty" + spec.scope + " -Filter " +
+                    common::ps_q(spec.filter + "/" + attr.replace(".", "/")) + " -Name '.'; "
+            } else {
+                // Set-WebConfigurationProperty on a collection name REPLACES
+                // the collection, which is what an ordered list needs:
+                // appending would leave the inherited entries in front.
+                script = script + set + " -Value @(" + parts.join(",") + "); "
+            }
         } else {
-            script = script + "Set-WebConfigurationProperty" + spec.scope + " -Filter " + filter +
-                " -Name " + common::ps_q(attr) + " -Value " + ps_value(kind, want) + "; "
+            log::info("setting " + attr + " = " + want)
+            script = script + set + " -Value " + ps_value(kind, want) + "; "
         }
     }
     if script == "" { return Ok(false) }
-    common::ps_run(script)?
+    common::ps_run_env(script, Value::Map(env))?
     Ok(true)
 }

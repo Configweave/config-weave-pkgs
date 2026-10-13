@@ -32,7 +32,7 @@ fn sym_map() -> List[List[string]] { [
     ] }
 
 fn spec(params: Value) -> Result[SectionSpec, string] {
-    Ok(SectionSpec { filter: section(params)?, scope: scope(params)?, attrs: attrs(), syms: sym_map() })
+    Ok(SectionSpec { filter: section(params)?, scope: scope(params)?, attrs: attrs(), syms: sym_map(), extra: [] })
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {

@@ -576,8 +576,9 @@ package "windows_iis" {
       symbol "web_config" { description = "The web.config at site and path — needs the section unlocked with windows_iis.section_delegation" }
     }
     param "enabled" { description = "enabled: allow unauthenticated requests" type = "bool" }
-    param "username" { description = "userName: the account anonymous requests impersonate; empty string means the application pool identity" type = "string" default = "" }
-    param "password" { description = "password: the password for username" type = "string" default = "" }
+    param "username" { description = "userName: the account anonymous requests impersonate. Empty leaves the current account alone; use use_app_pool_identity to select the pool identity" type = "string" default = "" }
+    param "password" { description = "password: the password for username. Passed to PowerShell through the environment and never logged" type = "string" default = "" }
+    param "use_app_pool_identity" { description = "true writes an empty userName and password, so anonymous requests run as the application pool identity. Cannot be combined with username or password; false or omitted leaves the identity alone" type = "bool" }
     param "logon_method" {
       description = "logonMethod: the logon type used for username"
       type = "symbol"

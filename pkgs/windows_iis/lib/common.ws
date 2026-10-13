@@ -53,7 +53,13 @@ fn want_present(params: Value) -> Result[bool, string] {
     Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
+// A PowerShell single-quoted literal. PowerShell treats the curly quotes
+// U+2018 to U+201B as apostrophes too, so each is doubled like ' is.
+fn ps_q(s: string) -> string {
+    let out = s.replace("'", "''")
+    for c in ["‘", "’", "‚", "‛"] { out = out.replace(c, c + c) }
+    "'" + out + "'"
+}
 
 fn itoa(n: int) -> string { json::to_string(Value::Int(n)) }
 
@@ -83,8 +89,12 @@ fn hms(ns: int) -> string {
 // Get-WebConfigurationProperty is not recognized". CwV flattens whatever a
 // configuration read hands back — a ConfigurationAttribute, a raw value, a
 // TimeSpan or a flags enum — into the text this package compares against.
+// CwEnum reads an enum or flags attribute off a raw ConfigurationElement,
+// whose GetAttributeValue hands back the ordinal, and maps it to the schema
+// name (flags: the comma-joined names of the set bits, "" for none).
 fn ps_head() -> string {
-    "$ErrorActionPreference='Stop'; Import-Module WebAdministration; " +
+    "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
+    "Import-Module WebAdministration; " +
     "function CwV($x) {{ " +
     "if ($null -eq $x) {{ return '' }}; " +
     "if ($x.PSObject.Properties.Name -contains 'Value') {{ $x = $x.Value }}; " +
@@ -93,23 +103,86 @@ fn ps_head() -> string {
     "if ($x -is [timespan]) {{ return $x.ToString() }}; " +
     "return ([string]$x) }}; " +
     "function CwEnum($el, $name, $fallback) {{ try {{ " +
-    "$v = $el.GetAttributeValue($name); " +
+    "$v = [int]$el.GetAttributeValue($name); " +
     "$sch = $el.Schema.AttributeSchemas[$name]; " +
+    "if ($null -ne $sch -and $sch.IsCombinedFlags) {{ $n = @(); foreach ($ev in $sch.EnumValues) {{ " +
+    "$b = [int]$ev.Value; if ($b -ne 0 -and (($b -band ($b - 1)) -eq 0) -and (($v -band $b) -eq $b)) {{ $n += [string]$ev.Name }} }}; " +
+    "return ($n -join ',') }}; " +
     "if ($null -ne $sch) {{ foreach ($ev in $sch.EnumValues) {{ " +
-    "if ([int]$ev.Value -eq [int]$v) {{ return [string]$ev.Name }} }} }} " +
+    "if ([int]$ev.Value -eq $v) {{ return [string]$ev.Name }} }} }} " +
     "}} catch {{ }}; return $fallback }}; "
 }
 
+// Flags compared as sets: IIS reports them in its own order and spacing, and
+// an empty set reads back as "None" (or "") however it was written.
+fn flag_set(text: string) -> List[string] {
+    let out: List[string] = []
+    for p in text.split(",") {
+        let t = p.trim().to_lower()
+        if t == "" || t == "none" || out.contains(t) { continue }
+        out.push(t)
+    }
+    out
+}
+
+fn same_flags(have: string, want: string) -> bool {
+    let h = flag_set(have)
+    let w = flag_set(want)
+    if h.len() != w.len() { return false }
+    for x in w { if !h.contains(x) { return false } }
+    true
+}
+
+// The error for a failed command: stderr, else stdout (where sc.exe, msiexec
+// and friends report), with the exit code.
+fn failure(out: CmdOutput) -> string {
+    let text = out.stderr.trim()
+    if text == "" { text = out.stdout.trim() }
+    if text == "" { text = "no output" }
+    "exit code " + itoa(out.code) + ": " + text
+}
+
 fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell(ps_head() + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
+    ps_out_env(script, Value::Map(#{}))
 }
 
 fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell(ps_head() + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    ps_out_env(script, Value::Map(#{}))?
     Ok(())
+}
+
+// Secrets never go into the script text, which is the -Command argument and
+// so visible in the process list and echoed in PowerShell's own error
+// messages. They travel in the environment instead: pass
+// #{ "CW_SECRET": Value::String(pw) } and read $env:CW_SECRET in the script.
+fn ps_out_env(script: string, env: Value) -> Result[string, string] {
+    let out = shell::powershell(ps_head() + script, Value::Map(#{ "env": env }))?
+    if !out.success { return Err(failure(out)) }
+    Ok(out.stdout.trim())
+}
+
+fn ps_run_env(script: string, env: Value) -> Result[unit, string] {
+    ps_out_env(script, env)?
+    Ok(())
+}
+
+fn secret_env(value: string) -> Value {
+    Value::Map(#{ "CW_SECRET": Value::String(value) })
+}
+
+// An IIS attribute or element name spliced into PowerShell or an XPath
+// expression unquoted: $s.<name>, @{<name>=...}, [@<name>='...']. Schema names
+// are letters, digits, '_' and '.' (for a child element's attribute), so
+// anything else is refused rather than escaped.
+fn attr_name(what: string, name: string) -> Result[string, string] {
+    if name == "" { return Err("'" + what + "' is empty") }
+    let ok = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_."
+    for c in name.chars() {
+        if !ok.contains(str(c)) {
+            return Err("'" + what + "' value '" + name + "' is not an IIS attribute name (letters, digits, '_' and '.' only)")
+        }
+    }
+    Ok(name)
 }
 
 fn get_str(m: Value, key: string) -> string {

@@ -19,6 +19,8 @@ use common
 // always_write: IIS attributes this resource owns outright: written even
 //               when empty, so an inherited value can be cleared rather than
 //               kept.
+// required:     string params that must be non-empty when ensure is
+//               :present.
 struct CollectionSpec {
     section: string,
     collection: string,
@@ -27,6 +29,7 @@ struct CollectionSpec {
     attrs: List[List[string]],
     syms: List[List[string]],
     always_write: List[string],
+    required: List[string],
 }
 
 fn iis_symbol(spec: CollectionSpec, name: string, v: string) -> string {
@@ -83,29 +86,8 @@ fn attr_rows(params: Value, spec: CollectionSpec) -> List[List[string]] {
     out
 }
 
-// Attribute names the IIS PowerShell provider also uses for its OWN members on
-// the objects it hands back, where the member wins and the attribute cannot be
-// read at all: asking a caching profile for `location` answers with the
-// -Location it was fetched from. Such an attribute is written but not compared,
-// so its value is applied and drift in it is not detected. The alternative is a
-// resource that reports drift for ever and never converges.
-fn shadowed(attr: string) -> bool {
-    for m in ["location", "filter", "pspath", "itemxpath"] {
-        if m == attr.to_lower() { return true }
-    }
-    false
-}
-
 fn same(kind: string, have: string, want: string) -> bool {
-    if kind == "flags" {
-        let h: List[string] = []
-        for p in have.split(",") { if p.trim() != "" { h.push(p.trim().to_lower()) } }
-        let w: List[string] = []
-        for p in want.split(",") { if p.trim() != "" { w.push(p.trim().to_lower()) } }
-        if h.len() != w.len() { return false }
-        for x in w { if !h.contains(x) { return false } }
-        return true
-    }
+    if kind == "flags" { return common::same_flags(have, want) }
     if kind == "bool" || kind == "sym" {
         return have.replace(" ", "").to_lower() == want.replace(" ", "").to_lower()
     }
@@ -138,43 +120,35 @@ fn coll_filter(spec: CollectionSpec) -> string {
     spec.section + "/" + spec.collection
 }
 
-// 'ABSENT', or a JSON object of the attributes this step cares about.
+// 'ABSENT', or a JSON object of the attributes this step cares about, plus
+// "__tag" (the element's schema tag: add, error, mimeMap) and "__key_<attr>"
+// for each key as IIS stores it.
 //
-// Two reads, not one. GetCollection() yields raw Microsoft.Web.Administration
-// elements, which do NOT expose their attributes as PowerShell properties —
-// only GetAttributeValue works, and that returns an enum's ordinal rather than
-// its schema name. So the element is found by key in the collection, then read
-// back through a filter that addresses it, because a Get-WebConfiguration
-// result IS provider-wrapped and renders an enum as its name.
+// The element is found in GetCollection() by a case-insensitive -eq, as IIS
+// itself matches collection keys. Those raw Microsoft.Web.Administration
+// elements do not expose attributes as properties, so everything is read with
+// GetAttributeValue, and an enum through CwEnum, which maps the ordinal
+// GetAttributeValue returns back to its schema name.
 fn probe(params: Value, spec: CollectionSpec) -> Result[string, string] {
     let get_coll = if spec.collection == "" { "$s.GetCollection()" } else { "$s.GetCollection(" + common::ps_q(spec.collection) + ")" }
     let tests: List[string] = []
-    let predicates = ""
+    let keys = ""
     for r in key_rows(params, spec) {
         let a = r.get(0).unwrap_or("")
         let v = r.get(2).unwrap_or("")
+        common::xp(v)?
         tests.push("[string]$_.GetAttributeValue(" + common::ps_q(a) + ") -eq " + common::ps_q(v))
-        predicates = predicates + "[@" + a + "='" + common::xp(v)? + "']"
+        keys = keys + "$o[" + common::ps_q("__key_" + a) + "]=[string]$m[-1].GetAttributeValue(" + common::ps_q(a) + "); "
     }
-    // The element's own tag is the schema's — add, error, mimeMap — so it is
-    // spliced into the filter at run time rather than guessed.
-    let tmpl = coll_filter(spec) + "/@TAG@" + predicates
     let reads = ""
     for r in attr_rows(params, spec) {
         let a = r.get(0).unwrap_or("")
         let qa = common::ps_q(a)
-        if r.get(1).unwrap_or("") == "sym" {
-            // Schema-resolved first, because an attribute name can collide with
-            // a member the provider adds to its own output — an attribute
-            // called `location` reads back as the -Location it was fetched
-            // from. The addressed read is only the fallback.
+        if r.get(1).unwrap_or("") == "sym" || r.get(1).unwrap_or("") == "flags" {
             // Called with SPACE-separated arguments, not a parenthesised list:
             // in PowerShell `CwEnum($a, $b, $c)` passes ONE argument — the
-            // three-element array — which left $name and $fallback null and
-            // broke every symbol attribute at once. CwV(...) survives that only
-            // because a single parenthesised expression is just an expression.
-            reads = reads + "$fb=''; if ($e.Count -gt 0) {{ $fb=CwV($e[-1]." + a + ") }}; " +
-                "$o[" + qa + "]=(CwEnum $m[-1] " + qa + " $fb); "
+            // three-element array.
+            reads = reads + "$o[" + qa + "]=(CwEnum $m[-1] " + qa + " (CwV($m[-1].GetAttributeValue(" + qa + ")))); "
         } else {
             reads = reads + "$o[" + qa + "]=CwV($m[-1].GetAttributeValue(" + qa + ")); "
         }
@@ -187,27 +161,48 @@ fn probe(params: Value, spec: CollectionSpec) -> Result[string, string] {
         "if ($null -eq $s) {{ 'ABSENT' }} else {{ " +
         "$m = @(" + get_coll + " | Where-Object {{ " + tests.join(" -and ") + " }}); " +
         "if ($m.Count -eq 0) {{ 'ABSENT' }} else {{ " +
-        "$tag = [string]$m[-1].ElementTagName; " +
-        "$f = (" + common::ps_q(tmpl) + ").Replace('@TAG@', $tag); " +
-        "$e = @(); try {{ $e = @(Get-WebConfiguration" + spec.scope + " -Filter $f) }} catch {{ }}; " +
-        "$o=@{{}}; $o['__tag']=$tag; " + reads +
+        "$o=@{{}}; $o['__tag']=[string]$m[-1].ElementTagName; " + keys + reads +
         "[pscustomobject]$o | ConvertTo-Json -Compress }} }}")
 }
 
-// The XPath addressing this resource's element inside its collection. The tag
-// is the schema's — add, error, mimeMap, rewriteMap — so it comes from the
-// probe rather than being guessed.
-fn element_filter(params: Value, spec: CollectionSpec) -> Result[string, string] {
-    let tag = common::get_str(json::parse(probe(params, spec)?)?, "__tag")
+// The key rows as IIS stores them. A key that differs from the step's only in
+// case is the same element to IIS, but an XPath predicate or -AtElement built
+// from the step's spelling would miss it.
+fn live_keys(params: Value, spec: CollectionSpec, have: Value) -> List[List[string]] {
+    let out: List[List[string]] = []
+    for r in key_rows(params, spec) {
+        let a = r.get(0).unwrap_or("")
+        out.push([a, r.get(1).unwrap_or(""), common::get_str(have, "__key_" + a)])
+    }
+    out
+}
+
+// The XPath addressing the live element inside its collection.
+fn element_filter(params: Value, spec: CollectionSpec, have: Value) -> Result[string, string] {
+    let tag = common::get_str(have, "__tag")
     if tag == "" { return Err("could not read the element's tag name") }
     let out = coll_filter(spec) + "/" + tag
-    for r in key_rows(params, spec) {
+    for r in live_keys(params, spec, have) {
         out = out + "[@" + r.get(0).unwrap_or("") + "='" + common::xp(r.get(2).unwrap_or(""))? + "']"
     }
     Ok(out)
 }
 
+// Names and required params checked in check() as well as apply(), so a bad
+// step fails loudly rather than reporting drift for ever.
+fn validate(params: Value, spec: CollectionSpec) -> Result[unit, string] {
+    for r in spec.keys.concat(spec.attrs) { common::attr_name("attribute", r.get(1).unwrap_or(""))? }
+    if !common::want_present(params)? { return Ok(()) }
+    for name in spec.required {
+        if common::param_str(params, name, "") == "" {
+            return Err("'" + name + "' is required when ensure is :present")
+        }
+    }
+    Ok(())
+}
+
 fn check(params: Value, spec: CollectionSpec) -> Result[CheckResult, string] {
+    validate(params, spec)?
     let st = probe(params, spec)?
     if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
@@ -216,9 +211,7 @@ fn check(params: Value, spec: CollectionSpec) -> Result[CheckResult, string] {
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
     let have = json::parse(st)?
     for r in attr_rows(params, spec) {
-        let a = r.get(0).unwrap_or("")
-        if shadowed(a) { continue }
-        if !same(r.get(1).unwrap_or(""), common::get_str(have, a), r.get(2).unwrap_or("")) {
+        if !same(r.get(1).unwrap_or(""), common::get_str(have, r.get(0).unwrap_or("")), r.get(2).unwrap_or("")) {
             return Ok(CheckResult::NotConfigured)
         }
     }
@@ -226,14 +219,14 @@ fn check(params: Value, spec: CollectionSpec) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value, spec: CollectionSpec) -> Result[ApplyResult, string] {
+    validate(params, spec)?
     let st = probe(params, spec)?
     let filter = common::ps_q(coll_filter(spec))
-    let at = ps_hash(key_rows(params, spec))
     if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing element from " + coll_filter(spec))
         common::ps_run("Remove-WebConfigurationProperty" + spec.scope + " -Filter " + filter +
-            " -Name '.' -AtElement " + at)?
+            " -Name '.' -AtElement " + ps_hash(live_keys(params, spec, json::parse(st)?)))?
         return Ok(ApplyResult::Success)
     }
     if st == "ABSENT" {
@@ -245,18 +238,15 @@ fn apply(params: Value, spec: CollectionSpec) -> Result[ApplyResult, string] {
     // The element is there: set the attributes that differ on it in place.
     // Remove-and-re-add would also work for an element this level owns, but
     // it moves the element to the end of the collection, which matters
-    // wherever order does — handlers, rewrite rules. Whether an override of an
-    // entry the location merely INHERITS converges has not been exercised by
-    // a test; the entries the suite covers are ones the location owns.
+    // wherever order does — handlers, rewrite rules.
     let have = json::parse(st)?
-    let elem = element_filter(params, spec)?
+    let elem = element_filter(params, spec, have)?
     let script = ""
     for r in attr_rows(params, spec) {
         let a = r.get(0).unwrap_or("")
         let kind = r.get(1).unwrap_or("")
         let want = r.get(2).unwrap_or("")
-        // A shadowed attribute cannot be read, so it is always written.
-        if !shadowed(a) && same(kind, common::get_str(have, a), want) { continue }
+        if same(kind, common::get_str(have, a), want) { continue }
         script = script + "Set-WebConfigurationProperty" + spec.scope + " -Filter " + common::ps_q(elem) +
             " -Name " + common::ps_q(a) + " -Value " + ps_literal(kind, want) + "; "
     }
