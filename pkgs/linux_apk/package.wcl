@@ -44,6 +44,24 @@ package "linux_apk" {
     }
   }
 
+  resource "signing_key" {
+    description = "Ensure a repository signing key is at /etc/apk/keys/<name>.rsa.pub, from content or downloaded from url, or is absent. A change makes the next cache_updated refresh"
+    script = "resources/signing_key.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Key file basename; .rsa.pub is appended. Letters, digits, '_', '-', '.', '@' and '+', not starting with '.' or '-' (alpine-devel@lists.alpinelinux.org-6165ee59)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the key file" }
+      symbol "absent"  { description = "Delete the key file" }
+    }
+    param "content" { description = "The PEM public key (BEGIN PUBLIC KEY). Set exactly one of content and url when present" type = "string" default = "" }
+    param "url" { description = "http(s) URL to download the key from. The download is moved into place only when its hash matches sha256" type = "string" default = "" }
+    param "sha256" { description = "SHA-256 of the key file, hex. Required with url, and what the key on disk is checked against, so check never downloads; optional with content, where it must match" type = "string" default = "" }
+  }
+
   // Real installs over the container's NAT: the packages are tiny and live
   // in Alpine's main repository.
   test "package_installs" {
@@ -189,6 +207,85 @@ package "linux_apk" {
       resource = "repository"
       expect = "error"
       properties { url = "https://a.invalid/x\nhttps://b.invalid/y" }
+    }
+  }
+
+  test "signing_keys_converge" {
+    description = "signing_key writes keys from content and url, fixes drift and removes"
+    image = "alpine:3.20"
+    setup = "echo stale > /etc/apk/keys/cw-drift.rsa.pub && echo old > /etc/apk/keys/cw-old.rsa.pub && rm -f /etc/apk/keys/cw-content.rsa.pub /etc/apk/keys/cw-alpine-6165ee59.rsa.pub"
+    verify = "tests/apk_signing_key_verify.ws"
+
+    step "content" {
+      description = "Write a key from content"
+      resource = "signing_key"
+      properties {
+        name = "cw-content"
+        content = <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzwVNDpPH0hLopx5xaDYL
+xVWY1ZlRl+qVZvRlAOf5OOiH8mZ4jE4kkNADTP3MYnjDyygmUaqIm6omAiuPS0Yc
+fIO/c9YzT6qWi9SRjJRqOj1PUq0pM+lXejaNHBeFj9A9I3X+E58G9X3IWNhYhCHg
+yylsEqjA2QSOPXS1/YKzec5sufSrYS9WPY1hWb9EFmFuAC27JD/QoghMMIzCs9w3
+KANMUb7s9KBxxORdvg3dflyE2K5MVf8UWGBtvSBBzIsLNCz3Vtks5RQxQuUMCSYK
+oVsaEyrjGcDS5pQh0Fv1A0WHNq6AiPAgNlbgNtHi+sKLPZx6cVJSF6iRksb5pNLa
+iwIDAQAB
+-----END PUBLIC KEY-----
+KEY
+      }
+    }
+
+    step "drift" {
+      description = "Rewrite a key file whose content drifted"
+      resource = "signing_key"
+      properties {
+        name = "cw-drift"
+        content = <<'KEY'
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzwVNDpPH0hLopx5xaDYL
+xVWY1ZlRl+qVZvRlAOf5OOiH8mZ4jE4kkNADTP3MYnjDyygmUaqIm6omAiuPS0Yc
+fIO/c9YzT6qWi9SRjJRqOj1PUq0pM+lXejaNHBeFj9A9I3X+E58G9X3IWNhYhCHg
+yylsEqjA2QSOPXS1/YKzec5sufSrYS9WPY1hWb9EFmFuAC27JD/QoghMMIzCs9w3
+KANMUb7s9KBxxORdvg3dflyE2K5MVf8UWGBtvSBBzIsLNCz3Vtks5RQxQuUMCSYK
+oVsaEyrjGcDS5pQh0Fv1A0WHNq6AiPAgNlbgNtHi+sKLPZx6cVJSF6iRksb5pNLa
+iwIDAQAB
+-----END PUBLIC KEY-----
+KEY
+      }
+    }
+
+    step "url" {
+      description = "Download Alpine's own key and check it by hash"
+      resource = "signing_key"
+      properties {
+        name = "cw-alpine-6165ee59"
+        url = "https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+        sha256 = "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+      }
+    }
+
+    step "bad_hash" {
+      description = "A download whose hash does not match is refused"
+      resource = "signing_key"
+      expect = "error"
+      properties {
+        name = "cw-bad-hash"
+        url = "https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub"
+        sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+
+    step "remove" {
+      description = "Remove an existing key"
+      resource = "signing_key"
+      properties { name = "cw-old" ensure = :absent }
+    }
+
+    step "traversal" {
+      description = "A name with a path separator is rejected"
+      resource = "signing_key"
+      expect = "error"
+      properties { name = "../cw-escape" ensure = :absent }
     }
   }
 }
