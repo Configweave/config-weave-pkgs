@@ -102,7 +102,7 @@ fn settle(m: Machine) -> Result[bool, string] {
         if let Ok(r) = m.powershell("'ok'") {
             if r.stdout.trim() == "ok" { return Ok(true) }
         }
-        m.wait_ready(60)?
+        if let Err(_) = m.wait_ready(60) { }
     }
     Err(m.name() + ": the guest agent never answered a command")
 }
