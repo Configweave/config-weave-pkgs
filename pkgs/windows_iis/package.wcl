@@ -706,6 +706,15 @@ package "windows_iis" {
     param "one_to_one_enabled" { description = "oneToOneCertificateMappingsEnabled: honour the one-to-one mapping table" type = "bool" }
     param "many_to_one_enabled" { description = "manyToOneCertificateMappingsEnabled: honour the many-to-one mapping table" type = "bool" }
     param "default_logon_domain" { description = "defaultLogonDomain: domain used when a mapping names a bare user name" type = "string" default = "" }
+    param "logon_method" {
+      description = "logonMethod: the logon type used for the mapped account"
+      type = "symbol"
+
+      symbol "interactive" { description = "Interactive logon" }
+      symbol "batch"       { description = "Batch logon" }
+      symbol "network"     { description = "Network logon" }
+      symbol "cleartext"   { description = "Cleartext network logon, which lets the token reach the network" }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -826,8 +835,8 @@ package "windows_iis" {
       symbol "present" { description = "Add the entry" }
       symbol "absent"  { description = "Remove the entry" }
     }
-    param "ip_address" { description = "ipAddress: the client address; with subnet_mask it covers a range. Give either this or domain_name" type = "string" default = "" }
-    param "subnet_mask" { description = "subnetMask: the mask applied to ip_address, such as 255.255.255.0" type = "string" default = "255.255.255.255" }
+    param "ip_address" { description = "ipAddress: the client address; with subnet_mask it covers a range. Give exactly one of this and domain_name" type = "string" default = "" }
+    param "subnet_mask" { description = "subnetMask: the mask applied to ip_address, such as 255.255.255.0. Part of the entry's identity with ip_address and domain_name, so the same address with another mask is a separate entry" type = "string" default = "255.255.255.255" }
     param "domain_name" { description = "domainName: a DNS name to match; needs enable_reverse_dns on the settings resource" type = "string" default = "" }
     param "allowed" { description = "allowed: true admits the client, false refuses it" type = "bool" default = true }
   }

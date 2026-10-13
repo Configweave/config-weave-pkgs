@@ -3,7 +3,9 @@ use common
 use collection
 
 // ---------------------------------------------------------------------------
-// One IP, subnet or domain entry.
+// One IP, subnet or domain entry. IIS keys the element on (ipAddress,
+// subnetMask, domainName), so the same address with two masks is two
+// entries, and changing subnet_mask names a different entry.
 // ---------------------------------------------------------------------------
 
 fn section(params: Value) -> Result[string, string] {
@@ -20,6 +22,7 @@ fn scope(params: Value) -> Result[string, string] { common::scope_delegated(para
 fn keys(params: Value) -> Result[List[List[string]], string] {
     Ok([
         ["ip_address", "ipAddress", "str"],
+        ["subnet_mask", "subnetMask", "str"],
         ["domain_name", "domainName", "str"],
     ])
 }
@@ -27,7 +30,6 @@ fn keys(params: Value) -> Result[List[List[string]], string] {
 // [param, IIS attribute, kind] set on the element
 fn attrs(params: Value) -> Result[List[List[string]], string] {
     Ok([
-        ["subnet_mask", "subnetMask", "str"],
         ["allowed", "allowed", "bool"],
     ])
 }
@@ -40,6 +42,9 @@ fn sym_map() -> List[List[string]] { [] }
 fn always_write() -> List[string] { [] }
 
 fn spec(params: Value) -> Result[CollectionSpec, string] {
+    let ip = common::param_str(params, "ip_address", "")
+    let dn = common::param_str(params, "domain_name", "")
+    if (ip == "") == (dn == "") { return Err("give exactly one of 'ip_address' and 'domain_name'") }
     Ok(CollectionSpec {
         section: section(params)?,
         collection: collection(params)?,
