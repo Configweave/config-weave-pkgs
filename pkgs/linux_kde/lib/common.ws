@@ -1,6 +1,6 @@
 use value
 use env
-use fs
+use shell
 
 // Helpers shared by linux_kde's resources and gatherers. Imported with
 // `use common`; nothing here is package-external.
@@ -17,11 +17,38 @@ fn want_present(params: Value) -> Result[bool, string] {
     Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
 }
 
-fn home(params: Value) -> string {
-    let h = param_str(params, "home", "")
-    if h != "" { h } else { env::home_dir() }
+fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
+
+// A failed command's error: stderr, else stdout, always with the exit code.
+fn cmd_err(what: string, out: CmdOutput) -> string {
+    let text = if out.stderr.trim() != "" { out.stderr.trim() } else { out.stdout.trim() }
+    let head = what + " failed (exit " + str(out.code) + ")"
+    if text == "" { head } else { head + ": " + text }
 }
 
-fn has_any(a: string, b: string) -> bool {
-    fs::exists(a) || fs::exists(b)
+fn output(what: string, cmd: string) -> Result[string, string] {
+    let out = shell::bash(cmd, Value::Null)?
+    if !out.success { return Err(cmd_err(what, out)) }
+    Ok(out.stdout.trim())
+}
+
+// The target home: the `home` param, else the account the engine runs as,
+// looked up in the passwd database. $HOME is only the last resort, because
+// agents and service managers often run with HOME=/.
+fn home(params: Value) -> string {
+    let h = param_str(params, "home", "")
+    if h != "" { return h }
+    if let Ok(out) = shell::bash("getent passwd \"$(id -u)\" | cut -d: -f6", Value::Null) {
+        if out.success && out.stdout.trim() != "" { return out.stdout.trim() }
+    }
+    env::home_dir()
+}
+
+fn on_path(cmd: string) -> bool {
+    if let Ok(out) = shell::bash("command -v " + q(cmd) + " >/dev/null 2>&1", Value::Null) { out.success } else { false }
+}
+
+// "uid:gid" of a path, following symlinks.
+fn owner(p: string) -> Result[string, string] {
+    output("reading the owner of " + p, "stat -L -c '%u:%g' -- " + q(p))
 }

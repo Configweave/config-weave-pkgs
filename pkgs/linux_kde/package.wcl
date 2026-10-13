@@ -2,7 +2,7 @@ package "linux_kde" {
   description = "Manage KDE Plasma configuration files"
 
   gatherer "kde_paths" {
-    description = "Report KDE user configuration and data paths"
+    description = "Report KDE user configuration and data paths, and whether the Plasma 6 config tools are on PATH"
     script = "gatherers/kde_paths.ws"
     returns "home" { description = "Resolved home directory" type = "string" }
     returns "config_dir" { description = "KDE config directory (~/.config)" type = "string" }
@@ -10,15 +10,16 @@ package "linux_kde" {
     returns "has_kreadconfig6" { description = "True when kreadconfig6 is on PATH" type = "bool" }
     returns "has_kwriteconfig6" { description = "True when kwriteconfig6 is on PATH" type = "bool" }
     returns "has_plasma_apply_colorscheme" { description = "True when plasma-apply-colorscheme is on PATH" type = "bool" }
-    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "home" { description = "Target home directory; defaults to the home of the account config-weave runs as, from the passwd database ($HOME only when that lookup fails)" type = "string" default = "" }
   }
 
   gatherer "kde_version" {
-    description = "Detect available KDE Plasma configuration tools"
+    description = "Detect the installed Plasma version and KConfig command-line tools, searching PATH"
     script = "gatherers/kde_version.ws"
-    returns "plasma_major" { description = "Plasma major version (0 when undetected)" type = "int" }
-    returns "has_kreadconfig6" { description = "True when the Plasma 6 kconfig tools are present" type = "bool" }
-    returns "has_legacy_kconfig_tools" { description = "True when only the Plasma 5 kconfig tools are present" type = "bool" }
+    returns "plasma_major" { description = "Plasma major version from plasmashell --version (0 when plasmashell is not installed)" type = "int" }
+    returns "kconfig_tools_major" { description = "Major version of the newest kreadconfig/kwriteconfig tools on PATH: 6, 5, or 0 when neither" type = "int" }
+    returns "has_kreadconfig6" { description = "True when kreadconfig6 or kwriteconfig6 is on PATH" type = "bool" }
+    returns "has_legacy_kconfig_tools" { description = "True when only the KDE Frameworks 5 tools (kreadconfig5/kwriteconfig5) are on PATH, with no 6 tools" type = "bool" }
   }
 
   resource "kconfig_entry" {
@@ -50,9 +51,14 @@ package "linux_kde" {
     verify = "tests/kconfig_verify.ws"
 
     gather "version" {
-      description = "KDE tool detection works without installed KDE tools"
+      description = "KDE detection reports nothing without installed KDE tools"
       from = "kde_version"
-      expect { plasma_major = 0 }
+      expect {
+        plasma_major = 0
+        kconfig_tools_major = 0
+        has_kreadconfig6 = false
+        has_legacy_kconfig_tools = false
+      }
     }
 
     step "kdeglobals" {
@@ -83,6 +89,49 @@ package "linux_kde" {
       description = "Remove a key seeded during setup"
       resource = "kconfig_entry"
       properties { home = "/tmp/cw-kde-home" file = "ksmserverrc" group = "General" key = "stale" ensure = :absent }
+    }
+  }
+
+  test "kde_tools_plasma6" {
+    description = "kde_version reports Plasma 6 and the 6 tools, which win over the 5 tools"
+    image = "debian:12"
+    setup = "for t in kreadconfig5 kwriteconfig5 kreadconfig6; do printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/$t; done && printf '#!/bin/sh\\necho plasmashell 6.2.4\\n' > /usr/local/bin/plasmashell && chmod +x /usr/local/bin/*"
+
+    gather "version" {
+      description = "Plasma 6 with both tool generations installed"
+      from = "kde_version"
+      expect {
+        plasma_major = 6
+        kconfig_tools_major = 6
+        has_kreadconfig6 = true
+        has_legacy_kconfig_tools = false
+      }
+    }
+
+    gather "paths" {
+      description = "kde_paths finds kreadconfig6 on PATH outside /usr/bin"
+      from = "kde_paths"
+      expect {
+        has_kreadconfig6 = true
+        has_kwriteconfig6 = false
+      }
+    }
+  }
+
+  test "kde_tools_plasma5" {
+    description = "kde_version reports Plasma 5 with only the legacy tools"
+    image = "debian:12"
+    setup = "printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/kwriteconfig5 && printf '#!/bin/sh\\necho plasmashell 5.27.11\\n' > /usr/local/bin/plasmashell && chmod +x /usr/local/bin/kwriteconfig5 /usr/local/bin/plasmashell"
+
+    gather "version" {
+      description = "Plasma 5 with only the 5 tools"
+      from = "kde_version"
+      expect {
+        plasma_major = 5
+        kconfig_tools_major = 5
+        has_kreadconfig6 = false
+        has_legacy_kconfig_tools = true
+      }
     }
   }
 }
