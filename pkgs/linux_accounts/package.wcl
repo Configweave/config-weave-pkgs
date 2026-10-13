@@ -39,10 +39,10 @@ package "linux_accounts" {
   }
 
   resource "sudoers_user" {
-    description = "Ensure a sudoers.d rule for a user exists or is absent"
+    description = "Ensure a sudoers.d rule '<user> ALL=(ALL:ALL) [NOPASSWD: ]<commands>' exists, owned by root with mode 0440, or is absent. The drop-in is /etc/sudoers.d/<user> with '.' replaced by '_', because sudo skips file names containing '.'. A new rule is written under a name sudo ignores, secured, checked with visudo -cf, and only then renamed into place, so an invalid rule never goes live and the old rule survives a failed update"
     script = "resources/sudoers_user.ws"
     concurrency = "global"
-    param "user" { description = "Account the rule applies to" type = "string" required = true }
+    param "user" { description = "Account the rule applies to, or %group: letters, digits, '_', '.' and '-'. A dotted name maps to a '_' file name, and a drop-in that already holds a different user's rule is an error" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -52,8 +52,8 @@ package "linux_accounts" {
       symbol "absent"  { description = "Remove the sudoers.d rule" }
     }
     param "passwordless" { description = "Allow sudo without a password (NOPASSWD)" type = "bool" default = false }
-    param "commands" { description = "Command specification for the rule" type = "string" default = "ALL" }
-    param "validate" { description = "Run visudo validation when available" type = "bool" default = true }
+    param "commands" { description = "Command specification for the rule, on one line and not empty, such as ALL or '/usr/bin/systemctl restart nginx'" type = "string" default = "ALL" }
+    param "validate" { description = "Check the rule with visudo -cf before it goes live, when visudo is installed. With false, a syntactically wrong rule can break sudo for everyone" type = "bool" default = true }
   }
 
   // The absent steps converge on entities seeded during setup (run 1 checks
@@ -172,6 +172,65 @@ package "linux_accounts" {
       resource = "user"
       expect = "error"
       properties { name = "cwreg" shell = "/bin/sh:0" }
+    }
+  }
+
+  test "sudoers_converge" {
+    description = "sudoers drop-ins are validated before they go live, keep 0440 root, and reject injected rules"
+    image = "debian:12"
+    setup = "(command -v visudo >/dev/null || (apt-get update -qq && apt-get install -y -qq sudo)) && mkdir -p /etc/sudoers.d && printf 'cwmode ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwmode && chmod 0666 /etc/sudoers.d/cwmode && printf 'cwkeep ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwkeep && chmod 0440 /etc/sudoers.d/cwkeep"
+    verify = "tests/sudoers_verify.ws"
+
+    step "mode" {
+      description = "A world-writable drop-in with the right rule is re-secured"
+      resource = "sudoers_user"
+      properties { user = "cwmode" }
+    }
+
+    step "dotted" {
+      description = "A dotted user gets a drop-in sudo actually reads"
+      resource = "sudoers_user"
+      properties { user = "john.doe" passwordless = true }
+    }
+
+    step "group_rule" {
+      description = "A %group rule"
+      resource = "sudoers_user"
+      properties { user = "%cwadmins" commands = "/usr/bin/id" }
+    }
+
+    step "no_validate" {
+      description = "A rule written without visudo"
+      resource = "sudoers_user"
+      properties { user = "cwnoval" commands = "/usr/bin/id" validate = false }
+    }
+
+    step "invalid_keeps_old" {
+      description = "A rule visudo rejects never replaces the live one"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwkeep" commands = "= /bin/ls" }
+    }
+
+    step "newline" {
+      description = "Commands with a line break would add a second rule"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwinject" commands = "/bin/ls\nALL ALL=(ALL) NOPASSWD: ALL" validate = false }
+    }
+
+    step "empty_commands" {
+      description = "Empty commands are rejected even without visudo"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwempty" commands = " " validate = false }
+    }
+
+    step "spaced_user" {
+      description = "A user with whitespace would rewrite the rule"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cw ALL=(ALL) NOPASSWD: ALL #" validate = false }
     }
   }
 }
