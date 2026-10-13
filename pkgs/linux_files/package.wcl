@@ -108,15 +108,15 @@ package "linux_files" {
   }
 
   gatherer "path_stat" {
-    description = "Report a path's existence, type, size and mode"
+    description = "Report a path's existence, type, size and mode. Describes the path itself and never follows a symlink: a dangling symlink exists, and a symlink to a directory reports is_symlink rather than is_dir"
     script = "gatherers/path_stat.ws"
     returns "path" { description = "The path that was examined" type = "string" }
-    returns "exists" { description = "True when the path exists" type = "bool" }
-    returns "size" { description = "Size in bytes (only when exists)" type = "int" }
-    returns "is_file" { description = "True for a regular file (only when exists)" type = "bool" }
-    returns "is_dir" { description = "True for a directory (only when exists)" type = "bool" }
+    returns "exists" { description = "True when anything is at the path, a dangling symlink included" type = "bool" }
+    returns "size" { description = "Size in bytes of the path itself (only when exists)" type = "int" }
+    returns "is_file" { description = "True for a regular file, false for a symlink to one (only when exists)" type = "bool" }
+    returns "is_dir" { description = "True for a directory, false for a symlink to one (only when exists)" type = "bool" }
     returns "is_symlink" { description = "True for a symlink (only when exists)" type = "bool" }
-    returns "mode" { description = "Unix permission bits (only when exists)" type = "int" }
+    returns "mode" { description = "Permission bits as an int, without file-type bits: 420 for 0644 (only when exists)" type = "int" }
     returns "modified" { description = "mtime as a unix timestamp (only when exists)" type = "int" }
     param "path" { description = "Target path" type = "string" required = true }
   }
@@ -253,7 +253,22 @@ TMPL
       description = "Stat the seed file created during setup"
       from = "path_stat"
       params { path = "/tmp/cw-del.txt" }
-      expect { exists = true }
+      expect {
+        exists = true
+        is_file = true
+        mode = 420
+      }
+    }
+
+    gather "dangling_stat" {
+      description = "A dangling symlink exists and is a symlink"
+      from = "path_stat"
+      params { path = "/tmp/cw-dangling-rm" }
+      expect {
+        exists = true
+        is_symlink = true
+        is_file = false
+      }
     }
 
     gather "src_matches" {
