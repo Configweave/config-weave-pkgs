@@ -2,12 +2,20 @@ package "linux_network" {
   description = "Manage Linux network configuration and firewalls"
 
   resource "hosts_entry" {
-    description = "Ensure an /etc/hosts entry maps an address to a set of names"
+    description = "Ensure /etc/hosts has exactly one line for an address, mapping it to exactly the given names in order, or no line for it. Lines are matched on their first field, so whitespace and trailing comments do not matter; a line for the address with other names is rewritten in place and further lines for it are removed. The address is compared as written (::1 and 0::1 are different addresses), and a name listed under another address is left alone. The file is rewritten in place, not renamed over, because container runtimes bind-mount it"
     script = "resources/hosts_entry.ws"
     // read-modify-write on the shared /etc/hosts — parallel steps lose updates
     concurrency = "exclusive"
-    param "ip" { description = "IP address" type = "string" required = true }
-    param "names" { description = "Host names for the address (first is canonical)" type = "list" required = true }
+    param "ip" { description = "IP address, the line's first field" type = "string" required = true }
+    param "names" { description = "Host names for the address, first is canonical (required when :present). No whitespace or '#'" type = "list" default = [] }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the line for the address, replacing any existing ones" }
+      symbol "absent"  { description = "Remove every line for the address" }
+    }
   }
 
   resource "firewalld_rule" {
@@ -103,15 +111,45 @@ package "linux_network" {
   }
 
   test "network_files_converge" {
-    description = "hosts entries converge in a Debian container"
+    description = "hosts entries are added, renamed, deduplicated and removed in a Debian container"
     image = "debian:12"
     group = "network"
+    // 192.0.2.20 is seeded under its old names twice (once tab-separated
+    // with a comment); .30 is already right but spaced differently; .40 is
+    // removed.
+    setup = "grep -q cw-old /etc/hosts || printf '192.0.2.20 cw-old.local cw-old\\n# keep me\\n192.0.2.20\\tcw-old2   # stale\\n192.0.2.30   cw-spaced\\tcw-sp # ok\\n192.0.2.40 cw-gone\\n' >> /etc/hosts"
     verify = "tests/network_verify.ws"
 
     step "hosts" {
       description = "Add a hosts entry"
       resource = "hosts_entry"
       properties { ip = "192.0.2.10" names = ["cw-test.local", "cw-test"] }
+    }
+
+    step "rename" {
+      description = "Replace the names of an address seeded twice with old names"
+      resource = "hosts_entry"
+      properties { ip = "192.0.2.20" names = ["cw-new.local", "cw-new"] }
+    }
+
+    step "spacing" {
+      description = "A line that differs only in whitespace and a comment is already converged"
+      resource = "hosts_entry"
+      expect = "already_configured"
+      properties { ip = "192.0.2.30" names = ["cw-spaced", "cw-sp"] }
+    }
+
+    step "remove" {
+      description = "Remove a seeded address"
+      resource = "hosts_entry"
+      properties { ip = "192.0.2.40" ensure = :absent }
+    }
+
+    step "newline" {
+      description = "A name that would add a second hosts line is rejected"
+      resource = "hosts_entry"
+      expect = "error"
+      properties { ip = "192.0.2.50" names = ["cw-a\n10.0.0.1 evil"] }
     }
   }
 
