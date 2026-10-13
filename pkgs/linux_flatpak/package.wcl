@@ -1,35 +1,60 @@
 package "linux_flatpak" {
-  description = "Manage Flatpak applications and remotes"
+  description = "Manage Flatpak applications and remotes. Every command is scoped to one installation, :system (/var/lib/flatpak, the default) or :user (root's, since config-weave runs as root). flatpak subcommands share one lock per installation, and steps of different resource types can run at the same time, so order them with requires"
 
   resource "package" {
-    description = "Ensure a Flatpak application is installed or absent"
+    description = "Ensure a Flatpak app or runtime is installed in an installation from a given remote, or is not installed. An app installed from another remote is reinstalled from this one (flatpak install --reinstall)"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "id" { description = "Application id (e.g. org.mozilla.firefox)" type = "string" required = true }
+    param "id" { description = "Application or runtime id (org.mozilla.firefox): letters, digits, '_', '-' and '.'. Every installed branch counts" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the application" }
-      symbol "absent"  { description = "Uninstall the application" }
+      symbol "present" { description = "Install it from remote" }
+      symbol "absent"  { description = "Uninstall it" }
     }
-    param "remote" { description = "Remote to install from" type = "string" default = "flathub" }
+    param "remote" { description = "Remote to install from, configured in the same installation (linux_flatpak.remote); every installed branch must have come from it" type = "string" default = "flathub" }
+    param "kind" {
+      description = "Whether id names an app or a runtime; passed to flatpak as --app or --runtime, so an id that matches both is not ambiguous"
+      type = "symbol"
+      default = :app
+
+      symbol "app"     { description = "An application" }
+      symbol "runtime" { description = "A runtime or extension" }
+    }
+    param "installation" {
+      description = "Which flatpak installation to manage"
+      type = "symbol"
+      default = :system
+
+      symbol "system" { description = "The system-wide installation" }
+      symbol "user"   { description = "root's per-user installation" }
+    }
   }
 
   resource "remote" {
-    description = "Ensure a Flatpak remote is configured or absent"
+    description = "Ensure a Flatpak remote is configured, enabled, at url and with the wanted GPG verification, or is absent. A disabled remote (Fedora ships flathub disabled) is drift and is re-enabled. Changes are made with remote-modify, so apps installed from it stay"
     script = "resources/remote.ws"
     concurrency = "exclusive"
-    param "name" { description = "Remote name" type = "string" required = true }
-    param "url" { description = "Remote URL (required when :present)" type = "string" default = "" }
+    param "name" { description = "Remote name: letters, digits, '_', '-' and '.'" type = "string" required = true }
+    param "url" { description = "Repository URL, or a .flatpakrepo descriptor URL (https://dl.flathub.org/repo/flathub.flatpakrepo); required when present. A repository URL is compared with the remote's (trailing slashes aside) and changed with remote-modify --url. A descriptor is only read when the remote is added: the remote stores the repository URL inside it, so checking it would mean downloading the descriptor on every run, and it is not compared" type = "string" default = "" }
+    param "gpg_verify" { description = "Whether flatpak verifies the remote's GPG signatures. A remote added from a plain URL with verification on needs its key imported separately; a .flatpakrepo descriptor carries it" type = "bool" default = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Add the remote" }
-      symbol "absent"  { description = "Delete the remote" }
+      symbol "present" { description = "Add the remote, or bring it in line" }
+      symbol "absent"  { description = "Delete the remote. flatpak refuses while anything installed came from it, and that is an error: uninstall those first" }
+    }
+    param "installation" {
+      description = "Which flatpak installation to manage"
+      type = "symbol"
+      default = :system
+
+      symbol "system" { description = "The system-wide installation" }
+      symbol "user"   { description = "root's per-user installation" }
     }
   }
 
@@ -37,7 +62,7 @@ package "linux_flatpak" {
   // and runtimes rather than refreshing metadata: flatpak resolves against the
   // remote live, so an `--appstream` refresh would buy nothing.
   resource "updated" {
-    description = "Run flatpak update when the last update is older than max_age"
+    description = "Run flatpak update, which upgrades every installed app and runtime in the installation to its remote's latest commit, when the last update this resource made is older than max_age. Disruptive: running apps keep their old version until restarted, and an update can change app behaviour. The update time is the mtime of /var/lib/config-weave/flatpak-updated-<installation>"
     script = "resources/updated.ws"
     concurrency = "exclusive"
     param "installation" {
@@ -46,7 +71,7 @@ package "linux_flatpak" {
       default = :system
 
       symbol "system" { description = "Update the system-wide installation" }
-      symbol "user"   { description = "Update the calling user's installation" }
+      symbol "user"   { description = "Update root's per-user installation" }
     }
     param "max_age" {
       description = "Update when the last update is older than this span"
@@ -55,22 +80,169 @@ package "linux_flatpak" {
     }
   }
 
-  // Needs the network and a real flatpak install, so the test runs in a
-  // Fedora VM with NAT. `remote` converges against flathub; `package` is
-  // exercised through its absent path only — installing a real app pulls a
-  // multi-hundred-megabyte runtime, which is scenario territory, not a
-  // convergence test. `updated` is cheap here for the same reason: with no
-  // apps installed, `flatpak update` is a no-op that still writes its stamp.
-  //
-  // The steps are chained with `requires`: `exclusive` only serializes steps
-  // of the SAME resource type, but every flatpak subcommand contends for the
-  // one system installation lock. Playbooks mixing these need the same
-  // ordering.
-  test "remote_converges" {
-    description = "The flathub remote, an absent app and the update window all converge"
-    template = "x86_64/fedora-44"
-    setup = "dnf install -y flatpak"
+  // Setup builds a local file:// repository holding a one-file runtime and
+  // three one-script apps, so installs are offline and take a second. The
+  // runtime's build directory needs files/ as well as the usr/ it exports.
+  test "remotes_converge" {
+    description = "remote adds, re-enables, re-points and deletes remotes, per installation"
+    image = "fedora:44"
+    memory = "2GiB"
+    setup = <<'SETUP'
+set -e
+command -v flatpak >/dev/null || dnf -y -q install flatpak >/dev/null
+r=/srv/cw-flatpak
+rm -rf "$r" /tmp/cwb && mkdir -p /tmp/cwb/rt/files /tmp/cwb/rt/usr/bin
+printf '[Runtime]\nname=org.cw.Platform\nruntime=org.cw.Platform/x86_64/1\nsdk=org.cw.Platform/x86_64/1\n' > /tmp/cwb/rt/metadata
+cp /usr/bin/true /tmp/cwb/rt/usr/bin/
+flatpak build-export --runtime --no-update-summary "$r" /tmp/cwb/rt 1 >/dev/null
+for app in Hello Other Gone; do
+  a=/tmp/cwb/$app && mkdir -p "$a/files/bin" "$a/export"
+  printf '#!/bin/sh\necho %s\n' "$app" > "$a/files/bin/cw" && chmod +x "$a/files/bin/cw"
+  printf '[Application]\nname=org.cw.%s\nruntime=org.cw.Platform/x86_64/1\ncommand=cw\n' "$app" > "$a/metadata"
+  flatpak build-export --no-update-summary "$r" "$a" stable >/dev/null
+done
+flatpak build-update-repo "$r" >/dev/null
+for n in cw cw-disabled cw-url cw-gone; do flatpak remote-delete --force $n >/dev/null 2>&1 || true; done
+flatpak remote-delete --user --force cw-user >/dev/null 2>&1 || true
+flatpak remote-add --no-gpg-verify cw-disabled file:///srv/cw-flatpak && flatpak remote-modify --disable cw-disabled
+flatpak remote-add --no-gpg-verify cw-url file:///srv/cw-flatpak && flatpak remote-modify --url=file:///srv/cw-old cw-url
+flatpak remote-add --no-gpg-verify cw-gone file:///srv/cw-flatpak
+flatpak remote-add --no-gpg-verify cw-user file:///srv/cw-flatpak
+SETUP
     verify = "tests/remote_verify.ws"
+
+    step "add" {
+      description = "Add a remote"
+      resource = "remote"
+      properties { name = "cw" url = "file:///srv/cw-flatpak" gpg_verify = false }
+    }
+
+    step "reenable" {
+      description = "A disabled remote is enabled"
+      resource = "remote"
+      properties { name = "cw-disabled" url = "file:///srv/cw-flatpak" gpg_verify = false }
+    }
+
+    step "url" {
+      description = "A remote pointing elsewhere is re-pointed"
+      resource = "remote"
+      properties { name = "cw-url" url = "file:///srv/cw-flatpak/" gpg_verify = false }
+    }
+
+    step "remove" {
+      description = "Delete a remote nothing was installed from"
+      resource = "remote"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "user" {
+      // cw-user exists in the system installation only.
+      description = "Add a remote to the user installation"
+      resource = "remote"
+      properties { name = "cw-user" url = "file:///srv/cw-flatpak" gpg_verify = false installation = :user }
+    }
+  }
+
+  test "packages_converge" {
+    description = "package installs, moves an app to its wanted remote, uninstalls and scopes by installation"
+    image = "fedora:44"
+    memory = "2GiB"
+    setup = <<'SETUP'
+set -e
+command -v flatpak >/dev/null || dnf -y -q install flatpak >/dev/null
+r=/srv/cw-flatpak
+rm -rf "$r" /tmp/cwb && mkdir -p /tmp/cwb/rt/files /tmp/cwb/rt/usr/bin
+printf '[Runtime]\nname=org.cw.Platform\nruntime=org.cw.Platform/x86_64/1\nsdk=org.cw.Platform/x86_64/1\n' > /tmp/cwb/rt/metadata
+cp /usr/bin/true /tmp/cwb/rt/usr/bin/
+flatpak build-export --runtime --no-update-summary "$r" /tmp/cwb/rt 1 >/dev/null
+for app in Hello Other Gone; do
+  a=/tmp/cwb/$app && mkdir -p "$a/files/bin" "$a/export"
+  printf '#!/bin/sh\necho %s\n' "$app" > "$a/files/bin/cw" && chmod +x "$a/files/bin/cw"
+  printf '[Application]\nname=org.cw.%s\nruntime=org.cw.Platform/x86_64/1\ncommand=cw\n' "$app" > "$a/metadata"
+  flatpak build-export --no-update-summary "$r" "$a" stable >/dev/null
+done
+flatpak build-update-repo "$r" >/dev/null
+flatpak uninstall -y --noninteractive --all >/dev/null 2>&1 || true
+flatpak uninstall --user -y --noninteractive --all >/dev/null 2>&1 || true
+for n in cw cw2; do flatpak remote-delete --force $n >/dev/null 2>&1 || true; flatpak remote-add --no-gpg-verify $n file:///srv/cw-flatpak; done
+flatpak remote-delete --user --force cw >/dev/null 2>&1 || true
+flatpak remote-add --user --no-gpg-verify cw file:///srv/cw-flatpak
+flatpak install --system -y --noninteractive cw2 org.cw.Platform >/dev/null
+flatpak install --system -y --noninteractive cw2 org.cw.Hello >/dev/null
+flatpak install --system -y --noninteractive cw org.cw.Gone >/dev/null
+SETUP
+    verify = "tests/package_verify.ws"
+
+    step "install" {
+      description = "Install an app"
+      resource = "package"
+      properties { id = "org.cw.Other" remote = "cw" }
+    }
+
+    step "origin" {
+      description = "An app installed from another remote is reinstalled from the wanted one"
+      resource = "package"
+      properties { id = "org.cw.Hello" remote = "cw" }
+    }
+
+    step "remove" {
+      description = "Uninstall an app"
+      resource = "package"
+      properties { id = "org.cw.Gone" ensure = :absent }
+    }
+
+    step "runtime" {
+      description = "The runtime the apps pulled in is present as a runtime"
+      resource = "package"
+      expect = "already_configured"
+      properties { id = "org.cw.Platform" remote = "cw2" kind = :runtime }
+    }
+
+    step "user" {
+      // org.cw.Other is in the system installation after "install", which
+      // must not count for the user installation.
+      description = "Install an app into the user installation"
+      resource = "package"
+      properties { id = "org.cw.Other" remote = "cw" installation = :user }
+    }
+
+    step "in_use" {
+      description = "Deleting a remote the runtime came from is refused"
+      resource = "remote"
+      expect = "error"
+      requires = ["user"]
+      properties { name = "cw2" ensure = :absent }
+    }
+  }
+
+  test "updated_converges" {
+    description = "updated runs for each installation and stamps its own window"
+    image = "fedora:44"
+    memory = "2GiB"
+    setup = "command -v flatpak >/dev/null || dnf -y -q install flatpak >/dev/null; rm -f /var/lib/config-weave/flatpak-updated-*"
+    verify = "tests/updated_verify.ws"
+
+    step "system" {
+      description = "Update the system installation"
+      resource = "updated"
+      properties { installation = :system }
+    }
+
+    step "user" {
+      description = "Update the user installation"
+      resource = "updated"
+      properties { installation = :user }
+    }
+  }
+
+  // flathub over the container's NAT: adding it reads the .flatpakrepo
+  // descriptor and the summary. Nothing is installed from it.
+  test "flathub_converges" {
+    description = "The flathub remote converges from its .flatpakrepo descriptor"
+    image = "fedora:44"
+    memory = "2GiB"
+    setup = "command -v flatpak >/dev/null || dnf -y -q install flatpak >/dev/null"
+    verify = "tests/flathub_verify.ws"
 
     step "flathub" {
       description = "Add the flathub remote"
@@ -78,7 +250,6 @@ package "linux_flatpak" {
       properties {
         name = "flathub"
         url = "https://dl.flathub.org/repo/flathub.flatpakrepo"
-        ensure = :present
       }
     }
 
@@ -88,13 +259,6 @@ package "linux_flatpak" {
       expect = "already_configured"
       requires = ["flathub"]
       properties { id = "org.example.CwNeverInstalled" ensure = :absent }
-    }
-
-    step "updated" {
-      description = "Update the system installation and stamp the window"
-      resource = "updated"
-      requires = ["app_absent"]
-      properties { installation = :system  max_age = 24h }
     }
   }
 }

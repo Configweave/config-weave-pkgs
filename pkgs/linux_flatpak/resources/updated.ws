@@ -1,26 +1,15 @@
 use value
 use fs
 use path
-use shell
 use time
 use common
 
-// :system and :user are separate flatpak installations holding separate app
-// sets, so each gets its own stamp and its own window — updating one says
-// nothing about the other.
-fn scope(params: Value) -> Result[string, string] {
-    let s = common::param_str(params, "installation", "system")
-    if s == "system" { return Ok(s) }
-    if s == "user" { return Ok(s) }
-    Err("invalid 'installation' value '" + s + "' (expected :system or :user)")
-}
-
 // The stamp file's mtime records the last update this resource performed.
-// The :user stamp is not uid-qualified — config-weave runs as root, so
-// "the user installation" is always /root/.local/share/flatpak.
-fn stamp_path(params: Value) -> Result[string, string] {
-    Ok("/var/lib/config-weave/flatpak-updated-" + scope(params)?)
-}
+// :system and :user are separate installations holding separate app sets,
+// so each gets its own stamp and window. The :user stamp is not
+// uid-qualified: config-weave runs as root, so "the user installation" is
+// always root's (/root/.local/share/flatpak).
+fn stamp_path(inst: string) -> string { "/var/lib/config-weave/flatpak-updated-" + inst }
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
@@ -38,7 +27,7 @@ fn last_update(stamp: string) -> Result[int, string] {
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let stamp = stamp_path(params)?
+    let stamp = stamp_path(common::scope(params)?)
     if !fs::is_file(stamp) { return Ok(CheckResult::NotConfigured) }
     if time::now_millis() / 1000 - last_update(stamp)? > max_age_secs(params) {
         return Ok(CheckResult::NotConfigured)
@@ -47,10 +36,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let inst = scope(params)?
-    let out = shell::bash("flatpak update --" + inst + " -y", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    let stamp = stamp_path(params)?
+    let inst = common::scope(params)?
+    common::run("flatpak update", common::flatpak(inst, "update -y --noninteractive"))?
+    let stamp = stamp_path(inst)
     fs::mkdir(path::parent(stamp))?
     // Rewriting the stamp truncates it and so refreshes its mtime, which is
     // what advances the window — no separate touch is needed.
