@@ -1,173 +1,136 @@
 use value
-use shell
-use registry
-use json
 use log
+use common
+use acl
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) {
-        if let Some(s) = v.as_string() { return s }
+// Keys an :absent step may never delete, below the hive (compared
+// case-insensitively). Everything one segment below a hive is refused too.
+fn protected_keys(hive: string) -> List[string] {
+    if hive == "LocalMachine" {
+        return ["software\\microsoft", "software\\classes", "software\\policies", "software\\wow6432node",
+                "software\\wow6432node\\microsoft", "software\\wow6432node\\classes",
+                "system\\currentcontrolset", "system\\controlset001", "system\\controlset002", "system\\setup",
+                "system\\mounteddevices", "system\\select"]
     }
-    fallback
-}
-
-fn param_list(params: Value, key: string) -> List[string] {
-    let items: List[string] = []
-    if let Some(v) = params.get(key) {
-        if let Some(xs) = v.as_list() {
-            for x in xs {
-                if let Some(s) = x.as_string() { items.push(s) }
-            }
-        }
+    if hive == "CurrentUser" {
+        return ["software\\microsoft", "software\\classes", "software\\policies", "control panel", "environment"]
     }
-    items
+    []
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// Hive-prefixed key → a PowerShell Registry:: provider path (works for all
-// hives, unlike the HKLM:/HKCU: drives).
-fn ps_reg_path(key: string) -> Result[string, string] {
-    if key.starts_with("HKLM\\") { return Ok("Registry::HKEY_LOCAL_MACHINE\\" + key.slice(5, key.len())) }
-    if key.starts_with("HKCU\\") { return Ok("Registry::HKEY_CURRENT_USER\\" + key.slice(5, key.len())) }
-    if key.starts_with("HKCR\\") { return Ok("Registry::HKEY_CLASSES_ROOT\\" + key.slice(5, key.len())) }
-    if key.starts_with("HKU\\") { return Ok("Registry::HKEY_USERS\\" + key.slice(4, key.len())) }
-    if key.starts_with("HKCC\\") { return Ok("Registry::HKEY_CURRENT_CONFIG\\" + key.slice(5, key.len())) }
-    Err("key must be hive-prefixed (HKLM\\, HKCU\\, HKCR\\, HKU\\ or HKCC\\): " + key)
-}
-
-// One "identity:rights" spec → [identity, rights]. rights is a
-// System.Security.AccessControl.RegistryRights name (FullControl, ReadKey, …).
-fn perm_parts(spec: string) -> Result[List[string], string] {
-    if let Some(i) = spec.find(":") {
-        let ident = spec.slice(0, i).trim()
-        let rights = spec.slice(i + 1, spec.len()).trim()
-        if ident != "" && rights != "" { return Ok([ident, rights]) }
+// :absent deletes a whole subtree, so it refuses a hive root, anything one
+// segment below a hive (HKLM\Software, HKCU\Software, HKLM\SYSTEM, ...), a
+// user's hive root under HKU and the well-known system keys.
+fn guard_delete(key: string, hive: string, sub: string) -> Result[unit, string] {
+    let segs = sub.split("\\")
+    let rel = sub.to_lower()
+    let check_hive = hive
+    let min = 2
+    if hive == "Users" {
+        // HKU\<sid>\... is that user's HKCU.
+        min = 3
+        check_hive = "CurrentUser"
+        rel = segs.slice(1, segs.len()).join("\\").to_lower()
     }
-    Err("invalid permission '" + spec + "' (expected \"identity:rights\", e.g. \"BUILTIN\\Users:ReadKey\")")
-}
-
-// PowerShell that emits the key's ACL as one JSON object:
-// { owner, rules: [{ identity, rights, type }] }.
-fn acl_ps(path: string) -> string {
-    "$ErrorActionPreference='Stop'; " +
-    "$acl = Get-Acl -Path " + ps_q(path) + "; " +
-    "[pscustomobject]@{{ " +
-        "owner = \"$($acl.Owner)\"; " +
-        "rules = @($acl.Access | ForEach-Object {{ [pscustomobject]@{{ " +
-            "identity = \"$($_.IdentityReference)\"; " +
-            "rights = \"$($_.RegistryRights)\"; " +
-            "type = \"$($_.AccessControlType)\" " +
-        "}} }}) " +
-    "}} | ConvertTo-Json -Compress -Depth 4"
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
-}
-
-// The ACL's rules as a list whether JSON carried a list or a single
-// collapsed object (ConvertTo-Json in Windows PowerShell 5.1).
-fn acl_rules(acl: Value) -> List[Value] {
-    let rules = []
-    if let Some(v) = acl.get("rules") {
-        if let Some(items) = v.as_list() {
-            for item in items { rules.push(item) }
-        } else if let Some(single) = v.as_map() {
-            rules.push(Value::Map(single))
-        }
+    if segs.len() < min {
+        return Err("refusing to delete '" + key + "': :absent needs a key at least " + str(min) + " segments below the hive")
     }
-    rules
-}
-
-// An Allow rule for `ident` whose (possibly composite) rights string lists
-// `right` as one of its flags. Literal flag matching: FullControl does not
-// satisfy a ReadKey spec.
-fn rule_grants(rule: Value, ident: string, right: string) -> bool {
-    if get_str(rule, "type") != "Allow" { return false }
-    if get_str(rule, "identity").to_lower() != ident.to_lower() { return false }
-    for tok in get_str(rule, "rights").split(",") {
-        if tok.trim().to_lower() == right.to_lower() { return true }
+    for p in protected_keys(check_hive) {
+        if rel == p { return Err("refusing to delete '" + key + "': it is a system key") }
     }
-    false
+    Ok(())
 }
 
-fn read_acl(key: string) -> Result[Value, string] {
-    let out = shell::powershell(acl_ps(ps_reg_path(key)?), Value::Null)?
-    if !out.success { return Err("reading ACL of " + key + " failed: " + out.stderr.trim()) }
-    json::parse(out.stdout.trim())
+fn mode_exact(params: Value) -> Result[bool, string] {
+    let m = common::param_str(params, "permissions_mode", "additive")
+    if m == "additive" { return Ok(false) }
+    if m == "exact" { return Ok(true) }
+    Err("invalid 'permissions_mode' value '" + m + "' (expected :additive or :exact)")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    let exists = registry::key_exists(key)?
-    if !want_present(params)? {
+    let key = common::param_str(params, "key", "")
+    let parts = common::split_key(key, 1)?
+    let hive = parts.get(0).unwrap_or("")
+    let sub = parts.get(1).unwrap_or("")
+    let view = common::view_member(params)?
+    let present = common::want_present(params)?
+    let owner = common::param_str(params, "owner", "")
+    let perms = common::param_strs(params, "permissions")
+    let exact = mode_exact(params)?
+    if !present { guard_delete(key, hive, sub)? }
+    let managed = present && (owner != "" || !perms.is_empty() || exact)
+    let prelude = if managed { acl::ps_prelude(owner, perms, exact)? } else { "" }
+    let st = common::ps_json("reading registry key " + key,
+        common::ps_open(hive, view, sub) + prelude +
+        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree, [System.Security.AccessControl.RegistryRights]::ReadKey)\n" +
+        "if ($null -eq $k) {{ '{{\"exists\":false}}'; exit 0 }}\n" +
+        (if managed {
+            "$acl = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
+            "$drift = CwEval $acl\n" +
+            "$have = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
+            "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
+            "[pscustomobject]@{{ exists = $true; drift = @($drift) }} | ConvertTo-Json -Compress\n"
+        } else {
+            "'{{\"exists\":true}}'\n"
+        })
+    )?
+    let exists = common::get_bool(st, "exists")
+    if !present {
         if exists { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !exists { return Ok(CheckResult::NotConfigured) }
-    let owner = param_str(params, "owner", "")
-    let perms = param_list(params, "permissions")
-    if owner == "" && perms.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
-    let acl = read_acl(key)?
-    if owner != "" && get_str(acl, "owner").to_lower() != owner.to_lower() {
+    let drift = common::get_list(st, "drift")
+    if !drift.is_empty() {
+        for d in drift { log::info(key + ": " + d.as_string().unwrap_or("")) }
         return Ok(CheckResult::NotConfigured)
-    }
-    let rules = acl_rules(acl)
-    for spec in perms {
-        let parts = perm_parts(spec)?
-        let ident = parts.get(0).unwrap_or("")
-        let right = parts.get(1).unwrap_or("")
-        let hit = [false]
-        for rule in rules {
-            if rule_grants(rule, ident, right) { hit.set(0, true) }
-        }
-        if !hit.get(0).unwrap_or(false) { return Ok(CheckResult::NotConfigured) }
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let key = param_str(params, "key", "")
-    if key == "" { return Err("missing 'key' parameter") }
-    if !want_present(params)? {
-        if registry::key_exists(key)? {
-            log::info("deleting registry key " + key)
-            registry::delete_key(key)?
-        }
+    let key = common::param_str(params, "key", "")
+    let parts = common::split_key(key, 1)?
+    let hive = parts.get(0).unwrap_or("")
+    let sub = parts.get(1).unwrap_or("")
+    let view = common::view_member(params)?
+    let open = common::ps_open(hive, view, sub)
+    if !common::want_present(params)? {
+        guard_delete(key, hive, sub)?
+        log::info("deleting registry key " + key + " and its subtree")
+        common::ps_run("deleting registry key " + key,
+            open + "if ($null -ne $base.OpenSubKey($sub)) {{ $base.DeleteSubKeyTree($sub, $false) }}\n")?
         return Ok(ApplyResult::Success)
     }
-    if !registry::key_exists(key)? {
-        log::info("creating registry key " + key)
-        registry::create_key(key)?
-    }
-    let owner = param_str(params, "owner", "")
-    let perms = param_list(params, "permissions")
-    if owner == "" && perms.is_empty() { return Ok(ApplyResult::Success) }
-    let parts = ["$ErrorActionPreference='Stop'; $path = " + ps_q(ps_reg_path(key)?) + "; $acl = Get-Acl -Path $path; "]
-    if owner != "" {
-        parts.push("$acl.SetOwner([System.Security.Principal.NTAccount]" + ps_q(owner) + "); ")
-    }
-    for spec in perms {
-        let pp = perm_parts(spec)?
-        parts.push(
-            "$rule = New-Object System.Security.AccessControl.RegistryAccessRule(" +
-            ps_q(pp.get(0).unwrap_or("")) + ", " + ps_q(pp.get(1).unwrap_or("")) +
-            ", 'ContainerInherit,ObjectInherit', 'None', 'Allow'); " +
-            "$acl.AddAccessRule($rule); "
-        )
-    }
-    parts.push("Set-Acl -Path $path -AclObject $acl")
-    let out = shell::powershell(parts.join(""), Value::Null)?
-    if !out.success { return Err("setting ACL of " + key + " failed: " + out.stderr.trim()) }
+    let owner = common::param_str(params, "owner", "")
+    let perms = common::param_strs(params, "permissions")
+    let exact = mode_exact(params)?
+    let script = open + acl::ps_prelude(owner, perms, exact)? +
+        "$null = $base.CreateSubKey($sub)\n" +
+        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]'ReadKey, WriteKey, ChangePermissions, TakeOwnership')\n" +
+        // The owner and the DACL are written separately, each with only its
+        // own section loaded, so neither write touches the other.
+        "if ($cwOwner -ne '') {{\n" +
+        "  $o = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)\n" +
+        "  if ($o.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $cwOwner) {{\n" +
+        "    CwEnableOwnerPrivileges\n" +
+        "    $o.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($cwOwner)))\n" +
+        "    $k.SetAccessControl($o)\n" +
+        "  }}\n" +
+        "}}\n" +
+        "if ($cwWant.Count -gt 0 -or $cwExact) {{\n" +
+        "  $a = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)\n" +
+        "  $drift = CwEval $a\n" +
+        "  if ($drift.Count -gt 0) {{\n" +
+        "    if ($cwExact) {{ foreach ($r in (CwExplicit $a)) {{ $null = $a.RemoveAccessRuleSpecific($r) }} }}\n" +
+        "    foreach ($w in $cwWant.Values) {{\n" +
+        "      if ($cwExact -or -not $w.ok) {{ $a.AddAccessRule((CwRule $w.sid $w.mask $w.type)) }}\n" +
+        "    }}\n" +
+        "    $k.SetAccessControl($a)\n" +
+        "  }}\n" +
+        "}}\n"
+    log::info("ensuring registry key " + key)
+    common::ps_run("configuring registry key " + key, script)?
     Ok(ApplyResult::Success)
 }
