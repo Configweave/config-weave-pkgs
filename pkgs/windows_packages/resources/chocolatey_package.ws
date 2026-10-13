@@ -1,60 +1,70 @@
 use value
-use shell
+use json
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::validate_name("name", name)?
+    common::validate_version(common::param_str(params, "version", ""))?
+    common::single_line("source", common::param_str(params, "source", ""))?
+    common::want_present(params)?
+    Ok(name)
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// Installed version of `name` per `choco list`, or "" when not installed.
-// `choco list --exact --limit-output` prints "name|version" lines.
-fn installed_version(name: string) -> Result[string, string] {
-    let out = shell::powershell("choco list --exact --limit-output " + ps_q(name) + " 2>$null", Value::Null)?
-    for line in out.stdout.split("\n") {
-        let t = line.trim()
-        if t.starts_with(name + "|") { return Ok(t.slice(name.len() + 1, t.len())) }
-    }
-    Ok("")
+// The installed version of `name`, compared case-insensitively as
+// Chocolatey does, or "" when it is not installed. None when Chocolatey
+// itself is missing.
+fn installed_version(name: string) -> Result[Option[string], string] {
+    let script = common::choco_ps() +
+        "$out = & $choco list --limit-output --exact @chocoLocal $env:CW_NAME\n" +
+        "if ($LASTEXITCODE -ne 0) {{ $out; exit $LASTEXITCODE }}\n" +
+        "$v = ''\n" +
+        "foreach ($line in $out) {{ $p = ([string]$line).Trim() -split '\\|'; if ($p.Count -ge 2 -and $p[0] -ieq $env:CW_NAME) {{ $v = $p[1] }} }}\n" +
+        "ConvertTo-Json -Compress @{{ version = $v }}\n"
+    let out = common::query(script, #{ "CW_NAME": Value::String(name) })?
+    if out.code == common::missing_code() { return Ok(None) }
+    if !out.success { return Err(common::failure("choco list " + name, out)) }
+    let v = json::parse(out.stdout.trim())?
+    Ok(Some(common::get_str(v, "version")))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    let version = param_str(params, "version", "")
-    if name == "" { return Err("missing 'name' parameter") }
+    let name = validate(params)?
     let iv = installed_version(name)?
-    if !want_present(params)? {
-        // existence probe only: any installed version means work to do
-        if iv != "" { return Ok(CheckResult::NotConfigured) }
+    if !common::want_present(params)? {
+        // Without Chocolatey nothing can be installed through it.
+        if iv.unwrap_or("") != "" { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    if iv == "" { return Ok(CheckResult::NotConfigured) }
-    if version != "" && iv != version { return Ok(CheckResult::NotConfigured) }
+    let have = iv.unwrap_or("")
+    if have == "" { return Ok(CheckResult::NotConfigured) }
+    let want = common::param_str(params, "version", "")
+    if want != "" && have != want { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmd = if want_present(params)? {
-        let version = param_str(params, "version", "")
-        let source = param_str(params, "source", "")
-        let varg = if version != "" { " --version=" + ps_q(version) } else { "" }
-        let sarg = if source != "" { " --source=" + ps_q(source) } else { "" }
-        "choco install " + ps_q(name) + " -y --no-progress" + varg + sarg + "; exit $LASTEXITCODE"
-    } else {
-        "choco uninstall " + ps_q(name) + " -y --no-progress; exit $LASTEXITCODE"
-    }
-    let out = shell::powershell(cmd, Value::Null)?
+    let name = validate(params)?
+    let present = common::want_present(params)?
+    let have = installed_version(name)?.unwrap_or("")
+    // An installed package at the wrong version is moved with upgrade,
+    // which (unlike install) can also go down with --allow-downgrade.
+    let verb = if !present { "uninstall" } else if have != "" { "upgrade" } else { "install" }
+    let script = common::choco_ps() +
+        "$a = @($env:CW_VERB, $env:CW_NAME, '-y', '--no-progress')\n" +
+        "if ($env:CW_VERB -ne 'uninstall') {{\n" +
+        "  if ([string]$env:CW_VERSION -ne '') {{ $a += @('--version', $env:CW_VERSION, '--allow-downgrade') }}\n" +
+        "  if ([string]$env:CW_SOURCE -ne '') {{ $a += @('--source', $env:CW_SOURCE) }}\n" +
+        "}}\n" +
+        "& $choco @a\n" +
+        "exit $LASTEXITCODE\n"
+    let out = common::action(script, #{
+        "CW_VERB": Value::String(verb),
+        "CW_NAME": Value::String(name),
+        "CW_VERSION": Value::String(common::param_str(params, "version", "")),
+        "CW_SOURCE": Value::String(common::param_str(params, "source", ""))
+    })?
     if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err(out.stdout.trim() + " " + out.stderr.trim()) }
+    if !out.success { return Err(common::failure("choco " + verb + " " + name, out)) }
     Ok(ApplyResult::Success)
 }

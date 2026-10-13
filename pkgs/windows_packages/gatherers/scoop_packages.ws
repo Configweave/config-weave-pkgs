@@ -1,49 +1,39 @@
 use value
-use shell
 use json
+use common
 
 // PowerShell that enumerates the scoop root's apps\* dirs, resolving each
 // app's `current` junction target dir name as the installed version, and
 // emits one JSON object. Scoop is per-user: the SCOOP env var wins, else
 // ~\scoop.
 fn apps_ps() -> string {
-    "$ErrorActionPreference='Stop'; " +
-    "$root = if ($env:SCOOP) {{ $env:SCOOP }} else {{ \"$env:USERPROFILE\\scoop\" }}; " +
-    "$apps = @(); " +
-    "if (Test-Path \"$root\\apps\") {{ " +
-        "$apps = @(Get-ChildItem -Directory \"$root\\apps\" | ForEach-Object {{ " +
-            "$ver = ''; " +
-            "$cur = Join-Path $_.FullName 'current'; " +
-            "if (Test-Path $cur) {{ " +
-                "$t = (Get-Item $cur).Target | Select-Object -First 1; " +
-                "if ($t) {{ $ver = Split-Path -Leaf \"$t\" }} " +
-            "}}; " +
-            "[pscustomobject]@{{ name = $_.Name; version = \"$ver\" }} " +
-        "}}) " +
-    "}}; " +
-    "[pscustomobject]@{{ count = $apps.Count; packages = $apps }} | ConvertTo-Json -Compress -Depth 4"
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
+    common::scoop_root_ps() +
+    "$apps = @()\n" +
+    "$dir = Join-Path $scoopRoot 'apps'\n" +
+    "if (Test-Path -LiteralPath $dir) {{\n" +
+    "  $apps = @(Get-ChildItem -Directory -LiteralPath $dir | ForEach-Object {{\n" +
+    "    $ver = ''\n" +
+    "    $cur = Join-Path $_.FullName 'current'\n" +
+    "    if (Test-Path -LiteralPath $cur) {{\n" +
+    "      $t = (Get-Item -LiteralPath $cur).Target | Select-Object -First 1\n" +
+    "      if ($t) {{ $ver = Split-Path -Leaf ([string]$t) }}\n" +
+    "    }}\n" +
+    "    [pscustomobject]@{{ name = $_.Name; version = [string]$ver }}\n" +
+    "  }})\n" +
+    "}}\n" +
+    "ConvertTo-Json -Compress -Depth 4 -InputObject @{{ count = $apps.Count; packages = $apps }}\n"
 }
 
 fn entry(m: Value) -> Value {
     Value::Map(#{
-        "name": Value::String(get_str(m, "name")),
-        "version": Value::String(get_str(m, "version"))
+        "name": Value::String(common::get_str(m, "name")),
+        "version": Value::String(common::get_str(m, "version"))
     })
 }
 
-fn empty_result() -> Value {
-    let none: List[Value] = []
-    Value::Map(#{ "count": Value::Int(0), "packages": Value::List(none) })
-}
-
 fn gather(params: Value) -> Result[Value, string] {
-    let out = shell::powershell(apps_ps(), Value::Null)?
-    if !out.success { return Ok(empty_result()) }
+    let out = common::query(apps_ps(), #{})?
+    if !out.success { return Err(common::failure("listing scoop apps", out)) }
     let m = json::parse(out.stdout.trim())?
 
     // ConvertTo-Json in Windows PowerShell 5.1 collapses a single-element

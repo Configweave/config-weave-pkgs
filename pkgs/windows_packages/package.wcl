@@ -1,11 +1,28 @@
 package "windows_packages" {
   description = "Manage Windows software via Chocolatey, Scoop and winget"
 
+  // Every script forces PowerShell's output to UTF-8, so a package named
+  // with an accent or a trademark sign cannot blank a whole listing.
+  // Package, bucket and source names are matched case-insensitively, as the
+  // managers themselves match them.
+  //
+  // Each manager is found on PATH first, then in its default location
+  // (Chocolatey under $env:ChocolateyInstall or C:\ProgramData\chocolatey,
+  // scoop under its root), so a manager installed earlier in the same run is
+  // usable before the process PATH catches up. winget, an App Installer
+  // (MSIX) app that is never on SYSTEM's PATH, is taken from WindowsApps;
+  // that copy starts only once the Visual C++ 2015-2022 x64 runtime is
+  // installed machine-wide, and a winget that cannot start counts as missing.
+  //
+  // `concurrency = "exclusive"` serialises steps of one resource type only.
+  // A chocolatey_source and a chocolatey_package step (or a scoop_bucket and
+  // a scoop_package step) can run at once, so chain them with `requires`
+  // when one depends on the other.
   resource "chocolatey_package" {
-    description = "Ensure a Chocolatey package is installed or absent"
+    description = "Ensure a Chocolatey package is installed (at a version) or absent"
     script = "resources/chocolatey_package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Chocolatey package id" type = "string" required = true }
+    param "name" { description = "Chocolatey package id, matched case-insensitively" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -14,16 +31,27 @@ package "windows_packages" {
       symbol "present" { description = "Install the package" }
       symbol "absent"  { description = "Uninstall the package" }
     }
-    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+    param "version" { description = "Version to hold when present, compared exactly with what choco lists; an installed package at another version is moved with choco upgrade --version --allow-downgrade, up or down. Empty means any version" type = "string" default = "" }
     param "source" { description = "Optional source name or URL" type = "string" default = "" }
   }
 
+  // Works with Chocolatey 1.x and 2.x: on 1.x every listing passes
+  // --local-only, which 2.x no longer accepts and no longer needs.
   resource "chocolatey_source" {
-    description = "Ensure a Chocolatey source is registered"
+    description = "Ensure a Chocolatey source is registered with a URL and enabled state, or removed"
     script = "resources/chocolatey_source.ws"
     concurrency = "exclusive"
-    param "name" { description = "Source name" type = "string" required = true }
-    param "url" { description = "Source URL" type = "string" required = true }
+    param "name" { description = "Source name, matched case-insensitively" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Register the source (or update its URL) and set its enabled state" }
+      symbol "absent"  { description = "Remove the source" }
+    }
+    param "url" { description = "Source URL, compared exactly; required when :present" type = "string" default = "" }
+    param "enabled" { description = "Whether the source is enabled; a source disabled by hand is re-enabled" type = "bool" default = true }
   }
 
   // Chocolatey queries its sources live and keeps no refreshable index, so
@@ -31,9 +59,9 @@ package "windows_packages" {
   // periodic action is upgrading what is installed — hence `updated` rather
   // than `cache_updated`.
   //
-  // Untested by design, like every cache refresh here: it hits the network.
+  // Untested by design: it would upgrade every package on the test guest.
   resource "chocolatey_updated" {
-    description = "Run choco upgrade all when the last upgrade is older than max_age"
+    description = "Run choco upgrade all when the last upgrade is older than max_age; exit codes 3010 and 1641 report reboot_required"
     script = "resources/chocolatey_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
@@ -47,7 +75,7 @@ package "windows_packages" {
     description = "Ensure a Scoop app is installed (per-user) or absent"
     script = "resources/scoop_package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Scoop app name, optionally bucket/name" type = "string" required = true }
+    param "name" { description = "Scoop app name, optionally bucket/app (installed from that bucket; detected and removed by the app name)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -59,15 +87,25 @@ package "windows_packages" {
   }
 
   resource "scoop_bucket" {
-    description = "Ensure a Scoop bucket is added"
+    description = "Ensure a Scoop bucket is added from the right repository, or removed"
     script = "resources/scoop_bucket.ws"
     concurrency = "exclusive"
     param "name" { description = "Bucket name" type = "string" required = true }
-    param "url" { description = "Optional bucket repository URL" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the bucket" }
+      symbol "absent"  { description = "Remove the bucket" }
+    }
+    param "url" { description = "Bucket repository URL. When set, it is compared with the clone's origin (ignoring case, a trailing slash and .git), and a bucket cloned from elsewhere is removed and added again. Empty uses scoop's known-bucket list and accepts any origin" type = "string" default = "" }
   }
 
   // Scoop's index is its bucket repositories, so this genuinely refreshes
-  // metadata without touching installed apps. Untested by design: network.
+  // metadata without touching installed apps. Scoop is per-user, so the
+  // stamp lives under the scoop root (SCOOP, else ~\scoop) in
+  // config-weave\cache-updated.
   resource "scoop_cache_updated" {
     description = "Run scoop update when the buckets are older than max_age"
     script = "resources/scoop_cache_updated.ws"
@@ -79,11 +117,14 @@ package "windows_packages" {
     }
   }
 
+  // Detection uses the Microsoft.WinGet.Client module where it is installed,
+  // else `winget export`; the localized, truncated `winget list` table is
+  // never parsed.
   resource "winget_package" {
-    description = "Ensure a winget package is installed or removed"
+    description = "Ensure a winget package is installed (at a version) or removed"
     script = "resources/winget_package.ws"
     concurrency = "exclusive"
-    param "id" { description = "winget package identifier (exact)" type = "string" required = true }
+    param "id" { description = "winget package identifier, matched exactly but case-insensitively" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -92,12 +133,12 @@ package "windows_packages" {
       symbol "present" { description = "Install the package" }
       symbol "absent"  { description = "Uninstall the package" }
     }
-    param "version" { description = "Optional version to install" type = "string" default = "" }
+    param "version" { description = "Version to hold when present, compared with the installed version; an installed package at another version is reinstalled with winget install --version --force. Empty means any version" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
   }
 
   resource "winget_source" {
-    description = "Ensure a winget source is registered (or removed)"
+    description = "Ensure a winget source is registered with a URL and type (or removed)"
     script = "resources/winget_source.ws"
     concurrency = "exclusive"
     param "name" { description = "Source name" type = "string" required = true }
@@ -106,14 +147,14 @@ package "windows_packages" {
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Register the source" }
+      symbol "present" { description = "Register the source; one with another URL or type is removed and added again" }
       symbol "absent"  { description = "Remove the source" }
     }
-    param "url" { description = "Source argument/URL (required when present)" type = "string" default = "" }
-    param "type" { description = "Optional source type, e.g. Microsoft.Rest" type = "string" default = "" }
+    param "url" { description = "Source argument/URL (required when present), compared ignoring a trailing slash" type = "string" default = "" }
+    param "type" { description = "Optional source type, e.g. Microsoft.Rest, compared case-insensitively when set" type = "string" default = "" }
   }
 
-  // Refreshes the winget source manifests. Untested by design: network.
+  // Refreshes the winget source manifests.
   resource "winget_cache_updated" {
     description = "Run winget source update when the sources are older than max_age"
     script = "resources/winget_cache_updated.ws"
@@ -126,9 +167,9 @@ package "windows_packages" {
   }
 
   gatherer "winget_packages" {
-    description = "Enumerate installed winget packages (id, name, version)"
+    description = "Enumerate installed winget packages (id, name, version). Without the Microsoft.WinGet.Client module, names are empty and only packages a source provides are listed"
     script = "gatherers/winget_packages.ws"
-    returns "count" { description = "Number of installed packages listed" type = "int" }
+    returns "count" { description = "Number of installed packages listed; 0 without winget" type = "int" }
     returns "packages" { description = "One { name, id, version } map per installed package" type = "list" }
   }
 
@@ -146,64 +187,35 @@ package "windows_packages" {
     returns "packages" { description = "One { name, version } map per installed app" type = "list" }
   }
 
-  // The vmlab guests have NAT internet (the mssql win_install scenario
-  // installs sqlcmd guest-side), so setup bootstraps Chocolatey from the
-  // community repo. The bootstrap edits the machine PATH, but resource execs
-  // inherit the guest agent's pre-setup environment, so setup also drops a
-  // System32 choco.cmd shim so the resources' bare `choco` invocations
-  // resolve in later processes.
-  test "chocolatey_manages_packages" {
-    description = "Chocolatey package presence, absence and source management converge"
-    template = "x86_64/windows-server-2025"
-    group = "win2025"
-    // Windows setup runs under `cmd /C`, which eats nested double quotes
-    // and would treat `|` as its own pipe — the previous one-liner silently
-    // did nothing and left chocolatey uninstalled. So: no inner quotes, no
-    // pipe, and the shim written by cmd's own echo. The shim is needed
-    // because the installer's PATH change is invisible to the already
-    // running guest agent, while System32 is always on PATH.
-    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $s=irm https://community.chocolatey.org/install.ps1; iex $s && echo @C:\\ProgramData\\chocolatey\\choco.exe %* > C:\\Windows\\System32\\choco.cmd"
-    verify = "tests/chocolatey_verify.ws"
-
-    step "self_installed" {
-      description = "Chocolatey lists itself as installed after the bootstrap"
-      resource = "chocolatey_package"
-      expect = "already_configured"
-      properties { name = "chocolatey" }
-    }
-
-    step "core_extension" {
-      description = "A tiny real package (pure PowerShell helpers) converges"
-      resource = "chocolatey_package"
-      properties { name = "chocolatey-core.extension" }
-    }
-
-    step "ghost_absent" {
-      description = "A never-installed package is already absent"
-      resource = "chocolatey_package"
-      expect = "already_configured"
-      properties { name = "cw-not-a-package" ensure = :absent }
-    }
-
-    step "add_source" {
-      description = "Registering a source converges (offline config write)"
-      resource = "chocolatey_source"
-      properties { name = "cwtest" url = "https://example.com/api/v2/" }
-    }
-  }
-
-  // winget (App Installer) and scoop are absent on a stock Server 2025
-  // guest — and winget is unavailable to the SYSTEM context the guest agent
-  // runs under even where installed — so converging installs through them is
-  // scenario territory. These steps cover what the resources actually hit on
-  // a manager-less machine: the winget checks treat a failed `winget` run as
-  // "nothing installed / no such source" (matching ensure = :absent), the
-  // scoop checks are plain path probes under the user profile, and
-  // scoop_package's apply surfaces a missing scoop binary as an error.
+  // Runs first in the group, before any manager is installed. winget (App
+  // Installer) is present on Server 2025 but cannot start for SYSTEM until
+  // the Visual C++ runtime is installed (winget_manages_packages does that), and
+  // scoop and Chocolatey are absent, so this covers what every resource and
+  // gatherer does on a manager-less machine: removals are already
+  // converged, gatherers return the empty shape, and an install surfaces
+  // the missing manager as apply's own error.
   test "absent_managers_detect" {
-    description = "winget and scoop detection paths work without the managers installed"
+    description = "winget, scoop and Chocolatey detection paths work without the managers installed"
     template = "x86_64/windows-server-2025"
     group = "win2025"
+
+    gather "winget" {
+      description = "No winget on PATH gathers the empty shape"
+      from = "winget_packages"
+      expect { count = 0 }
+    }
+
+    gather "scoop" {
+      description = "No scoop root gathers the empty shape"
+      from = "scoop_packages"
+      expect { count = 0 }
+    }
+
+    gather "choco" {
+      description = "No Chocolatey gathers the empty shape"
+      from = "chocolatey_packages"
+      expect { count = 0 }
+    }
 
     step "winget_pkg_absent" {
       description = "An uninstalled winget id with ensure = absent is already configured"
@@ -227,10 +239,215 @@ package "windows_packages" {
     }
 
     step "scoop_missing_errors" {
-      description = "Installing via a missing scoop binary errors"
+      description = "Installing via a missing scoop binary is apply's own error"
       resource = "scoop_package"
       expect = "error"
       properties { name = "cw-anything" }
+    }
+
+    step "choco_missing_errors" {
+      description = "Installing via a missing Chocolatey is apply's own error"
+      resource = "chocolatey_package"
+      expect = "error"
+      properties { name = "cw-anything" }
+    }
+
+    step "bad_name_rejected" {
+      description = "A name that would be read as an option is rejected"
+      resource = "winget_package"
+      expect = "error"
+      properties { id = "--help" }
+    }
+  }
+
+  // Setup bootstraps Chocolatey from the community repository (the guests
+  // have NAT internet) and seeds the drift the steps converge away from:
+  //   chocolatey-core.extension            installed, to be removed
+  //   chocolatey-dotnetfx.extension 1.0.1  installed, to be held at 1.0.0
+  //   cwtest   source at an old URL
+  //   cwdis    source disabled by hand
+  //   cwgone   source to be removed
+  // Setup runs under `cmd /C`, so the commands hold no double quotes, and
+  // choco is called by its full path: the bootstrap's PATH change does not
+  // reach this shell. The resources find it there on their own.
+  test "chocolatey_manages_packages" {
+    description = "Chocolatey package install, removal, version hold and source management converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $s=irm https://community.chocolatey.org/install.ps1; iex $s & C:\\ProgramData\\chocolatey\\bin\\choco.exe install chocolatey-core.extension -y --no-progress & C:\\ProgramData\\chocolatey\\bin\\choco.exe install chocolatey-dotnetfx.extension --version 1.0.1 -y --no-progress & C:\\ProgramData\\chocolatey\\bin\\choco.exe source add --name=cwtest --source=https://example.com/old/ & C:\\ProgramData\\chocolatey\\bin\\choco.exe source add --name=cwdis --source=https://example.com/dis/ & C:\\ProgramData\\chocolatey\\bin\\choco.exe source disable --name=cwdis & C:\\ProgramData\\chocolatey\\bin\\choco.exe source add --name=cwgone --source=https://example.com/gone/ & exit 0"
+    verify = "tests/chocolatey_verify.ws"
+
+    gather "choco" {
+      description = "The gatherer lists what setup installed"
+      from = "chocolatey_packages"
+    }
+
+    step "self_installed" {
+      description = "Chocolatey lists itself as installed, matched regardless of case"
+      resource = "chocolatey_package"
+      expect = "already_configured"
+      properties { name = "Chocolatey" }
+    }
+
+    step "core_extension_absent" {
+      description = "Remove a package setup installed"
+      resource = "chocolatey_package"
+      properties { name = "chocolatey-core.extension" ensure = :absent }
+    }
+
+    step "dotnetfx_held" {
+      description = "Hold a package at an older version than the installed one"
+      resource = "chocolatey_package"
+      requires = ["core_extension_absent"]
+      properties { name = "chocolatey-dotnetfx.extension" version = "1.0.0" }
+    }
+
+    step "ghost_absent" {
+      description = "A never-installed package is already absent"
+      resource = "chocolatey_package"
+      expect = "already_configured"
+      properties { name = "cw-not-a-package" ensure = :absent }
+    }
+
+    step "source_url_changed" {
+      description = "A source registered at an old URL is moved to the new one"
+      resource = "chocolatey_source"
+      requires = ["dotnetfx_held"]
+      properties { name = "cwtest" url = "https://example.com/api/v2/" }
+    }
+
+    step "source_reenabled" {
+      description = "A source disabled by hand is enabled again"
+      resource = "chocolatey_source"
+      requires = ["source_url_changed"]
+      properties { name = "cwdis" url = "https://example.com/dis/" }
+    }
+
+    step "source_removed" {
+      description = "Remove a registered source"
+      resource = "chocolatey_source"
+      requires = ["source_reenabled"]
+      properties { name = "cwgone" ensure = :absent }
+    }
+  }
+
+  // Setup installs scoop for the account the agent runs as (SYSTEM, hence
+  // -RunAsAdmin) and git, which buckets need, and seeds:
+  //   cwurl   a bucket whose origin was rewritten to another repository
+  //   cwgone  a bucket to be removed
+  // Each bucket clones a different repository: scoop refuses to add a
+  // second bucket for a repository another bucket already uses. (Installing
+  // git also installs 7zip, so the app step installs jq.)
+  //   which   an app to be removed
+  // After the install, scoop is driven through its scoop.cmd shim at the
+  // cmd level: the PowerShell call operator `&` is cmd's command separator.
+  // Scoop's exe shims cannot start for SYSTEM, so scoop's own git goes on
+  // PATH directly, as the resources do.
+  // Each scoop step requires the one before it: two scoop commands at once
+  // contend for the same apps and buckets.
+  test "scoop_manages_apps" {
+    description = "Scoop apps, buckets and the bucket refresh converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $f=Join-Path $env:TEMP 'install-scoop.ps1'; if (-not (Test-Path (Join-Path $env:USERPROFILE 'scoop\\shims\\scoop.cmd'))) { irm get.scoop.sh -OutFile $f; iex ($f + ' -RunAsAdmin') } & %USERPROFILE%\\scoop\\shims\\scoop.cmd install git & set PATH=%USERPROFILE%\\scoop\\apps\\git\\current\\cmd;%PATH% & %USERPROFILE%\\scoop\\shims\\scoop.cmd bucket add cwgone https://github.com/ScoopInstaller/Java & %USERPROFILE%\\scoop\\shims\\scoop.cmd bucket add cwurl https://github.com/ScoopInstaller/PHP & git -C %USERPROFILE%\\scoop\\buckets\\cwurl remote set-url origin https://example.invalid/cw.git & %USERPROFILE%\\scoop\\shims\\scoop.cmd install which & exit 0"
+    verify = "tests/scoop_verify.ws"
+
+    gather "scoop" {
+      description = "The gatherer lists what setup installed"
+      from = "scoop_packages"
+    }
+
+    step "bucket_added" {
+      description = "Add a known bucket by name"
+      resource = "scoop_bucket"
+      properties { name = "nonportable" }
+    }
+
+    step "bucket_url_changed" {
+      description = "A bucket cloned from another repository is re-added from the wanted one"
+      resource = "scoop_bucket"
+      requires = ["bucket_added"]
+      properties { name = "cwurl" url = "https://github.com/ScoopInstaller/PHP" }
+    }
+
+    step "bucket_removed" {
+      description = "Remove a bucket"
+      resource = "scoop_bucket"
+      requires = ["bucket_url_changed"]
+      properties { name = "cwgone" ensure = :absent }
+    }
+
+    step "app_from_bucket" {
+      description = "Install an app named bucket/app; detection uses the app name"
+      resource = "scoop_package"
+      requires = ["bucket_removed"]
+      properties { name = "main/jq" }
+    }
+
+    step "app_removed" {
+      description = "Remove an app setup installed"
+      resource = "scoop_package"
+      requires = ["app_from_bucket"]
+      properties { name = "which" ensure = :absent }
+    }
+
+    step "buckets_refreshed" {
+      description = "Refresh the buckets and stamp the scoop root"
+      resource = "scoop_cache_updated"
+      requires = ["app_removed"]
+    }
+  }
+
+  // Setup installs the Visual C++ runtime, which is what lets the App
+  // Installer's winget start for SYSTEM, then seeds 7zip.7zip (latest) and
+  // jqlang.jq from the winget source. The msstore source fails certificate
+  // pinning in the lab, so removing it is the source step, and every
+  // package step names source = "winget". Steps are chained so that only
+  // one winget runs at a time.
+  test "winget_manages_packages" {
+    description = "winget package removal, version hold and source removal converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ProgressPreference='SilentlyContinue'; if (-not (Test-Path C:\\vcr.exe)) { Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile C:\\vcr.exe; $null = Start-Process C:\\vcr.exe -ArgumentList '/install /quiet /norestart' -Wait -PassThru }; $w = @(Get-ChildItem 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\\winget.exe')[-1].FullName; foreach ($id in '7zip.7zip','jqlang.jq') { $null = Start-Process -FilePath $w -ArgumentList ('install --exact --id ' + $id + ' --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity') -Wait -NoNewWindow -PassThru }"
+    verify = "tests/winget_verify.ws"
+
+    gather "winget" {
+      description = "The gatherer lists what setup installed"
+      from = "winget_packages"
+    }
+
+    step "msstore_removed" {
+      description = "Remove the msstore source (remove takes no agreement flags)"
+      resource = "winget_source"
+      properties { name = "msstore" ensure = :absent }
+    }
+
+    step "id_any_case" {
+      description = "An installed package is found whatever the case of its id"
+      resource = "winget_package"
+      expect = "already_configured"
+      requires = ["msstore_removed"]
+      properties { id = "7ZIP.7ZIP" source = "winget" }
+    }
+
+    step "version_held" {
+      description = "An installed package at another version is reinstalled at the held version"
+      resource = "winget_package"
+      requires = ["id_any_case"]
+      properties { id = "7zip.7zip" version = "24.08" source = "winget" }
+    }
+
+    step "package_removed" {
+      description = "Remove a package setup installed"
+      resource = "winget_package"
+      requires = ["version_held"]
+      properties { id = "jqlang.jq" ensure = :absent }
+    }
+
+    step "sources_refreshed" {
+      description = "Refresh the winget sources and stamp the refresh"
+      resource = "winget_cache_updated"
+      requires = ["package_removed"]
     }
   }
 }

@@ -1,62 +1,91 @@
 use value
-use shell
+use json
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::validate_name("name", name)?
+    let present = common::want_present(params)?
+    let url = common::param_str(params, "url", "")
+    common::single_line("url", url)?
+    common::single_line("type", common::param_str(params, "type", ""))?
+    if present && url == "" { return Err("missing 'url' parameter (required when :present)") }
+    Ok(name)
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+// `winget source export -n <name>` prints the source as JSON (Name, Arg,
+// Type, ...), and exits non-zero when there is no such source. None when
+// winget is missing.
+fn source(name: string) -> Result[Option[Value], string] {
+    let script = common::winget_ps() +
+        "$o = & $winget source export --name $env:CW_NAME --disable-interactivity\n" +
+        "if ($LASTEXITCODE -ne 0) {{ ConvertTo-Json -Compress @{{ exists = $false }}; exit 0 }}\n" +
+        "$j = ($o -join \"`n\") | ConvertFrom-Json\n" +
+        "ConvertTo-Json -Compress @{{ exists = $true; arg = [string]$j.Arg; type = [string]$j.Type }}\n"
+    let out = common::query(script, #{ "CW_NAME": Value::String(name) })?
+    if out.code == common::missing_code() { return Ok(None) }
+    if !out.success { return Err(common::failure("winget source export " + name, out)) }
+    Ok(Some(json::parse(out.stdout.trim())?))
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// `winget source list --name <name>` exits non-zero when the source is absent.
-fn source_present(name: string) -> Result[bool, string] {
-    let out = shell::powershell("winget source list --name " + ps_q(name) + " 2>$null", Value::Null)?
-    Ok(out.success)
+fn trim_slash(s: string) -> string {
+    if s.ends_with("/") { return s.slice(0, s.len() - 1) }
+    s
 }
 
-// Match the configured URL literally rather than parsing winget's localized
-// field labels (same idiom as winget_package's `installed`).
-fn source_has_url(name: string, url: string) -> Result[bool, string] {
-    let out = shell::powershell("winget source list --name " + ps_q(name) + " 2>$null", Value::Null)?
-    if !out.success { return Ok(false) }
-    Ok(out.stdout.contains(url))
+// The registered source differs from the params: another URL, or another
+// type when one is asked for. Types compare case-insensitively, as winget
+// treats them.
+fn drift(params: Value, s: Value) -> bool {
+    if trim_slash(common::get_str(s, "arg")) != trim_slash(common::param_str(params, "url", "")) { return true }
+    let t = common::param_str(params, "type", "")
+    t != "" && common::get_str(s, "type").to_lower() != t.to_lower()
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let present = want_present(params)?
-    if present {
-        let url = param_str(params, "url", "")
-        if url == "" { return Err("missing 'url' parameter") }
-        if source_has_url(name, url)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
-    } else {
-        if source_present(name)? { Ok(CheckResult::NotConfigured) } else { Ok(CheckResult::AlreadyConfigured) }
+    let name = validate(params)?
+    let s = source(name)?
+    let exists = if let Some(m) = s { common::get_bool(m, "exists") } else { false }
+    if !common::want_present(params)? {
+        if exists { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
     }
+    if !exists { return Ok(CheckResult::NotConfigured) }
+    if drift(params, s.unwrap_or(Value::Null)) { return Ok(CheckResult::NotConfigured) }
+    Ok(CheckResult::AlreadyConfigured)
+}
+
+fn winget(script: string, params: Value, what: string) -> Result[unit, string] {
+    let out = common::action(common::winget_ps() + script + "exit $LASTEXITCODE\n", #{
+        "CW_NAME": Value::String(common::param_str(params, "name", "")),
+        "CW_URL": Value::String(common::param_str(params, "url", "")),
+        "CW_TYPE": Value::String(common::param_str(params, "type", ""))
+    })?
+    if !out.success { return Err(common::failure(what, out)) }
+    Ok(())
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let present = want_present(params)?
-    let cmd = if present {
-        let url = param_str(params, "url", "")
-        if url == "" { return Err("missing 'url' parameter") }
-        let stype = param_str(params, "type", "")
-        let targ = if stype != "" { " --type " + ps_q(stype) } else { "" }
-        // remove first so a changed URL converges; ignore remove failure when absent
-        "winget source remove --name " + ps_q(name) + " 2>$null; winget source add --name " + ps_q(name) + " --arg " + ps_q(url) + targ + " --accept-source-agreements; exit $LASTEXITCODE"
-    } else {
-        "winget source remove --name " + ps_q(name) + " --accept-source-agreements; exit $LASTEXITCODE"
+    let name = validate(params)?
+    let s = source(name)?
+    if s.is_none() { return Err("winget is not installed (or not on PATH)") }
+    let m = s.unwrap_or(Value::Null)
+    let exists = common::get_bool(m, "exists")
+    // `source remove` takes no agreement flags.
+    let remove = "& $winget source remove --name $env:CW_NAME --disable-interactivity\n"
+    if !common::want_present(params)? {
+        if exists { winget(remove, params, "winget source remove " + name)? }
+        return Ok(ApplyResult::Success)
     }
-    let out = shell::powershell(cmd, Value::Null)?
-    if !out.success { return Err(out.stdout.trim() + " " + out.stderr.trim()) }
+    // Only a source that differs is removed and added again; one that
+    // already matches is left alone.
+    if exists && drift(params, m) { winget(remove, params, "winget source remove " + name)? }
+    if !exists || drift(params, m) {
+        winget(
+            "$a = @('source', 'add', '--name', $env:CW_NAME, '--arg', $env:CW_URL, '--accept-source-agreements', '--disable-interactivity')\n" +
+            "if ([string]$env:CW_TYPE -ne '') {{ $a += @('--type', $env:CW_TYPE) }}\n" +
+            "& $winget @a\n",
+            params, "winget source add " + name)?
+    }
     Ok(ApplyResult::Success)
 }
