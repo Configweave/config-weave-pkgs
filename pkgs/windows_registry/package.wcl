@@ -1,21 +1,40 @@
 package "windows_registry" {
-  description = "Manage Windows registry state"
+  description = "Manage Windows registry values and keys, including their kind, owner and permissions"
+
+  // Both resources work through .NET's Microsoft.Win32.RegistryKey in
+  // Windows PowerShell rather than the host `registry` module, which cannot
+  // report a value's kind, read binary values or choose a registry view.
+  //
+  // Paths: `key` starts with a hive, short or long and in any case (HKLM,
+  // hklm, HKEY_LOCAL_MACHINE; HKCU, HKCR, HKU, HKCC). Trailing backslashes
+  // are ignored; empty, "." and ".." segments are rejected.
+  //
+  // Views: `view = :native` (the default) is the 64-bit registry on 64-bit
+  // Windows, because the agent is a 64-bit process, so HKLM\Software\Vendor
+  // is never redirected to WOW6432Node. `:wow64_32` addresses the view a
+  // 32-bit program sees (HKLM\Software\WOW6432Node\Vendor); `:wow64_64`
+  // forces the 64-bit view.
+  //
+  // HKCU is the hive of the account the agent runs as. Under the usual
+  // SYSTEM service that is SYSTEM's own hive (HKU\S-1-5-18), not any signed-in
+  // user's; write to HKU\<sid> to reach a particular user.
 
   resource "value" {
-    description = "Ensure a registry value exists with the given data, or is absent"
+    description = "Ensure a registry value exists with the given kind and data, or is absent. The kind is compared as well as the data, so a REG_SZ where :expand_sz is wanted is drift and is rewritten"
     script = "resources/value.ws"
     concurrency = "parallel"
-    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
-    param "name" { description = "Value name" type = "string" required = true }
+    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor; created when missing" type = "string" required = true }
+    param "name" { description = "Value name; \"\" or \"(Default)\" is the key's default (unnamed) value" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the value with the given data" }
-      symbol "absent"  { description = "Delete the value" }
+      symbol "present" { description = "Create the value with the given kind and data" }
+      symbol "absent"  { description = "Delete the value, whatever its kind (binary values included); the key stays" }
     }
-    param "data" { description = "Desired data (decimal string for dword/qword); used when present" type = "string" default = "" }
+    param "data" { description = "Desired data for :sz, :expand_sz, :dword, :qword and (as hex text such as \"01ab ff\") :binary. Numbers are decimal: :dword takes -2147483648..4294967295 and :qword -9223372036854775808..18446744073709551615, a negative number being the signed spelling of the same bits (\"-1\" is 0xFFFFFFFF). :expand_sz data is compared unexpanded" type = "string" default = "" }
+    param "data_list" { description = "Desired data for :multi_sz (a list of non-empty strings, order significant) or, instead of hex in `data`, :binary (a list of byte ints 0..255)" type = "list" }
     param "kind" {
       description = "Registry value kind"
       type = "symbol"
@@ -25,24 +44,52 @@ package "windows_registry" {
       symbol "expand_sz" { description = "REG_EXPAND_SZ — a string whose environment references expand on read" }
       symbol "dword"     { description = "REG_DWORD — a 32-bit number, written as a decimal string in `data`" }
       symbol "qword"     { description = "REG_QWORD — a 64-bit number, written as a decimal string in `data`" }
+      symbol "multi_sz"  { description = "REG_MULTI_SZ — a list of strings, given in `data_list`" }
+      symbol "binary"    { description = "REG_BINARY — bytes, given as hex text in `data` or as byte ints in `data_list`" }
+    }
+    param "view" {
+      description = "Registry view to address on 64-bit Windows"
+      type = "symbol"
+      default = :native
+
+      symbol "native"   { description = "The agent's own (64-bit) view; no WOW6432Node redirection" }
+      symbol "wow64_32" { description = "The 32-bit view, as a 32-bit program sees it (WOW6432Node)" }
+      symbol "wow64_64" { description = "The 64-bit view, explicitly" }
     }
   }
 
   resource "key" {
-    description = "Ensure a registry key exists (optionally owned/ACLed) or is absent (subtree delete)"
+    description = "Ensure a registry key exists, optionally with a given owner and explicit Allow rules, or is absent (subtree delete). Owner and rule identities are compared as SIDs and rights as bit masks over the key's explicit rules; inherited rules are never counted or changed"
     script = "resources/key.ws"
     concurrency = "exclusive"
-    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor" type = "string" required = true }
+    param "key" { description = "Hive-prefixed key path such as HKLM\\Software\\Vendor. With :absent it must be at least two segments below the hive (three under HKU) and not a system key such as HKLM\\SOFTWARE\\Microsoft or HKCU\\Software\\Classes" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the key" }
-      symbol "absent"  { description = "Delete the key and its subtree" }
+      symbol "present" { description = "Create the key (and its parents)" }
+      symbol "absent"  { description = "Delete the key and its whole subtree" }
     }
-    param "owner" { description = "NT account name that should own the key, e.g. BUILTIN\\Administrators" type = "string" default = "" }
-    param "permissions" { description = "Allow rules as \"identity:rights\" strings, rights a RegistryRights name, e.g. \"BUILTIN\\Users:ReadKey\"" type = "list" }
+    param "owner" { description = "Account that should own the key, as a name (BUILTIN\\Administrators, Administrators, DOMAIN\\svc) or a SID string; empty leaves ownership unmanaged. An owner other than the agent's own account is set with SeRestorePrivilege, which the agent enables" type = "string" default = "" }
+    param "permissions" { description = "Allow rules as \"identity:rights\" strings; identity is an account name or SID string, rights one or more RegistryRights names (\"BUILTIN\\Users:ReadKey\", \"svc:ReadKey, WriteKey\"). Rules are written to apply to the key and all subkeys. Several entries for one identity merge into one mask" type = "list" }
+    param "permissions_mode" {
+      description = "How `permissions` relates to the rules already on the key"
+      type = "symbol"
+      default = :additive
+
+      symbol "additive" { description = "Each listed identity must hold at least the listed rights; other explicit rules are left alone" }
+      symbol "exact"    { description = "The key's explicit rules must be exactly the listed ones: other explicit rules (Deny included) are removed and a listed identity's mask must match exactly. With an empty list every explicit rule is removed, leaving only inherited ones" }
+    }
+    param "view" {
+      description = "Registry view to address on 64-bit Windows"
+      type = "symbol"
+      default = :native
+
+      symbol "native"   { description = "The agent's own (64-bit) view; no WOW6432Node redirection" }
+      symbol "wow64_32" { description = "The 32-bit view, as a 32-bit program sees it (WOW6432Node)" }
+      symbol "wow64_64" { description = "The 64-bit view, explicitly" }
+    }
   }
 
   test "registry_converges" {
@@ -50,17 +97,95 @@ package "windows_registry" {
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/value_verify.ws"
+    // Seeds the drift the steps converge away from: a REG_SZ that should be
+    // REG_EXPAND_SZ, a binary value to delete and one to overwrite, a plain
+    // value to delete, a key subtree to delete, and a key carrying an
+    // explicit Guests rule for the exact-mode step to remove. Windows test
+    // setups run under cmd.exe and must not contain double quotes.
+    setup = "reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v kindchange /t REG_SZ /d plain-text /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob /t REG_BINARY /d 0102ff /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob2 /t REG_BINARY /d 0a0b /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v gone /t REG_SZ /d bye /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\Doomed\\Child /v x /t REG_DWORD /d 1 /f & powershell -NoProfile -Command $k=[Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('SOFTWARE\\ConfigWeaveTest\\Exact'); $a=$k.GetAccessControl(); $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule('BUILTIN\\Guests','FullControl','ContainerInherit','None','Allow'))); $k.SetAccessControl($a) & exit 0"
 
     step "greeting" {
-      description = "Write a string value"
+      description = "Write a string value through a lower-case hive prefix and a trailing backslash"
       resource = "value"
-      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "greeting" data = "hello from config-weave" }
+      properties { key = "hklm\\Software\\ConfigWeaveTest\\" name = "greeting" data = "hello from config-weave" }
+    }
+
+    step "default_value" {
+      description = "Write the key's default value"
+      resource = "value"
+      properties { key = "HKEY_LOCAL_MACHINE\\Software\\ConfigWeaveTest" name = "(Default)" data = "the default" }
     }
 
     step "answer" {
       description = "Write a dword value"
       resource = "value"
       properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "answer" data = "42" kind = :dword }
+    }
+
+    step "all_bits" {
+      description = "Write a dword with its signed spelling"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "all_bits" data = "-1" kind = :dword }
+    }
+
+    step "big" {
+      description = "Write a qword above the signed 64-bit range"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "big" data = "18446744073709551615" kind = :qword }
+    }
+
+    step "expand" {
+      description = "Write an expand_sz value, compared unexpanded"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "expand" data = "%SystemRoot%\\cw" kind = :expand_sz }
+    }
+
+    step "kind_change" {
+      description = "Rewrite a seeded REG_SZ as REG_EXPAND_SZ with the same data"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "kindchange" data = "plain-text" kind = :expand_sz }
+    }
+
+    step "multi" {
+      description = "Write a multi_sz value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "multi" data_list = ["one", "two words"] kind = :multi_sz }
+    }
+
+    step "multi_single" {
+      description = "Write a one-item multi_sz value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "multi_single" data_list = ["solo"] kind = :multi_sz }
+    }
+
+    step "binary_hex" {
+      description = "Write a binary value from hex text"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "bin_hex" data = "DE AD be ef" kind = :binary }
+    }
+
+    step "binary_bytes" {
+      description = "Write a binary value from byte ints"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "bin_bytes" data_list = [0, 16, 255] kind = :binary }
+    }
+
+    step "binary_absent" {
+      description = "Delete a seeded REG_BINARY value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "blob" ensure = :absent }
+    }
+
+    step "binary_overwritten" {
+      description = "Replace a seeded REG_BINARY value with a string"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "blob2" data = "now a string" }
+    }
+
+    step "value_absent" {
+      description = "Delete a seeded string value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "gone" ensure = :absent }
     }
 
     step "ghost_value_absent" {
@@ -70,10 +195,63 @@ package "windows_registry" {
       properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "never-written" ensure = :absent }
     }
 
+    step "wow64_value" {
+      description = "Write a value in the 32-bit view"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest32" name = "bits" data = "32" view = :wow64_32 }
+    }
+
+    step "dword_out_of_range" {
+      description = "A dword above 4294967295 is rejected"
+      resource = "value"
+      expect = "error"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "too_big" data = "4294967296" kind = :dword }
+    }
+
     step "subkey" {
       description = "Create a key"
       resource = "key"
       properties { key = "HKLM\\Software\\ConfigWeaveTest\\Sub" }
+    }
+
+    step "acl_key" {
+      description = "Own a key and grant one identity two rights, spelled two ways, that merge into one rule"
+      resource = "key"
+      properties {
+        key = "HKLM\\Software\\ConfigWeaveTest\\Acl"
+        owner = "BUILTIN\\Backup Operators"
+        permissions = ["BUILTIN\\Users:ReadKey", "Users:WriteKey", "S-1-5-32-551:QueryValues"]
+      }
+    }
+
+    step "exact_key" {
+      description = "Leave only the listed explicit rule on a key seeded with a Guests rule"
+      resource = "key"
+      properties {
+        key = "HKLM\\Software\\ConfigWeaveTest\\Exact"
+        permissions = ["BUILTIN\\Users:ReadKey"]
+        permissions_mode = :exact
+      }
+    }
+
+    step "key_absent" {
+      description = "Delete a seeded key and its subtree"
+      resource = "key"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest\\Doomed" ensure = :absent }
+    }
+
+    step "hive_child_refused" {
+      description = "Deleting a key one segment below a hive is refused"
+      resource = "key"
+      expect = "error"
+      properties { key = "HKCU\\Software" ensure = :absent }
+    }
+
+    step "system_key_refused" {
+      description = "Deleting a well-known system key is refused"
+      resource = "key"
+      expect = "error"
+      properties { key = "HKLM\\SOFTWARE\\Microsoft" ensure = :absent }
     }
   }
 }

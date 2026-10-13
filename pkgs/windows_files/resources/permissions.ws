@@ -1,173 +1,100 @@
 use value
 use fs
-use shell
-use json
+use log
+use common
+use acl
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn mode_exact(params: Value) -> Result[bool, string] {
+    let m = common::param_str(params, "acl_mode", "additive")
+    if m == "additive" { return Ok(false) }
+    if m == "exact" { return Ok(true) }
+    Err("invalid 'acl_mode' value '" + m + "' (expected :additive or :exact)")
 }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
+fn copy_inherited(params: Value) -> Result[bool, string] {
+    let m = common::param_str(params, "inherited_rules", "copy")
+    if m == "copy" { return Ok(true) }
+    if m == "remove" { return Ok(false) }
+    Err("invalid 'inherited_rules' value '" + m + "' (expected :copy or :remove)")
 }
 
-fn param_list(params: Value, key: string) -> List[string] {
-    let items: List[string] = []
-    if let Some(v) = params.get(key) {
-        if let Some(xs) = v.as_list() {
-            for x in xs {
-                if let Some(s) = x.as_string() { items.push(s) }
-            }
-        }
-    }
-    items
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
-}
-
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
-}
-
-fn get_bool(m: Value, key: string) -> bool {
-    if let Some(v) = m.get(key) { if let Some(b) = v.as_bool() { return b } }
-    false
-}
-
-// One "identity:rights" spec -> [identity, rights]. rights is a
-// System.Security.AccessControl.FileSystemRights name (FullControl,
-// Modify, ReadAndExecute, ...). Identities must be written fully qualified
-// (BUILTIN\Users, not Users) because the check compares the resolved names
-// the ACL reports.
-fn rule_parts(spec: string) -> Result[List[string], string] {
-    if let Some(i) = spec.find(":") {
-        let ident = spec.slice(0, i).trim()
-        let rights = spec.slice(i + 1, spec.len()).trim()
-        if ident != "" && rights != "" { return Ok([ident, rights]) }
-    }
-    Err("invalid acl entry '" + spec + "' (expected \"identity:rights\", e.g. \"BUILTIN\\Users:ReadAndExecute\")")
-}
-
-// The path's ACL as one JSON object:
-// { owner, protected, rules: [{ id, rights, type }] }.
-fn acl_ps(p: string) -> string {
-    "$acl = Get-Acl -LiteralPath " + ps_q(p) + "; " +
-    "[pscustomobject]@{{ " +
-    "owner = \"$($acl.Owner)\"; " +
-    "protected = [bool]$acl.AreAccessRulesProtected; " +
-    "rules = @($acl.Access | ForEach-Object {{ [pscustomobject]@{{ " +
-    "id = \"$($_.IdentityReference.Value)\"; " +
-    "rights = [string]$_.FileSystemRights; " +
-    "type = [string]$_.AccessControlType }} }}) " +
-    "}} | ConvertTo-Json -Compress -Depth 4"
-}
-
-// The ACL's rules as a list whether JSON carried a list or a single
-// collapsed object (ConvertTo-Json in Windows PowerShell 5.1).
-fn acl_rules(acl: Value) -> List[Value] {
-    let rules = []
-    if let Some(v) = acl.get("rules") {
-        if let Some(items) = v.as_list() {
-            for item in items { rules.push(item) }
-        } else if let Some(single) = v.as_map() {
-            rules.push(Value::Map(single))
-        }
-    }
-    rules
-}
-
-// An Allow rule for `ident` whose (possibly composite) rights string lists
-// `right` as one of its flags. Literal flag matching: FullControl does not
-// satisfy a Modify spec, and generic-rights combinations that stringify
-// numerically never match.
-fn rule_grants(rule: Value, ident: string, right: string) -> bool {
-    if get_str(rule, "type") != "Allow" { return false }
-    if get_str(rule, "id").to_lower() != ident.to_lower() { return false }
-    for tok in get_str(rule, "rights").split(",") {
-        if tok.trim().to_lower() == right.to_lower() { return true }
-    }
-    false
-}
-
-fn any_rule_grants(rules: List[Value], ident: string, right: string) -> bool {
-    for rule in rules {
-        if rule_grants(rule, ident, right) { return true }
-    }
-    false
+fn prelude(params: Value, p: string) -> Result[string, string] {
+    copy_inherited(params)?
+    acl::ps_prelude(
+        p,
+        common::param_str(params, "owner", ""),
+        common::param_strs(params, "acl"),
+        common::param_strs(params, "deny"),
+        mode_exact(params)?
+    )
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let p = param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    let p = common::param_str(params, "path", "")
+    common::require_path("path", p)?
+    let script = prelude(params, p)?
     // A missing path is NotConfigured (not an error) so a sibling step can
     // create it before this resource's apply runs; apply still errors when
     // the path never appears.
     if !fs::exists(p) { return Ok(CheckResult::NotConfigured) }
-    let acl = json::parse(ps_out(acl_ps(p))?)?
-    let owner = param_str(params, "owner", "")
-    if owner != "" && get_str(acl, "owner").to_lower() != owner.to_lower() {
+    let inheritance = common::param_bool(params, "inheritance", true)
+    let st = common::ps_json("reading the ACL of " + p,
+        script +
+        "$sec = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
+        "$drift = CwEval $sec\n" +
+        "$have = $sec.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
+        "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
+        "if ($sec.AreAccessRulesProtected -eq $" + (if inheritance { "true" } else { "false" }) + ") {{ $drift.Add('inheritance is ' + $(if ($sec.AreAccessRulesProtected) {{ 'off' }} else {{ 'on' }})) }}\n" +
+        "[pscustomobject]@{{ drift = @($drift) }} | ConvertTo-Json -Compress\n"
+    )?
+    let drift = common::get_list(st, "drift")
+    if !drift.is_empty() {
+        for d in drift { log::info(p + ": " + d.as_string().unwrap_or("")) }
         return Ok(CheckResult::NotConfigured)
-    }
-    if get_bool(acl, "protected") == param_bool(params, "inheritance", true) {
-        return Ok(CheckResult::NotConfigured)
-    }
-    let rules = acl_rules(acl)
-    for spec in param_list(params, "acl") {
-        let parts = rule_parts(spec)?
-        if !any_rule_grants(rules, parts.get(0).unwrap_or(""), parts.get(1).unwrap_or("")) {
-            return Ok(CheckResult::NotConfigured)
-        }
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let p = param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    let p = common::param_str(params, "path", "")
+    common::require_path("path", p)?
+    let script = prelude(params, p)?
     if !fs::exists(p) { return Err("path does not exist: " + p) }
-    let parts = [
-        "$path = " + ps_q(p) + "; " +
-        "$item = Get-Item -LiteralPath $path -Force; " +
-        "$acl = Get-Acl -LiteralPath $path; " +
-        // Directories propagate their explicit rules to children; files
-        // cannot carry inheritance flags at all.
-        "$inh = 'None'; if ($item.PSIsContainer) {{ $inh = 'ContainerInherit,ObjectInherit' }}; "
-    ]
-    if param_bool(params, "inheritance", true) {
-        parts.push("$acl.SetAccessRuleProtection($false, $false); ")
-    } else {
-        // Protect the ACL and drop the previously inherited rules.
-        parts.push("$acl.SetAccessRuleProtection($true, $false); ")
-    }
-    let owner = param_str(params, "owner", "")
-    if owner != "" {
-        parts.push("$acl.SetOwner([System.Security.Principal.NTAccount]" + ps_q(owner) + "); ")
-    }
-    for spec in param_list(params, "acl") {
-        let pp = rule_parts(spec)?
-        parts.push(
-            "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(" +
-            ps_q(pp.get(0).unwrap_or("")) + ", " + ps_q(pp.get(1).unwrap_or("")) +
-            ", $inh, 'None', 'Allow'); " +
-            "$acl.AddAccessRule($rule); "
-        )
-    }
-    parts.push("Set-Acl -LiteralPath $path -AclObject $acl")
-    ps_run(parts.join(""))?
+    let inheritance = common::param_bool(params, "inheritance", true)
+    let copy = copy_inherited(params)?
+    log::info("setting the ACL of " + p)
+    // The owner and the DACL are read and written separately through the
+    // item's own GetAccessControl/SetAccessControl, each with only its own
+    // section loaded. Set-Acl would write the owner back with the DACL,
+    // which fails on paths owned by TrustedInstaller and similar.
+    common::ps_run("setting the ACL of " + p,
+        script +
+        "if ($cwOwner -ne '') {{\n" +
+        "  $o = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)\n" +
+        "  if ($o.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $cwOwner) {{\n" +
+        "    CwEnableOwnerPrivileges\n" +
+        "    $o.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($cwOwner)))\n" +
+        "    $cwItem.SetAccessControl($o)\n" +
+        "  }}\n" +
+        "}}\n" +
+        "$a = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)\n" +
+        "$changed = $false\n" +
+        (if inheritance {
+            "if ($a.AreAccessRulesProtected) {{ $a.SetAccessRuleProtection($false, $false); $changed = $true }}\n"
+        } else {
+            // Copying turns the inherited rules into explicit ones before
+            // inheritance is cut, so nobody loses access they had.
+            "if (-not $a.AreAccessRulesProtected) {{ $a.SetAccessRuleProtection($true, $" + (if copy { "true" } else { "false" }) + "); $changed = $true }}\n"
+        }) +
+        "$drift = CwEval $a\n" +
+        "if ($drift.Count -gt 0) {{\n" +
+        "  if ($cwExact) {{ foreach ($r in (CwExplicit $a)) {{ $null = $a.RemoveAccessRuleSpecific($r) }} }}\n" +
+        "  foreach ($w in $cwWant.Values) {{\n" +
+        "    if ($cwExact -or -not $w.ok) {{ $a.AddAccessRule((CwRule $w.sid $w.mask $w.type)) }}\n" +
+        "  }}\n" +
+        "  $changed = $true\n" +
+        "}}\n" +
+        "if ($changed) {{ $cwItem.SetAccessControl($a) }}\n"
+    )?
     Ok(ApplyResult::Success)
 }

@@ -256,6 +256,85 @@ Shells out to PowerShell's `WebAdministration` module, so the target needs
 the IIS management scripting tools (`feature` with `:scripting_tools`, or
 `:web_server` with `include_management_tools = true`).
 
+### `windows_registry`
+
+Registry values and keys:
+
+- `value` — a value with its kind and data, or `ensure = :absent`. Every
+  kind Windows programs commonly write is covered: `:sz`, `:expand_sz`,
+  `:dword`, `:qword`, `:multi_sz` (strings in `data_list`) and `:binary` (hex
+  text in `data`, or byte ints in `data_list`). The kind is compared as well
+  as the data, so a `REG_SZ` where `:expand_sz` is wanted is drift. Numbers
+  are decimal, and a negative number is the signed spelling of the same bits
+  (`"-1"` is `0xFFFFFFFF` as a DWORD). `name = ""` or `"(Default)"` is the
+  key's default value.
+- `key` — a key, optionally with an `owner` and explicit Allow rules in
+  `permissions`, or `ensure = :absent`, which deletes the whole subtree.
+  Accounts are compared as SIDs and rights as bit masks, so the composite
+  rules Windows merges (`ReadKey, WriteKey`) still match. The default
+  `permissions_mode = :additive` only adds rules. `:exact` also removes
+  explicit rules that are not listed. `:absent` refuses hive roots,
+  anything one level below a hive (`HKLM\Software`, `HKCU\Software`), and
+  well-known system keys.
+
+Both resources take any hive spelling (`HKLM`, `hklm`, `HKEY_LOCAL_MACHINE`)
+and a `view`. `:native` is the 64-bit registry the agent sees, with no
+`WOW6432Node` redirection. `:wow64_32` is what a 32-bit program sees.
+`HKCU` is the hive of the account the agent runs as, which under the usual
+SYSTEM service is SYSTEM's own hive. To reach a particular user, write to
+`HKU\<sid>`.
+
+The work goes through .NET's `RegistryKey` in Windows PowerShell rather than
+the host `registry` module, because that module cannot report a value's kind,
+read binary values, or choose a view.
+
+### `windows_files`
+
+Files, directories, links and NTFS permissions, the Windows counterpart of
+`linux_files`:
+
+- `file` — exact `content`, or a `url` download checked against `sha256`.
+  `template` renders a Tera template. Both take `line_endings` (`:preserve`,
+  `:crlf`, `:lf`). Text is written as UTF-8 without a BOM, in place, so the
+  file keeps its own permissions. A file that is not valid UTF-8 (UTF-16
+  from Notepad or Windows PowerShell's `Out-File`) is drift and is
+  rewritten.
+- `directory` — a directory and its parents, or a recursive delete. The
+  delete refuses drive and share roots, `Windows`, `Program Files`,
+  `ProgramData`, `Users` and user profile roots, the directories the
+  environment names, and links.
+- `symlink` — a symbolic link (`kind = :symbolic`) or a junction
+  (`:junction`), or `ensure = :absent`. Dangling links are handled. A real
+  file or directory at the link's path is never replaced.
+- `permissions` — `owner`, Allow rules in `acl`, Deny rules in `deny`, and
+  `inheritance`. Accounts are compared as SIDs, so unqualified and localised
+  names work, and rights are compared as bit masks over the explicit rules.
+  On a directory, a rule counts only when it reaches the folder, its
+  subfolders and its files. `acl_mode = :exact` removes the explicit rules
+  that are not listed. With `inheritance = false`, the inherited rules are
+  copied by default (`inherited_rules = :copy`). `:remove` drops them
+  instead, and can lock out SYSTEM and Administrators. The owner and the
+  DACL are written separately, so a path owned by TrustedInstaller can still
+  have its rules changed.
+- `path_info` and `paths_matching` gatherers — a path's type, size,
+  attributes, owner, link target and optional SHA-256, and a wildcard
+  listing.
+
+### `windows_share`
+
+`share` manages an SMB share: its `path`, `description`, `encrypt_data`,
+`caching_mode`, `folder_enumeration_mode`, `concurrent_user_limit`, and its
+access list in `full_access`, `change_access` and `read_access`. The three
+lists together are the share's whole access list. A grant to any other
+account is revoked and Deny entries are removed. Accounts are matched by
+SID. With all three lists empty, access is left unmanaged.
+
+An existing share is reconciled in place, so open sessions and unmanaged
+settings survive. Only a changed `path` recreates the share, and that
+happens after every account has been resolved and the directory has been
+created. `ensure = :absent` removes the share and leaves its directory. It
+refuses administrative shares such as `ADMIN$`.
+
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)

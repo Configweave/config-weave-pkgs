@@ -1,11 +1,17 @@
 package "windows_files" {
-  description = "Manage Windows filesystem state with NTFS permissions"
+  description = "Manage Windows files, directories, links and NTFS permissions"
+
+  // Paths are absolute Windows paths (C:\dir\file or \\server\share\file);
+  // "." and ".." segments are rejected. Text is written as UTF-8 without a
+  // BOM, in place, so a file's own security descriptor is kept. A target
+  // that is not valid UTF-8 (UTF-16 written by Notepad or PowerShell 5.1's
+  // Out-File, say) counts as drift and is rewritten as UTF-8.
 
   resource "file" {
-    description = "Ensure a file exists with the given content, or is absent"
+    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written in place, so the file keeps its own NTFS permissions; content that is not valid UTF-8 counts as drift and is replaced. A directory at path is an error"
     script = "resources/file.ws"
     concurrency = "exclusive"
-    param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf" type = "string" required = true }
+    param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf; parent directories are created" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -14,17 +20,28 @@ package "windows_files" {
       symbol "present" { description = "Create the file and converge its content" }
       symbol "absent"  { description = "Delete the file" }
     }
-    param "content" { description = "Exact file content; used when present" type = "string" default = "" }
+    param "content" { description = "Exact file content; mutually exclusive with url" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded beside the target and only copied over it once it passes sha256. Without sha256 it is fetched once and never re-checked: a changed upstream file is not drift, so set sha256 whenever the content matters" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error and leaves the existing file untouched" type = "string" default = "" }
+    param "line_endings" {
+      description = "Line endings applied to `content` before it is compared and written (not to url downloads)"
+      type = "symbol"
+      default = :preserve
+
+      symbol "preserve" { description = "Write the content exactly as given" }
+      symbol "crlf"     { description = "Rewrite every line break as CRLF, the Windows convention" }
+      symbol "lf"       { description = "Rewrite every line break as LF" }
+    }
   }
 
   // The Windows counterpart of linux_files.template. It carries no mode or
   // owner params: on Windows those are NTFS concerns, managed by the
   // `permissions` resource below, exactly as `file` leaves them alone.
   resource "template" {
-    description = "Render a Tera template to a file with exact content, or ensure it is absent"
+    description = "Render a Tera template to a file with exact content, or ensure it is absent. The file is compared with what the template renders now, so a changed variable is drift"
     script = "resources/template.ws"
     concurrency = "exclusive"
-    param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf" type = "string" required = true }
+    param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf; parent directories are created" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -33,12 +50,21 @@ package "windows_files" {
       symbol "present" { description = "Render the template and converge the file's content" }
       symbol "absent"  { description = "Delete the file" }
     }
-    param "template" { description = "Tera template body (author as a raw heredoc); used when present" type = "string" default = "" }
+    param "template" { description = "Tera template body (author as a raw heredoc); required and non-empty when present (use `file` for an empty file)" type = "string" default = "" }
     param "vars" { description = "Variables exposed to the template" type = "map" }
+    param "line_endings" {
+      description = "Line endings applied to the rendered text before it is compared and written"
+      type = "symbol"
+      default = :preserve
+
+      symbol "preserve" { description = "Write the rendered text exactly" }
+      symbol "crlf"     { description = "Rewrite every line break as CRLF, the Windows convention" }
+      symbol "lf"       { description = "Rewrite every line break as LF" }
+    }
   }
 
   resource "directory" {
-    description = "Ensure a directory exists (parents included), or is absent (recursive delete)"
+    description = "Ensure a directory exists (parents included), or is absent (recursive delete). :absent refuses drive and share roots, the Windows system directories (Windows, Program Files, ProgramData, Users, ...), user profile roots, the directories the environment names (%SystemRoot%, %ProgramFiles%, ...) and links"
     script = "resources/directory.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the directory" type = "string" required = true }
@@ -52,21 +78,149 @@ package "windows_files" {
     }
   }
 
+  resource "symlink" {
+    description = "Ensure a symbolic link or junction points at a target, or is absent. A link whose target is missing (dangling) still counts as existing, and is retargeted or removed like any other; a real file or directory at path is never replaced"
+    script = "resources/symlink.ws"
+    concurrency = "exclusive"
+    param "path" { description = "Absolute Windows path of the link; parent directories are created" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create or retarget the link" }
+      symbol "absent"  { description = "Remove the link itself, never what it points at" }
+    }
+    param "target" { description = "What the link points at; required when present. A symbolic link may use a relative target (resolved against the link's directory); a junction needs an absolute local directory path. Compared case-insensitively, ignoring trailing separators" type = "string" default = "" }
+    param "kind" {
+      description = "The kind of link"
+      type = "symbol"
+      default = :symbolic
+
+      symbol "symbolic" { description = "An NTFS symbolic link (file or directory); works for local, relative and UNC targets" }
+      symbol "junction" { description = "A directory junction (mount point); local absolute directory targets only, and no & | < > ^ % ! in either path because cmd.exe's mklink creates it" }
+    }
+    param "target_type" {
+      description = "Whether a symbolic link is a file or a directory link"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"      { description = "Follow the target as it is when the link is made; a missing target makes a file link" }
+      symbol "file"      { description = "Always a file link" }
+      symbol "directory" { description = "Always a directory link, also for a target that does not exist yet" }
+    }
+  }
+
   resource "permissions" {
-    description = "Ensure a file or directory carries the given NTFS owner, access rules and inheritance state"
+    description = "Ensure a file or directory carries the given NTFS owner, explicit Allow and Deny rules, and inheritance state. Identities are compared as SIDs and rights as bit masks over the path's explicit rules; inherited rules never satisfy a rule and are never removed by it"
     script = "resources/permissions.ws"
     concurrency = "exclusive"
-    param "path" { description = "Absolute Windows path of the file or directory (must exist)" type = "string" required = true }
-    param "owner" { description = "NT account that should own the path, e.g. BUILTIN\\Administrators; empty leaves ownership unmanaged" type = "string" default = "" }
-    param "acl" { description = "Allow rules as \"identity:rights\" strings with fully qualified identities, rights a FileSystemRights name, e.g. \"BUILTIN\\Users:ReadAndExecute\" or \"DOMAIN\\svc:FullControl\"" type = "list" }
-    param "inheritance" { description = "Whether inherited rules flow onto the path; false protects the ACL and strips inherited rules" type = "bool" default = true }
+    param "path" { description = "Absolute Windows path of the file or directory (must exist by the time the step applies)" type = "string" required = true }
+    param "owner" { description = "Account that should own the path, as a name (BUILTIN\\Administrators, Administrators, DOMAIN\\svc) or a SID string; empty leaves ownership unmanaged. An owner other than the agent's own account is set with SeRestorePrivilege, which the agent enables" type = "string" default = "" }
+    param "acl" { description = "Allow rules as \"identity:rights\" strings; identity is an account name (qualified or not, localised names resolve) or a SID string, rights one or more FileSystemRights names (\"BUILTIN\\Users:ReadAndExecute\", \"svc:Read, Write\"). On a directory a rule applies to the folder, its subfolders and files. Several entries for one identity merge into one mask" type = "list" }
+    param "deny" { description = "Deny rules, in the same \"identity:rights\" form as acl" type = "list" }
+    param "acl_mode" {
+      description = "How `acl` and `deny` relate to the rules already on the path"
+      type = "symbol"
+      default = :additive
+
+      symbol "additive" { description = "Each listed identity must hold at least the listed rights; other explicit rules are left alone" }
+      symbol "exact"    { description = "The path's explicit rules must be exactly the listed ones: other explicit rules are removed and a listed identity's mask must match exactly. With inheritance = false this leaves only the listed rules on the path, so list SYSTEM and Administrators unless locking them out is intended" }
+    }
+    param "inheritance" { description = "Whether inherited rules flow onto the path. false protects the ACL; what happens to the rules that were inherited is `inherited_rules`" type = "bool" default = true }
+    param "inherited_rules" {
+      description = "What protecting the ACL (inheritance = false) does with the rules that were inherited"
+      type = "symbol"
+      default = :copy
+
+      symbol "copy"   { description = "Keep them as explicit rules, so nobody loses access they had" }
+      symbol "remove" { description = "Drop them, leaving only the explicit rules; this can lock out SYSTEM and Administrators" }
+    }
+  }
+
+  gatherer "path_info" {
+    description = "Report a path's existence, type, size, attributes and owner. Describes the path itself and never follows a link: a dangling link exists, and a link to a directory reports is_link rather than is_dir"
+    script = "gatherers/path_info.ws"
+    returns "path" { description = "The path that was examined" type = "string" }
+    returns "exists" { description = "True when anything is at the path, a dangling link included" type = "bool" }
+    returns "is_file" { description = "True for a regular file (only when exists)" type = "bool" }
+    returns "is_dir" { description = "True for a directory that is not a link (only when exists)" type = "bool" }
+    returns "is_link" { description = "True for a symbolic link or junction (only when exists)" type = "bool" }
+    returns "link_type" { description = "\"symbolic\", \"junction\" or \"\" (only when exists)" type = "string" }
+    returns "target" { description = "A link's target as stored, \"\" otherwise (only when exists)" type = "string" }
+    returns "size" { description = "Size in bytes; 0 for a directory (only when exists)" type = "int" }
+    returns "attributes" { description = "File attribute names, lower-cased: archive, hidden, readonly, system, directory, reparsepoint, ... (only when exists)" type = "list" }
+    returns "modified" { description = "Last write time as a unix timestamp (only when exists)" type = "int" }
+    returns "owner" { description = "Owner account name, or its SID when it does not resolve (only when exists)" type = "string" }
+    returns "owner_sid" { description = "Owner SID (only when exists)" type = "string" }
+    returns "sha256" { description = "Lower-case SHA-256 of a file's content (only when the sha256 param is true and the path is a file)" type = "string" }
+    param "path" { description = "Absolute Windows path" type = "string" required = true }
+    param "sha256" { description = "Also hash a file's content" type = "bool" default = false }
+  }
+
+  gatherer "paths_matching" {
+    description = "List the paths under a root whose names match a wildcard pattern"
+    script = "gatherers/paths_matching.ws"
+    returns "root" { description = "The root the search ran under" type = "string" }
+    returns "pattern" { description = "The pattern" type = "string" }
+    returns "count" { description = "Number of matches" type = "int" }
+    returns "matches" { description = "Full paths of the matches, sorted" type = "list" }
+    param "path" { description = "Root directory (an absolute Windows path)" type = "string" required = true }
+    param "pattern" { description = "PowerShell wildcard (* ? [abc]) matched against each name, not the whole path" type = "string" default = "*" }
+    param "recurse" { description = "Search every directory below the root, not only the root itself" type = "bool" default = false }
   }
 
   test "files_converge" {
-    description = "Directory, file and NTFS permissions converge"
+    description = "Files, templates, directories, links and NTFS permissions converge, including drift seeded before the run"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/files_verify.ws"
+    // Seeds the drift the steps converge away from, under
+    // C:\weave-files-seed: stale and UTF-16 content, files and a directory
+    // tree to delete, a link to retarget and one to remove, a directory
+    // with an explicit Guests rule for exact mode, one with a
+    // this-folder-only Users rule, and the gatherer fixtures. Windows test
+    // setups run under cmd.exe and must not contain double quotes.
+    setup = "mkdir C:\\weave-files-seed\\rmdir\\sub 2>NUL & mkdir C:\\weave-files-seed\\noinherit 2>NUL & mkdir C:\\weave-files-seed\\exact 2>NUL & mkdir C:\\weave-files-seed\\flagdir 2>NUL & mkdir C:\\weave-files-seed\\protected 2>NUL & mkdir C:\\weave-files-glob 2>NUL & echo old> C:\\weave-files-seed\\drift.txt & echo bye> C:\\weave-files-seed\\remove_me.txt & echo bye> C:\\weave-files-seed\\tpl_remove.txt & echo x> C:\\weave-files-seed\\rmdir\\sub\\x.txt & echo x> C:\\weave-files-seed\\owned.txt & echo a> C:\\weave-files-glob\\a.txt & echo b> C:\\weave-files-glob\\b.txt & echo c> C:\\weave-files-glob\\c.log & mklink /D C:\\weave-files-seed\\oldlink C:\\weave-files-seed\\rmdir & mklink C:\\weave-files-seed\\deadlink C:\\weave-files-seed\\nothing.txt & icacls C:\\weave-files-seed\\exact /grant Guests:(OI)(CI)F & icacls C:\\weave-files-seed\\flagdir /grant Users:M & powershell -NoProfile -Command Set-Content -LiteralPath C:\\weave-files-seed\\utf16.txt -Value old -Encoding Unicode; Set-Content -LiteralPath C:\\weave-files-seed\\gather.txt -Value abc -NoNewline & exit 0"
+
+    gather "seeded_file" {
+      description = "A seeded file, with its hash"
+      from = "path_info"
+      params { path = "C:\\weave-files-seed\\gather.txt" sha256 = true }
+      expect {
+        exists = true
+        is_file = true
+        is_link = false
+        size = 3
+        sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      }
+    }
+
+    gather "seeded_dead_link" {
+      description = "A dangling symbolic link exists and is a link"
+      from = "path_info"
+      params { path = "C:\\weave-files-seed\\deadlink" }
+      expect {
+        exists = true
+        is_link = true
+        link_type = "symbolic"
+        target = "C:\\weave-files-seed\\nothing.txt"
+      }
+    }
+
+    gather "missing_path" {
+      description = "A missing path reports exists = false"
+      from = "path_info"
+      params { path = "C:\\weave-files-seed\\not-here" }
+      expect { exists = false }
+    }
+
+    gather "txt_files" {
+      description = "Two of the three glob fixtures match *.txt"
+      from = "paths_matching"
+      params { path = "C:\\weave-files-glob" pattern = "*.txt" }
+      expect { count = 2 }
+    }
 
     step "test_dir" {
       description = "Create the working directory"
@@ -83,22 +237,28 @@ package "windows_files" {
 
     // `permissions` acts on an existing path, so it must follow the step
     // that creates the directory — without `requires` the scheduler is free
-    // to run it first, and it errors with "path does not exist".
+    // to run it first, and it errors with "path does not exist". The three
+    // entries for one identity, spelled differently, merge into one rule:
+    // checked by name they could never all match.
     step "users_modify" {
-      description = "Grant BUILTIN\\Users Modify on the directory"
+      description = "Grant BUILTIN\\Users overlapping and composite rights on the directory"
       resource = "permissions"
       requires = ["test_dir"]
-      properties { path = "C:\\weave-files-test" acl = ["BUILTIN\\Users:Modify"] }
+      properties {
+        path = "C:\\weave-files-test"
+        acl = ["BUILTIN\\Users:Modify", "Users:ReadAndExecute", "S-1-5-32-545:Read, Write"]
+      }
     }
 
     step "rendered_file" {
-      description = "Render a template with variables"
+      description = "Render a template with variables and CRLF line endings"
       resource = "template"
       requires = ["test_dir"]
       properties {
         path = "C:\\weave-files-test\\rendered.txt"
-        template = "host={{ host }} port={{ port }}\n"
+        template = "host={{ host }}\nport={{ port }}\n"
         vars = { host: "weave", port: 8080 }
+        line_endings = :crlf
       }
     }
 
@@ -107,6 +267,147 @@ package "windows_files" {
       resource = "file"
       expect = "already_configured"
       properties { path = "C:\\weave-files-test\\ghost.txt" ensure = :absent }
+    }
+
+    step "drift_file" {
+      description = "Replace the stale content of a seeded file"
+      resource = "file"
+      properties { path = "C:\\weave-files-seed\\drift.txt" content = "new content\n" }
+    }
+
+    step "utf16_file" {
+      description = "Replace a seeded UTF-16 file, which cannot be read as UTF-8"
+      resource = "file"
+      properties { path = "C:\\weave-files-seed\\utf16.txt" content = "now utf-8" }
+    }
+
+    step "file_absent" {
+      description = "Delete a seeded file"
+      resource = "file"
+      properties { path = "C:\\weave-files-seed\\remove_me.txt" ensure = :absent }
+    }
+
+    step "template_absent" {
+      description = "Delete a seeded file through the template resource"
+      resource = "template"
+      properties { path = "C:\\weave-files-seed\\tpl_remove.txt" ensure = :absent }
+    }
+
+    step "dir_absent" {
+      description = "Delete a seeded directory tree"
+      resource = "directory"
+      properties { path = "C:\\weave-files-seed\\rmdir" ensure = :absent }
+    }
+
+    step "url_file" {
+      description = "Download a file and verify its digest"
+      resource = "file"
+      properties {
+        path = "C:\\weave-files-test\\rfc2549.txt"
+        url = "https://www.rfc-editor.org/rfc/rfc2549.txt"
+        sha256 = "646B43B5D718913D6211E2C18B2B3B667CF6EAA76A2493E55B1DE5CA04C2578E"
+      }
+    }
+
+    step "url_bad_digest" {
+      description = "A download that fails its digest is an error and leaves nothing behind"
+      resource = "file"
+      expect = "error"
+      properties {
+        path = "C:\\weave-files-test\\bad-digest.txt"
+        url = "https://www.rfc-editor.org/rfc/rfc2549.txt"
+        sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+
+    step "owner" {
+      description = "Give a seeded file an owner the agent can only set with SeRestorePrivilege"
+      resource = "permissions"
+      properties { path = "C:\\weave-files-seed\\owned.txt" owner = "BUILTIN\\Backup Operators" }
+    }
+
+    step "no_inheritance" {
+      description = "Protect a directory's ACL, keeping the inherited rules as explicit copies"
+      resource = "permissions"
+      properties { path = "C:\\weave-files-seed\\noinherit" inheritance = false acl = ["Users:ReadAndExecute"] }
+    }
+
+    step "exact_rules" {
+      description = "Leave exactly the listed rules, removing a seeded Guests rule and adding a Deny"
+      resource = "permissions"
+      properties {
+        path = "C:\\weave-files-seed\\exact"
+        acl = ["NT AUTHORITY\\SYSTEM:FullControl", "BUILTIN\\Administrators:FullControl"]
+        deny = ["BUILTIN\\Guests:Write"]
+        acl_mode = :exact
+      }
+    }
+
+    step "folder_only_rule" {
+      description = "A seeded this-folder-only Users:Modify rule does not satisfy a rule that must reach the children"
+      resource = "permissions"
+      properties { path = "C:\\weave-files-seed\\flagdir" acl = ["BUILTIN\\Users:Modify"] }
+    }
+
+    step "dir_link" {
+      description = "A directory symbolic link to the working directory"
+      resource = "symlink"
+      requires = ["test_dir"]
+      properties { path = "C:\\weave-files-test-link" target = "C:\\weave-files-test" }
+    }
+
+    step "dangling_link" {
+      description = "A symbolic link whose target does not exist"
+      resource = "symlink"
+      properties { path = "C:\\weave-files-seed\\dangling" target = "C:\\weave-files-seed\\not-yet.txt" }
+    }
+
+    step "junction" {
+      description = "A junction to the working directory"
+      resource = "symlink"
+      requires = ["test_dir"]
+      properties { path = "C:\\weave-files-seed\\junc" target = "C:\\weave-files-test" kind = :junction }
+    }
+
+    step "retarget_link" {
+      description = "Retarget a seeded directory link"
+      resource = "symlink"
+      requires = ["test_dir"]
+      properties { path = "C:\\weave-files-seed\\oldlink" target = "C:\\weave-files-test" }
+    }
+
+    step "link_absent" {
+      description = "Remove a seeded dangling link"
+      resource = "symlink"
+      properties { path = "C:\\weave-files-seed\\deadlink" ensure = :absent }
+    }
+
+    step "template_empty" {
+      description = "An empty template is an error, not an empty file"
+      resource = "template"
+      expect = "error"
+      properties { path = "C:\\weave-files-test\\empty.txt" }
+    }
+
+    step "file_on_directory" {
+      description = "A file step whose path is a directory is a clear error"
+      resource = "file"
+      expect = "error"
+      properties { path = "C:\\weave-files-seed\\protected" content = "x" }
+    }
+
+    step "drive_root_refused" {
+      description = "Deleting a drive root is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "C:\\" ensure = :absent }
+    }
+
+    step "windows_refused" {
+      description = "Deleting the Windows directory is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "c:\\windows\\" ensure = :absent }
     }
   }
 }
