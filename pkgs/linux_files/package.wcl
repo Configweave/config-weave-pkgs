@@ -214,6 +214,63 @@ TMPL
     }
   }
 
+  // Owner/group by name and by bare id (4321 has no passwd entry, so stat
+  // names it UNKNOWN), a mode on a path that is a symlink (stat without -L
+  // reads the link's 777), and paths with a space (chmod/chown were split
+  // on whitespace).
+  test "attrs_converge" {
+    description = "mode, owner and group converge by name, by id, through a symlink and on paths with spaces"
+    image = "debian:12"
+    group = "files"
+    setup = "useradd -u 1234 -U -M cwuser && mkdir -p /tmp/cw-attrs && printf 'r\\n' > /tmp/cw-attrs/real.txt && chmod 600 /tmp/cw-attrs/real.txt && ln -s /tmp/cw-attrs/real.txt /tmp/cw-attrs/link.txt"
+    verify = "tests/attrs_verify.ws"
+
+    step "named" {
+      description = "file owned by a named user and group"
+      resource = "file"
+      properties { path = "/tmp/cw-attrs/named.txt" content = "n\n" owner = "cwuser" group = "cwuser" mode = "0640" }
+    }
+
+    step "numeric" {
+      description = "file owned by ids with no passwd or group entry"
+      resource = "file"
+      properties { path = "/tmp/cw-attrs/numeric.txt" content = "i\n" owner = "4321" group = "4321" mode = "600" }
+    }
+
+    step "via_link" {
+      description = "permissions on a symlinked path change and compare the target"
+      resource = "permissions"
+      properties { path = "/tmp/cw-attrs/link.txt" mode = "0644" owner = "1234" }
+    }
+
+    step "spaced_dir" {
+      description = "directory with a space in its path and a setgid mode"
+      resource = "directory"
+      properties { path = "/tmp/cw attrs/sub dir" mode = "2775" group = "cwuser" }
+    }
+
+    step "spaced_file" {
+      description = "file with a space in its path"
+      resource = "file"
+      requires = ["spaced_dir"]
+      properties { path = "/tmp/cw attrs/sub dir/a b.txt" content = "s\n" mode = "0600" }
+    }
+
+    step "bad_mode" {
+      description = "a symbolic mode is rejected rather than compared forever"
+      resource = "file"
+      expect = "error"
+      properties { path = "/tmp/cw-attrs/bad.txt" content = "x" mode = "u+rw" }
+    }
+
+    step "relative" {
+      description = "a relative path is rejected"
+      resource = "directory"
+      expect = "error"
+      properties { path = "tmp/cw-relative" }
+    }
+  }
+
   // file's url mode needs an HTTP endpoint, so this test runs on a python
   // image and serves a local directory — no external network.
   test "file_url_and_permissions_converge" {

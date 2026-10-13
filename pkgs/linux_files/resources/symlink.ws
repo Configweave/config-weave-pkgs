@@ -13,7 +13,7 @@ fn same_inode(a: string, b: string) -> bool {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    common::require_path("path", p)?
     if !common::want_present(params)? {
         // read_link probes a symlink itself (fs::exists follows it and lies
         // about dangling links); the exists probe catches hard links, which
@@ -37,7 +37,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    common::require_path("path", p)?
     if !common::want_present(params)? {
         // deletes the link itself, never its target (dropping a hard link
         // only removes one name/refcount)

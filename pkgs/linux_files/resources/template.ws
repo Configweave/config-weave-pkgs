@@ -12,11 +12,12 @@ fn vars(params: Value) -> Value {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
     let body = template::render(common::param_str(params, "template", ""), vars(params))?
     if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
     if fs::read(p)? != body { return Ok(CheckResult::NotConfigured) }
-    if !common::attrs_ok(p, common::param_str(params, "mode", ""), common::param_str(params, "owner", ""), common::param_str(params, "group", ""))? {
+    if !common::attrs_ok(p, a)? {
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
@@ -24,11 +25,12 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
     let body = template::render(common::param_str(params, "template", ""), vars(params))?
     log::info("rendering " + p)
     fs::mkdir(path::parent(p))?
     fs::write(p, body)?
-    common::apply_attrs(p, common::param_str(params, "mode", ""), common::param_str(params, "owner", ""), common::param_str(params, "group", ""))?
+    common::apply_attrs(p, a)?
     Ok(ApplyResult::Success)
 }

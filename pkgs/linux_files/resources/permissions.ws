@@ -4,9 +4,10 @@ use common
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
     if !fs::exists(p) { return Err("path does not exist: " + p) }
-    if common::attrs_ok(p, common::param_str(params, "mode", ""), common::param_str(params, "owner", ""), common::param_str(params, "group", ""))? {
+    if common::attrs_ok(p, a)? {
         Ok(CheckResult::AlreadyConfigured)
     } else {
         Ok(CheckResult::NotConfigured)
@@ -15,7 +16,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = common::param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
-    common::apply_attrs(p, common::param_str(params, "mode", ""), common::param_str(params, "owner", ""), common::param_str(params, "group", ""))?
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
+    common::apply_attrs(p, a)?
     Ok(ApplyResult::Success)
 }
