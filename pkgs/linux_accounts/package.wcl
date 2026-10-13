@@ -1,48 +1,48 @@
 package "linux_accounts" {
-  description = "Manage Linux users, groups, SSH keys and sudoers drop-ins"
+  description = "Manage local Linux users, groups and per-user sudoers drop-ins"
 
   resource "group" {
-    description = "Ensure a local group exists or is absent"
+    description = "Ensure a local group exists with the given gid, or is absent. Only /etc/group is consulted, so an LDAP or SSSD group of the same name neither satisfies :present nor blocks :absent. Changing the gid of an existing group runs groupmod -g, which does not re-own files that still carry the old gid"
     script = "resources/group.ws"
     concurrency = "exclusive"
-    param "name" { description = "Group name" type = "string" required = true }
+    param "name" { description = "Group name: letters, digits, '_', '.' and '-', not starting with '-' or '.'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the group" }
-      symbol "absent"  { description = "Delete the group" }
+      symbol "present" { description = "Create the group, or set its gid" }
+      symbol "absent"  { description = "Delete the group. Fails while it is still a user's primary group, so order that user's removal first with requires" }
     }
-    param "gid" { description = "Optional numeric group id" type = "int" default = 0 }
+    param "gid" { description = "Numeric group id; 0 leaves it to groupadd and does not compare it" type = "int" default = 0 }
   }
 
   resource "user" {
-    description = "Ensure a local user exists or is absent"
+    description = "Ensure a local user exists with the given uid, primary group, home and shell, or is absent. Only /etc/passwd is consulted, so a directory (LDAP/SSSD) user of the same name is not managed. An existing user is reconciled with a single usermod. A new home is moved there with usermod -m, unless the target directory already exists: then it is adopted as it is and the old home is left in place. Changing uid re-owns the files in the home directory only"
     script = "resources/user.ws"
     concurrency = "exclusive"
-    param "name" { description = "User name" type = "string" required = true }
+    param "name" { description = "User name: letters, digits, '_', '.' and '-', not starting with '-' or '.', optionally ending in '$'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the user" }
+      symbol "present" { description = "Create the user, or reconcile uid, group, home and shell" }
       symbol "absent"  { description = "Delete the user" }
     }
-    param "uid" { description = "Optional numeric user id" type = "int" default = 0 }
-    param "group" { description = "Optional primary group" type = "string" default = "" }
-    param "home" { description = "Optional home directory" type = "string" default = "" }
-    param "shell" { description = "Optional login shell" type = "string" default = "" }
-    param "system" { description = "Create a system account" type = "bool" default = false }
+    param "uid" { description = "Numeric user id; 0 leaves it to useradd and does not compare it" type = "int" default = 0 }
+    param "group" { description = "Primary group, by name or numeric gid; empty is not compared. The group must exist" type = "string" default = "" }
+    param "home" { description = "Absolute home directory; empty is not compared" type = "string" default = "" }
+    param "shell" { description = "Absolute login shell; empty is not compared" type = "string" default = "" }
+    param "system" { description = "Create a system account (uid below UID_MIN from /etc/login.defs). Cannot change after creation: when uid is not set, an existing user on the other side of UID_MIN is an error in both check and apply. When uid is set, uid decides and this only affects creation. root passes either way" type = "bool" default = false }
     param "remove_home" { description = "When ensure = :absent: also remove the home directory and mail spool (userdel -r)" type = "bool" default = false }
   }
 
   resource "sudoers_user" {
-    description = "Ensure a sudoers.d rule for a user exists or is absent"
+    description = "Ensure a sudoers.d rule '<user> ALL=(ALL:ALL) [NOPASSWD: ]<commands>' exists, owned by root with mode 0440, or is absent. The drop-in is /etc/sudoers.d/<user> with '.' replaced by '_', because sudo skips file names containing '.'. A new rule is written under a name sudo ignores, secured, checked with visudo -cf, and only then renamed into place, so an invalid rule never goes live and the old rule survives a failed update"
     script = "resources/sudoers_user.ws"
     concurrency = "global"
-    param "user" { description = "Account the rule applies to" type = "string" required = true }
+    param "user" { description = "Account the rule applies to, or %group: letters, digits, '_', '.' and '-'. A dotted name maps to a '_' file name, and a drop-in that already holds a different user's rule is an error" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -52,8 +52,8 @@ package "linux_accounts" {
       symbol "absent"  { description = "Remove the sudoers.d rule" }
     }
     param "passwordless" { description = "Allow sudo without a password (NOPASSWD)" type = "bool" default = false }
-    param "commands" { description = "Command specification for the rule" type = "string" default = "ALL" }
-    param "validate" { description = "Run visudo validation when available" type = "bool" default = true }
+    param "commands" { description = "Command specification for the rule, on one line and not empty, such as ALL or '/usr/bin/systemctl restart nginx'" type = "string" default = "ALL" }
+    param "validate" { description = "Check the rule with visudo -cf before it goes live, when visudo is installed. With false, a syntactically wrong rule can break sudo for everyone" type = "bool" default = true }
   }
 
   // The absent steps converge on entities seeded during setup (run 1 checks
@@ -65,20 +65,26 @@ package "linux_accounts" {
     // The seeded group is deliberately NOT named after the user: userdel
     // removes a same-named primary group itself (USERGROUPS_ENAB), which
     // would leave rm_group nothing to do.
-    setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && mkdir -p /etc/sudoers.d && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
+    setup = "groupadd cwoldgrp && useradd -m -g cwoldgrp -s /bin/sh cwold && useradd -m -s /bin/sh cwkeephome && mkdir -p /etc/sudoers.d && printf 'cwold ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwold && chmod 0440 /etc/sudoers.d/cwold"
     verify = "tests/accounts_verify.ws"
 
     step "group" {
       description = "Create group"
       resource = "group"
-      properties { name = "cwtest" }
+      properties { name = "cwtest" gid = 2050 }
     }
 
     step "user" {
       description = "Create user"
       resource = "user"
       requires = ["group"]
-      properties { name = "cwtest" group = "cwtest" home = "/home/cwtest" shell = "/bin/sh" }
+      properties { name = "cwtest" uid = 3050 group = "cwtest" home = "/home/cwtest" shell = "/bin/sh" }
+    }
+
+    step "system_user" {
+      description = "Create a system account"
+      resource = "user"
+      properties { name = "cwsys" system = true shell = "/usr/sbin/nologin" }
     }
 
     step "sudo" {
@@ -100,6 +106,12 @@ package "linux_accounts" {
       properties { name = "cwold" ensure = :absent remove_home = true }
     }
 
+    step "rm_user_keep_home" {
+      description = "Remove a seeded user but keep its home"
+      resource = "user"
+      properties { name = "cwkeephome" ensure = :absent }
+    }
+
     step "rm_group" {
       description = "Remove the seeded group once its user is gone"
       resource = "group"
@@ -107,5 +119,118 @@ package "linux_accounts" {
       properties { name = "cwoldgrp" ensure = :absent }
     }
   }
-}
 
+  // Every existing account is seeded with the wrong uid, gid, group, home or
+  // shell, so each reconcile path runs on a real usermod/groupmod.
+  test "accounts_drift_converges" {
+    description = "Existing users and groups are reconciled, and what cannot be is refused"
+    image = "debian:12"
+    setup = "groupadd -g 2100 cwnewprim && groupadd cwoldprim && useradd -m -u 3001 -g cwoldprim -s /bin/sh cwdrift && touch /home/cwdrift/keep && useradd -m -s /bin/sh cwexist && touch /home/cwexist/keep && mkdir -p /srv/cwtaken && touch /srv/cwtaken/theirs && groupadd -g 2200 cwgid && useradd -m -s /bin/sh cwreg"
+    verify = "tests/accounts_drift_verify.ws"
+
+    step "drift" {
+      description = "Change uid, primary group (by gid), home and shell of an existing user"
+      resource = "user"
+      properties { name = "cwdrift" uid = 3500 group = "2100" home = "/srv/cwdrift" shell = "/bin/bash" }
+    }
+
+    step "existing_home" {
+      description = "Point a user at a home directory that already exists"
+      resource = "user"
+      properties { name = "cwexist" home = "/srv/cwtaken" }
+    }
+
+    step "gid" {
+      description = "Change an existing group's gid"
+      resource = "group"
+      properties { name = "cwgid" gid = 2201 }
+    }
+
+    step "system_mismatch" {
+      description = "A regular user cannot become a system account"
+      resource = "user"
+      expect = "error"
+      properties { name = "cwreg" system = true }
+    }
+
+    step "option_name" {
+      description = "A user name that reads as an option is rejected"
+      resource = "user"
+      expect = "error"
+      properties { name = "-ocw" }
+    }
+
+    step "bad_group_name" {
+      description = "A group name with a line break is rejected"
+      resource = "group"
+      expect = "error"
+      properties { name = "cw\nroot" }
+    }
+
+    step "bad_shell" {
+      description = "A shell that would add a passwd field is rejected"
+      resource = "user"
+      expect = "error"
+      properties { name = "cwreg" shell = "/bin/sh:0" }
+    }
+  }
+
+  test "sudoers_converge" {
+    description = "sudoers drop-ins are validated before they go live, keep 0440 root, and reject injected rules"
+    image = "debian:12"
+    setup = "(command -v visudo >/dev/null || (apt-get update -qq && apt-get install -y -qq sudo)) && mkdir -p /etc/sudoers.d && printf 'cwmode ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwmode && chmod 0666 /etc/sudoers.d/cwmode && printf 'cwkeep ALL=(ALL:ALL) ALL\\n' > /etc/sudoers.d/cwkeep && chmod 0440 /etc/sudoers.d/cwkeep"
+    verify = "tests/sudoers_verify.ws"
+
+    step "mode" {
+      description = "A world-writable drop-in with the right rule is re-secured"
+      resource = "sudoers_user"
+      properties { user = "cwmode" }
+    }
+
+    step "dotted" {
+      description = "A dotted user gets a drop-in sudo actually reads"
+      resource = "sudoers_user"
+      properties { user = "john.doe" passwordless = true }
+    }
+
+    step "group_rule" {
+      description = "A %group rule"
+      resource = "sudoers_user"
+      properties { user = "%cwadmins" commands = "/usr/bin/id" }
+    }
+
+    step "no_validate" {
+      description = "A rule written without visudo"
+      resource = "sudoers_user"
+      properties { user = "cwnoval" commands = "/usr/bin/id" validate = false }
+    }
+
+    step "invalid_keeps_old" {
+      description = "A rule visudo rejects never replaces the live one"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwkeep" commands = "= /bin/ls" }
+    }
+
+    step "newline" {
+      description = "Commands with a line break would add a second rule"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwinject" commands = "/bin/ls\nALL ALL=(ALL) NOPASSWD: ALL" validate = false }
+    }
+
+    step "empty_commands" {
+      description = "Empty commands are rejected even without visudo"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cwempty" commands = " " validate = false }
+    }
+
+    step "spaced_user" {
+      description = "A user with whitespace would rewrite the rule"
+      resource = "sudoers_user"
+      expect = "error"
+      properties { user = "cw ALL=(ALL) NOPASSWD: ALL #" validate = false }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+use value
+use env
+use shell
+
+// Helpers shared by linux_kde's resources and gatherers. Imported with
+// `use common`; nothing here is package-external.
+
+fn param_str(params: Value, key: string, fallback: string) -> string {
+    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
+    fallback
+}
+
+fn want_present(params: Value) -> Result[bool, string] {
+    let e = param_str(params, "ensure", "present")
+    if e == "present" { return Ok(true) }
+    if e == "absent" { return Ok(false) }
+    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+}
+
+fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
+
+// A failed command's error: stderr, else stdout, always with the exit code.
+fn cmd_err(what: string, out: CmdOutput) -> string {
+    let text = if out.stderr.trim() != "" { out.stderr.trim() } else { out.stdout.trim() }
+    let head = what + " failed (exit " + str(out.code) + ")"
+    if text == "" { head } else { head + ": " + text }
+}
+
+fn output(what: string, cmd: string) -> Result[string, string] {
+    let out = shell::bash(cmd, Value::Null)?
+    if !out.success { return Err(cmd_err(what, out)) }
+    Ok(out.stdout.trim())
+}
+
+// The target home: the `home` param, else the account the engine runs as,
+// looked up in the passwd database. $HOME is only the last resort, because
+// agents and service managers often run with HOME=/.
+fn home(params: Value) -> string {
+    let h = param_str(params, "home", "")
+    if h != "" { return h }
+    if let Ok(out) = shell::bash("getent passwd \"$(id -u)\" | cut -d: -f6", Value::Null) {
+        if out.success && out.stdout.trim() != "" { return out.stdout.trim() }
+    }
+    env::home_dir()
+}
+
+fn on_path(cmd: string) -> bool {
+    if let Ok(out) = shell::bash("command -v " + q(cmd) + " >/dev/null 2>&1", Value::Null) { out.success } else { false }
+}
+
+// "uid:gid" of a path, following symlinks.
+fn owner(p: string) -> Result[string, string] {
+    output("reading the owner of " + p, "stat -L -c '%u:%g' -- " + q(p))
+}

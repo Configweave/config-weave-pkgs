@@ -1,46 +1,24 @@
 use value
-use fs
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn require_nft() -> Result[unit, string] {
-    if fs::exists("/usr/sbin/nft") || fs::exists("/usr/bin/nft") || fs::exists("/sbin/nft") { return Ok(()) }
-    Err("nft not found; is nftables installed?")
-}
-
-fn table_exists(family: string, name: string) -> Result[bool, string] {
-    let out = shell::bash("nft list table " + q(family) + " " + q(name) + " 2>/dev/null", Value::Null)?
-    Ok(out.success)
+fn ident(params: Value) -> Result[string, string] {
+    let family = common::nft_family(params)?
+    let name = common::param_str(params, "name", "")
+    common::nft_name("name", name)?
+    Ok(common::nft_ref(family, [name]))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    require_nft()?
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let exists = table_exists(param_str(params, "family", "inet"), name)?
-    if exists == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    common::require_nft()?
+    let id = ident(params)?
+    let exists = common::nft_list("", "table " + id)?.is_some()
+    if exists == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    require_nft()?
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let family = param_str(params, "family", "inet")
-    let verb = if want_present(params)? { "add" } else { "delete" }
-    let out = shell::bash("nft " + verb + " table " + q(family) + " " + q(name), Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    common::require_nft()?
+    let id = ident(params)?
+    let verb = if common::want_present(params)? { "add" } else { "delete" }
+    let out = common::nft_script(verb + " table " + id, verb + " table " + id, "")?
     Ok(ApplyResult::Success)
 }

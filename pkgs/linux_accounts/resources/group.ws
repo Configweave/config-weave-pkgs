@@ -1,55 +1,52 @@
 use value
 use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+// Local groups only: the entry is read from /etc/group, so a same-named
+// LDAP/SSSD group neither satisfies :present nor blocks :absent.
+fn group_entry(name: string) -> Result[Option[List[string]], string] {
+    common::local_entry("/etc/group", name)
 }
 
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(i) = v.as_int() { return i } }
-    fallback
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn group_exists(name: string) -> Result[bool, string] {
-    Ok(shell::bash("getent group " + q(name) + " >/dev/null", Value::Null)?.success)
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::valid_account("name", name)?
+    if common::param_int(params, "gid", 0) < 0 { return Err("'gid' must not be negative") }
+    Ok(name)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let exists = group_exists(name)?
-    if !want_present(params)? {
-        if exists { return Ok(CheckResult::NotConfigured) }
+    let name = validate(params)?
+    let entry = group_entry(name)?
+    if !common::want_present(params)? {
+        if entry.is_some() { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    if exists { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if let Some(e) = entry {
+        let gid = common::param_int(params, "gid", 0)
+        if gid > 0 && common::field(e, 2) != str(gid) { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if !want_present(params)? {
-        if !group_exists(name)? { return Ok(ApplyResult::Success) }
+    let name = validate(params)?
+    let entry = group_entry(name)?
+    if !common::want_present(params)? {
+        if entry.is_none() { return Ok(ApplyResult::Success) }
         // fails while the group is still some user's primary group — order
         // the user's removal first with `requires`
-        let out = shell::bash("groupdel " + q(name), Value::Null)?
-        if !out.success { return Err(out.stderr.trim()) }
+        common::run("groupdel " + name, "groupdel " + common::q(name))?
         return Ok(ApplyResult::Success)
     }
-    let gid = param_int(params, "gid", 0)
+    let gid = common::param_int(params, "gid", 0)
     let gid_arg = if gid > 0 { " -g " + str(gid) } else { "" }
-    let out = shell::bash("groupadd" + gid_arg + " " + q(name), Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    if entry.is_none() {
+        common::run("groupadd " + name, "groupadd" + gid_arg + " " + common::q(name))?
+    } else if gid > 0 {
+        // Files still owned by the old gid keep it; groupmod does not chown.
+        common::run("groupmod " + name, "groupmod" + gid_arg + " " + common::q(name))?
+    }
     Ok(ApplyResult::Success)
 }
-

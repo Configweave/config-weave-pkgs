@@ -1,8 +1,8 @@
 package "linux_kde" {
-  description = "Manage KDE Plasma configuration files"
+  description = "Manage KDE Plasma configuration files. Edits go to the files on disk; a running Plasma session keeps its own copy of many settings and can write it back over an edit, so apply them while the user is logged out, or reload the affected component afterwards (qdbus org.kde.KWin /KWin reconfigure for kwinrc, or a fresh login)"
 
   gatherer "kde_paths" {
-    description = "Report KDE user configuration and data paths"
+    description = "Report KDE user configuration and data paths, and whether the Plasma 6 config tools are on PATH"
     script = "gatherers/kde_paths.ws"
     returns "home" { description = "Resolved home directory" type = "string" }
     returns "config_dir" { description = "KDE config directory (~/.config)" type = "string" }
@@ -10,77 +10,253 @@ package "linux_kde" {
     returns "has_kreadconfig6" { description = "True when kreadconfig6 is on PATH" type = "bool" }
     returns "has_kwriteconfig6" { description = "True when kwriteconfig6 is on PATH" type = "bool" }
     returns "has_plasma_apply_colorscheme" { description = "True when plasma-apply-colorscheme is on PATH" type = "bool" }
-    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
+    param "home" { description = "Target home directory; defaults to the home of the account config-weave runs as, from the passwd database ($HOME only when that lookup fails)" type = "string" default = "" }
   }
 
   gatherer "kde_version" {
-    description = "Detect available KDE Plasma configuration tools"
+    description = "Detect the installed Plasma version and KConfig command-line tools, searching PATH"
     script = "gatherers/kde_version.ws"
-    returns "plasma_major" { description = "Plasma major version (0 when undetected)" type = "int" }
-    returns "has_kreadconfig6" { description = "True when the Plasma 6 kconfig tools are present" type = "bool" }
-    returns "has_legacy_kconfig_tools" { description = "True when only the Plasma 5 kconfig tools are present" type = "bool" }
+    returns "plasma_major" { description = "Plasma major version from plasmashell --version (0 when plasmashell is not installed)" type = "int" }
+    returns "kconfig_tools_major" { description = "Major version of the newest kreadconfig/kwriteconfig tools on PATH: 6, 5, or 0 when neither" type = "int" }
+    returns "has_kreadconfig6" { description = "True when kreadconfig6 or kwriteconfig6 is on PATH" type = "bool" }
+    returns "has_legacy_kconfig_tools" { description = "True when only the KDE Frameworks 5 tools (kreadconfig5/kwriteconfig5) are on PATH, with no 6 tools" type = "bool" }
   }
 
   resource "kconfig_entry" {
-    description = "Ensure a KConfig key is present in or absent from a KDE configuration file"
+    description = "Ensure a KConfig key is present in or absent from a KDE configuration file under ~/.config. Keys match the way KConfig reads them: the line is split at the first '=' and whitespace around the key is ignored, and the value is compared after decoding KConfig escapes. Values are written escaped the way kwriteconfig6 writes them (\\n, \\t, \\r, \\\\, \\xNN for other control characters, \\s for a leading or trailing space), so a multi-line value stays one line. A duplicate of the key in the section is removed. A new file or directory is handed to the owner of `home`, and an existing file owned by anyone else is drift and is handed over too. `home` must exist. A file that is not valid UTF-8 is reported as drift and apply errors rather than overwrite it. A running Plasma session can overwrite the edit: see the package description"
     script = "resources/kconfig_entry.ws"
-    concurrency = "parallel"
-    param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
-    param "file" { description = "KDE config filename under ~/.config, such as kdeglobals or kwinrc" type = "string" required = true }
-    param "group" { description = "KConfig group name" type = "string" required = true }
-    param "subgroup" { description = "Optional KConfig subgroup name" type = "string" default = "" }
-    param "key" { description = "KConfig key name" type = "string" required = true }
+    // read-modify-write on one config file — parallel steps on the same file
+    // lose writes
+    concurrency = "exclusive"
+    param "home" { description = "Target home directory; defaults to the home of the account config-weave runs as, from the passwd database ($HOME only when that lookup fails)" type = "string" default = "" }
+    param "file" { description = "KDE config filename under ~/.config, such as kdeglobals or kwinrc; a relative path without '..'" type = "string" required = true }
+    param "group" { description = "KConfig group name, without '[', ']' or control characters" type = "string" required = true }
+    param "subgroup" { description = "Optional KConfig subgroup name, written as [group][subgroup]; same rules as group" type = "string" default = "" }
+    param "key" { description = "KConfig key name, without '=', control characters or surrounding whitespace. A [locale] suffix such as Name[de] is written as given" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Set the key" }
-      symbol "absent"  { description = "Remove the key" }
+      symbol "absent"  { description = "Remove the key; the group header stays" }
     }
-    param "value" { description = "Desired string value (required when present)" type = "string" default = "" }
+    param "value" { description = "Desired string value, required when :present (unset is an error; \"\" writes an empty value). Any characters are allowed, and are escaped for KConfig" type = "string" }
   }
 
+  // A fresh container has no KDE installed: the gathers prove the probes
+  // report nothing rather than error. kde_tools_* fake the tools on PATH.
   test "kconfig_converges" {
-    description = "kconfig_entry adds and removes keys without a Plasma session"
+    description = "kconfig_entry adds, updates and removes keys without a Plasma session"
     image = "debian:12"
-    setup = "mkdir -p /tmp/cw-kde-home/.config && printf '[General]\\nloginMode=restoreSession\\nstale=yes\\n' > /tmp/cw-kde-home/.config/ksmserverrc"
+    // ksmserverrc has a spaced key and a duplicate; kdeglobals has the same
+    // key in [General] and [General][Fonts] plus keys sharing a prefix;
+    // norl has no trailing newline.
+    setup = "mkdir -p /tmp/cw-kde-home/.config && cd /tmp/cw-kde-home/.config && printf '[General]\\nloginMode = restoreSession\\nstale=yes\\nstale = again\\nkeep=1\\n' > ksmserverrc && printf '[General]\\nfixed=General-level\\n\\n[General][Fonts]\\nfixedWidth=keep\\nfixed=Old,9\\n\\n[KDE]\\nSingleClick=true\\n' > kdeglobals && printf '[A]\\nk=v' > norl"
     verify = "tests/kconfig_verify.ws"
 
     gather "version" {
-      description = "KDE tool detection works without installed KDE tools"
+      description = "KDE detection reports nothing without installed KDE tools"
       from = "kde_version"
-      expect { plasma_major = 0 }
+      expect {
+        plasma_major = 0
+        kconfig_tools_major = 0
+        has_kreadconfig6 = false
+        has_legacy_kconfig_tools = false
+      }
     }
 
-    step "kdeglobals" {
-      description = "Write a kdeglobals KConfig entry"
-      resource = "kconfig_entry"
-      properties { home = "/tmp/cw-kde-home" file = "kdeglobals" group = "KDE" key = "SingleClick" value = "false" }
+    gather "paths" {
+      description = "Paths derive from an explicit home"
+      from = "kde_paths"
+      params { home = "/tmp/cw-kde-home" }
+      expect {
+        home = "/tmp/cw-kde-home"
+        config_dir = "/tmp/cw-kde-home/.config"
+        local_share_dir = "/tmp/cw-kde-home/.local/share"
+        has_kreadconfig6 = false
+        has_kwriteconfig6 = false
+        has_plasma_apply_colorscheme = false
+      }
+    }
+
+    gather "default_paths" {
+      description = "Without home, paths come from the passwd entry, not the agent's HOME"
+      from = "kde_paths"
+      expect { home = "/root" }
     }
 
     step "kwin" {
-      description = "Write a kwinrc setting"
+      description = "Write a kwinrc setting into a new file"
       resource = "kconfig_entry"
       properties { home = "/tmp/cw-kde-home" file = "kwinrc" group = "Windows" key = "FocusPolicy" value = "ClickToFocus" }
     }
 
-    step "subgrouped" {
-      description = "Write an entry in a subgroup section"
+    step "kwin_second" {
+      description = "A second key in the same file and section is not lost"
+      resource = "kconfig_entry"
+      properties { home = "/tmp/cw-kde-home" file = "kwinrc" group = "Windows" key = "AutoRaise" value = "true" }
+    }
+
+    step "kdeglobals" {
+      description = "Write a key into a new section of an existing file"
+      resource = "kconfig_entry"
+      properties { home = "/tmp/cw-kde-home" file = "kdeglobals" group = "Icons" key = "Theme" value = "breeze" }
+    }
+
+    step "subgroup_update" {
+      description = "Update a subgroup key; the same key in the parent group and a prefixed key stay"
       resource = "kconfig_entry"
       properties { home = "/tmp/cw-kde-home" file = "kdeglobals" group = "General" subgroup = "Fonts" key = "fixed" value = "Hack,10" }
     }
 
-    step "update-existing" {
-      description = "Update a key seeded during setup"
+    step "prefix_absent" {
+      description = "Removing a key that is a prefix of another key removes nothing"
+      resource = "kconfig_entry"
+      expect = "already_configured"
+      properties { home = "/tmp/cw-kde-home" file = "kdeglobals" group = "KDE" key = "Single" ensure = :absent }
+    }
+
+    step "update_spaced" {
+      description = "Update a key written with spaces around '=' and drop its duplicate"
       resource = "kconfig_entry"
       properties { home = "/tmp/cw-kde-home" file = "ksmserverrc" group = "General" key = "loginMode" value = "emptySession" }
     }
 
-    step "remove-stale" {
-      description = "Remove a key seeded during setup"
+    step "remove_dupes" {
+      description = "Remove a key that appears twice"
       resource = "kconfig_entry"
       properties { home = "/tmp/cw-kde-home" file = "ksmserverrc" group = "General" key = "stale" ensure = :absent }
+    }
+
+    step "absent_missing_key" {
+      description = "Removing a key the file does not have changes nothing"
+      resource = "kconfig_entry"
+      expect = "already_configured"
+      properties { home = "/tmp/cw-kde-home" file = "ksmserverrc" group = "General" key = "neverThere" ensure = :absent }
+    }
+
+    step "absent_missing_file" {
+      description = "Removing a key from a file that does not exist changes nothing"
+      resource = "kconfig_entry"
+      expect = "already_configured"
+      properties { home = "/tmp/cw-kde-home" file = "nosuchrc" group = "General" key = "k" ensure = :absent }
+    }
+
+    step "no_trailing_newline" {
+      description = "A matching key in a file without a final newline is already converged"
+      resource = "kconfig_entry"
+      expect = "already_configured"
+      properties { home = "/tmp/cw-kde-home" file = "norl" group = "A" key = "k" value = "v" }
+    }
+
+    step "escaped" {
+      description = "A value with a newline, tab, backslash and edge spaces converges as one escaped line"
+      resource = "kconfig_entry"
+      properties { home = "/tmp/cw-kde-home" file = "escrc" group = "E" key = "multi" value = " line1\nline2\\x\t " }
+    }
+
+    step "empty_value" {
+      description = "An explicit empty value writes key="
+      resource = "kconfig_entry"
+      properties { home = "/tmp/cw-kde-home" file = "escrc" group = "E" key = "empty" value = "" }
+    }
+
+    step "missing_value" {
+      description = "A present entry without a value is rejected"
+      resource = "kconfig_entry"
+      expect = "error"
+      properties { home = "/tmp/cw-kde-home" file = "escrc" group = "E" key = "novalue" }
+    }
+
+    step "key_with_equals" {
+      description = "A key containing '=' is rejected"
+      resource = "kconfig_entry"
+      expect = "error"
+      properties { home = "/tmp/cw-kde-home" file = "escrc" group = "E" key = "a=b" value = "x" }
+    }
+
+    step "group_with_newline" {
+      description = "A group with a line break is rejected"
+      resource = "kconfig_entry"
+      expect = "error"
+      properties { home = "/tmp/cw-kde-home" file = "escrc" group = "E]\n[Evil" key = "k" value = "x" }
+    }
+
+    step "file_traversal" {
+      description = "A file outside ~/.config is rejected"
+      resource = "kconfig_entry"
+      expect = "error"
+      properties { home = "/tmp/cw-kde-home" file = "../.bashrc" group = "E" key = "k" value = "x" }
+    }
+  }
+
+  test "kconfig_owner" {
+    description = "Files written into another user's home belong to that user, and a default home is the passwd home"
+    image = "debian:12"
+    // rootrc is seeded root-owned with the wanted content already in it.
+    setup = "id cwkde >/dev/null 2>&1 || useradd -m cwkde; mkdir -p /home/cwkde/.config && chown cwkde: /home/cwkde/.config && printf '[X]\\nk=v\\n' > /home/cwkde/.config/rootrc && chown root:root /home/cwkde/.config/rootrc"
+    verify = "tests/kconfig_owner_verify.ws"
+
+    step "nested" {
+      description = "A new file in new directories belongs to the home's owner"
+      resource = "kconfig_entry"
+      properties { home = "/home/cwkde" file = "cwdir/sub/newrc" group = "G" key = "k" value = "v" }
+    }
+
+    step "root_owned" {
+      description = "A root-owned file with the right content is handed to the home's owner"
+      resource = "kconfig_entry"
+      properties { home = "/home/cwkde" file = "rootrc" group = "X" key = "k" value = "v" }
+    }
+
+    step "default_home" {
+      description = "Without home, the entry goes to the passwd home of the engine's account"
+      resource = "kconfig_entry"
+      properties { file = "cwdefaultrc" group = "G" key = "k" value = "v" }
+    }
+  }
+
+  test "kde_tools_plasma6" {
+    description = "kde_version reports Plasma 6 and the 6 tools, which win over the 5 tools"
+    image = "debian:12"
+    setup = "for t in kreadconfig5 kwriteconfig5 kreadconfig6; do printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/$t; done && printf '#!/bin/sh\\necho plasmashell 6.2.4\\n' > /usr/local/bin/plasmashell && chmod +x /usr/local/bin/*"
+
+    gather "version" {
+      description = "Plasma 6 with both tool generations installed"
+      from = "kde_version"
+      expect {
+        plasma_major = 6
+        kconfig_tools_major = 6
+        has_kreadconfig6 = true
+        has_legacy_kconfig_tools = false
+      }
+    }
+
+    gather "paths" {
+      description = "kde_paths finds kreadconfig6 on PATH outside /usr/bin"
+      from = "kde_paths"
+      expect {
+        has_kreadconfig6 = true
+        has_kwriteconfig6 = false
+      }
+    }
+  }
+
+  test "kde_tools_plasma5" {
+    description = "kde_version reports Plasma 5 with only the legacy tools"
+    image = "debian:12"
+    setup = "printf '#!/bin/sh\\nexit 0\\n' > /usr/local/bin/kwriteconfig5 && printf '#!/bin/sh\\necho plasmashell 5.27.11\\n' > /usr/local/bin/plasmashell && chmod +x /usr/local/bin/kwriteconfig5 /usr/local/bin/plasmashell"
+
+    gather "version" {
+      description = "Plasma 5 with only the 5 tools"
+      from = "kde_version"
+      expect {
+        plasma_major = 5
+        kconfig_tools_major = 5
+        has_kreadconfig6 = false
+        has_legacy_kconfig_tools = true
+      }
     }
   }
 }

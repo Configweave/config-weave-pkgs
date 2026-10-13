@@ -1,92 +1,124 @@
 use value
+use common
 use fs
 use path
 use shell
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+// The key's identity is its type and base64 blob: options and comment can
+// differ between two lines that authorize the same key.
+fn identity(line: string) -> string {
+    if let Some(k) = common::parse_key(line) { return k.get(1).unwrap_or("") + " " + k.get(2).unwrap_or("") }
+    ""
 }
 
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn home_for(user: string, override_home: string) -> Result[string, string] {
-    if override_home != "" { return Ok(override_home) }
-    let out = shell::bash("getent passwd " + q(user) + " | cut -d: -f6", Value::Null)?
-    if !out.success || out.stdout.trim() == "" { return Err("cannot determine home for user " + user) }
-    Ok(out.stdout.trim())
-}
-
-fn key_path(user: string, home: string) -> string { home + "/.ssh/authorized_keys" }
-
-fn contains_key(text: string, key: string) -> bool {
-    for line in text.split("\n") { if line.trim() == key.trim() { return true } }
-    false
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-// Remove exactly the trimmed-equal key lines, preserving everything else
-// (including blank lines) and the trailing newline.
-fn without_key(text: string, key: string) -> string {
-    let had_nl = text.ends_with("\n")
-    let kept = []
-    for line in text.split("\n") {
-        if line.trim() != key.trim() { kept.push(line) }
+// The wanted key, validated: one line that parses as an authorized_keys
+// entry. Returns the trimmed line.
+fn wanted_key(params: Value) -> Result[string, string] {
+    let key = common::param_str(params, "key", "").trim()
+    if key == "" { return Err("missing 'key' parameter") }
+    common::one_line("key", key)?
+    if common::parse_key(key).is_none() {
+        return Err("'key' is not an authorized_keys line ([options] type base64 [comment])")
     }
-    // splitting "a\n" yields ["a", ""] — drop that artifact so join doesn't
-    // double the trailing newline
-    if had_nl && kept.len() > 0 && kept.get(kept.len() - 1).unwrap_or("x") == "" {
-        let dropped = kept.remove(kept.len() - 1)
+    Ok(key)
+}
+
+fn ssh_dir(params: Value, user: string) -> Result[string, string] {
+    let h = common::param_str(params, "home", "")
+    if h != "" {
+        common::valid_home(h)?
+        return Ok(path::join(h, ".ssh"))
     }
-    let body = kept.join("\n")
-    if body == "" { "" } else { body + "\n" }
+    Ok(path::join(common::user_home(user)?, ".ssh"))
+}
+
+// The file with every line for this key replaced by the wanted line (the
+// first occurrence) or dropped (later ones, or all of them when `want` is
+// empty). Everything else, blank lines included, is kept as it was.
+fn rewrite(text: string, id: string, want: string) -> string {
+    let lines = if text == "" { [] } else { text.split("\n") }
+    if text.ends_with("\n") { let trailing = lines.pop() }
+    let out = []
+    let done = want == ""
+    for line in lines {
+        if identity(line) == id {
+            if !done {
+                out.push(want)
+                done = true
+            }
+        } else {
+            out.push(line)
+        }
+    }
+    if !done { out.push(want) }
+    if out.is_empty() { "" } else { out.join("\n") + "\n" }
+}
+
+fn read_keys(p: string) -> Result[string, string] {
+    if !fs::is_file(p) { return Ok("") }
+    fs::read(p)
+}
+
+// sshd's StrictModes rejects keys in a group- or world-writable .ssh or
+// authorized_keys, or ones not owned by the user; apply sets 700/600 and
+// the user as owner, and check compares exactly that.
+fn attrs_ok(dir: string, p: string, uid: string) -> Result[bool, string] {
+    let d = common::stat_line(dir)?
+    let f = common::stat_line(p)?
+    Ok(d.starts_with("700 " + uid + ":") && f.starts_with("600 " + uid + ":"))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let user = param_str(params, "user", "")
-    let key = param_str(params, "key", "")
-    if user == "" { return Err("missing 'user' parameter") }
-    if key == "" { return Err("missing 'key' parameter") }
-    if !want_present(params)? {
-        // a deleted user (or missing key file) means the key is gone
-        let home = home_for(user, param_str(params, "home", ""))
-        if home.is_err() { return Ok(CheckResult::AlreadyConfigured) }
-        let p = key_path(user, home.unwrap_or(""))
+    let user = common::param_str(params, "user", "")
+    common::valid_user(user)?
+    let key = wanted_key(params)?
+    let present = common::want_present(params)?
+    let dir = ssh_dir(params, user)
+    if !present {
+        // a deleted user means the key is gone
+        if dir.is_err() && common::param_str(params, "home", "") == "" { return Ok(CheckResult::AlreadyConfigured) }
+        let p = path::join(dir?, "authorized_keys")
         if !fs::is_file(p) { return Ok(CheckResult::AlreadyConfigured) }
-        if contains_key(fs::read(p)?, key) { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
+        // an unreadable (non-UTF-8) file is drift; apply reports why
+        let text = if let Ok(t) = read_keys(p) { t } else { return Ok(CheckResult::NotConfigured) }
+        if rewrite(text, identity(key), "") == text { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
     }
-    let p = key_path(user, home_for(user, param_str(params, "home", ""))?)
-    if fs::is_file(p) && contains_key(fs::read(p)?, key) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let d = dir?
+    let p = path::join(d, "authorized_keys")
+    if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
+    let text = if let Ok(t) = read_keys(p) { t } else { return Ok(CheckResult::NotConfigured) }
+    if rewrite(text, identity(key), key) != text { return Ok(CheckResult::NotConfigured) }
+    if !attrs_ok(d, p, common::user_uid(user)?)? { return Ok(CheckResult::NotConfigured) }
+    Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let user = param_str(params, "user", "")
-    let key = param_str(params, "key", "")
-    if !want_present(params)? {
-        let home = home_for(user, param_str(params, "home", ""))
-        if home.is_err() { return Ok(ApplyResult::Success) }
-        let p = key_path(user, home.unwrap_or(""))
+    let user = common::param_str(params, "user", "")
+    common::valid_user(user)?
+    let key = wanted_key(params)?
+    let dir = ssh_dir(params, user)
+    if !common::want_present(params)? {
+        if dir.is_err() && common::param_str(params, "home", "") == "" { return Ok(ApplyResult::Success) }
+        let p = path::join(dir?, "authorized_keys")
         if !fs::is_file(p) { return Ok(ApplyResult::Success) }
-        fs::write(p, without_key(fs::read(p)?, key))?
+        let text = read_keys(p)?
+        let next = rewrite(text, identity(key), "")
+        if next != text { common::write_atomic(p, next)? }
         return Ok(ApplyResult::Success)
     }
-    let home = home_for(user, param_str(params, "home", ""))?
-    let p = key_path(user, home)
-    fs::mkdir(path::parent(p))?
-    let text = if fs::exists(p) { fs::read(p)? } else { "" }
-    if !contains_key(text, key) {
-        let sep = if text == "" || text.ends_with("\n") { "" } else { "\n" }
-        fs::write(p, text + sep + key.trim() + "\n")?
+    let d = dir?
+    let p = path::join(d, "authorized_keys")
+    // the owner is the user, with the group left as the user's login group
+    // (`user:`), which need not be named after the user
+    let uid = common::user_uid(user)?
+    if !fs::is_dir(d) {
+        fs::mkdir(d)?
+        common::run("securing " + d, "chmod 700 -- " + common::q(d))?
     }
-    let out = shell::bash("chmod 700 " + q(home + "/.ssh") + " && chmod 600 " + q(p) + " && chown -R " + q(user) + ":" + q(user) + " " + q(home + "/.ssh"), Value::Null)?
-    if !out.success { return Err("securing " + home + "/.ssh failed: " + out.stderr.trim()) }
+    let text = read_keys(p)?
+    let next = rewrite(text, identity(key), key)
+    if next != text || !fs::is_file(p) { common::write_atomic(p, next)? }
+    common::run("securing " + d, "chmod 700 -- " + common::q(d) + " && chmod 600 -- " + common::q(p) + " && chown -- " + common::q(user + ":") + " " + common::q(d) + " " + common::q(p))?
     Ok(ApplyResult::Success)
 }
-
