@@ -52,8 +52,8 @@ package "windows_defender" {
   }
 
   // Adding and removing an exclusion is harmless fleet hygiene, so it gets
-  // real converge coverage; realtime_protection asserts the detection path
-  // against the Server 2025 default (real-time protection on).
+  // real converge coverage. The exclusion added here is removed again by
+  // defender_exclusion_removed.
   test "defender_exclusion_converges" {
     description = "A path exclusion converges; real-time protection detection works"
     template = "x86_64/windows-server-2025"
@@ -81,4 +81,148 @@ package "windows_defender" {
     }
   }
 
+  // Setup adds the exclusions (Add-MpPreference is idempotent), so each
+  // :absent step removes something real. Setup runs under cmd /C: no
+  // double quotes.
+  test "defender_exclusion_removed" {
+    description = "ensure = :absent removes real path and process exclusions"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command Add-MpPreference -ExclusionPath 'C:\\weave-defender-test'; Add-MpPreference -ExclusionProcess 'weave-test.exe'"
+    verify = "tests/defender_removed_verify.ws"
+
+    step "remove_path" {
+      description = "Remove the C:\\weave-defender-test path exclusion"
+      resource = "exclusion"
+      properties { kind = :path value = "C:\\weave-defender-test" ensure = :absent }
+    }
+
+    step "remove_process" {
+      description = "Remove the weave-test.exe process exclusion"
+      resource = "exclusion"
+      properties { kind = :process value = "weave-test.exe" ensure = :absent }
+    }
+  }
+
+  // One preference of each shape: an enum (ScanScheduleDay), a time of day
+  // (ScanScheduleQuickScanTime), a byte (ScanAvgCPULoadFactor), a list
+  // (ProxyBypass) and a boolean in upper case. Each is set to a value other
+  // than the Server 2025 default, then defender_preferences_reset puts the
+  // defaults back.
+  test "defender_preferences_set" {
+    description = "Enum, time, number, list and boolean preferences converge in their own types"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/defender_prefs_set_verify.ws"
+
+    step "scan_day" {
+      description = "Scheduled scans on Saturday, given by name"
+      resource = "preference"
+      properties { name = "ScanScheduleDay" value = "Saturday" }
+    }
+
+    step "quick_scan_time" {
+      description = "Quick scan at 03:30"
+      resource = "preference"
+      properties { name = "ScanScheduleQuickScanTime" value = "03:30" }
+    }
+
+    step "cpu_load" {
+      description = "Scan CPU load factor 40"
+      resource = "preference"
+      properties { name = "ScanAvgCPULoadFactor" value = "40" }
+    }
+
+    step "proxy_bypass" {
+      description = "Two proxy bypass entries"
+      resource = "preference"
+      properties { name = "ProxyBypass" value = "weave-a.example, weave-b.example" }
+    }
+
+    step "signatures_first" {
+      description = "A boolean written in upper case"
+      resource = "preference"
+      properties { name = "CheckForSignaturesBeforeRunningScan" value = "TRUE" }
+    }
+
+    step "unknown_name" {
+      description = "A name that is not a preference is an error, not endless drift"
+      resource = "preference"
+      expect = "error"
+      properties { name = "NoSuchPreference" value = "1" }
+    }
+  }
+
+  // Setup seeds the non-default values (cmd /C, so no double quotes), and
+  // each step restores the Server 2025 default; the empty list clears
+  // ProxyBypass.
+  test "defender_preferences_reset" {
+    description = "Preferences return to their defaults, including clearing a list"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command Set-MpPreference -ScanScheduleDay 7 -ScanScheduleQuickScanTime 03:30:00 -ScanAvgCPULoadFactor 40 -ProxyBypass weave-a.example,weave-b.example -CheckForSignaturesBeforeRunningScan $true"
+    verify = "tests/defender_prefs_reset_verify.ws"
+
+    step "scan_day" {
+      description = "Scheduled scans every day again, given by number"
+      resource = "preference"
+      properties { name = "ScanScheduleDay" value = "0" }
+    }
+
+    step "quick_scan_time" {
+      description = "Quick scan time back to midnight"
+      resource = "preference"
+      properties { name = "ScanScheduleQuickScanTime" value = "00:00:00" }
+    }
+
+    step "cpu_load" {
+      description = "Scan CPU load factor back to 50"
+      resource = "preference"
+      properties { name = "ScanAvgCPULoadFactor" value = "50" }
+    }
+
+    step "proxy_bypass" {
+      description = "The proxy bypass list is cleared"
+      resource = "preference"
+      properties { name = "ProxyBypass" value = "" }
+    }
+
+    step "signatures_first" {
+      description = "A boolean written as $false"
+      resource = "preference"
+      properties { name = "CheckForSignaturesBeforeRunningScan" value = "$false" }
+    }
+  }
+
+  // Each test seeds the opposite state itself, so either runs alone. Setup
+  // also excludes C:\weave, where the testlab keeps its config-weave.exe:
+  // with real-time protection switching back on, Defender has flagged that
+  // unsigned binary as unwanted software and blocked the next run.
+  test "defender_realtime_off" {
+    description = "Real-time protection is turned off and the engine reports it off"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command Add-MpPreference -ExclusionPath C:\\weave; Set-MpPreference -DisableRealtimeMonitoring $false"
+    verify = "tests/defender_rtp_off_verify.ws"
+
+    step "realtime_off" {
+      description = "Turn real-time protection off"
+      resource = "realtime_protection"
+      properties { enabled = false }
+    }
+  }
+
+  test "defender_realtime_on" {
+    description = "Real-time protection is turned back on"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command Add-MpPreference -ExclusionPath C:\\weave; Set-MpPreference -DisableRealtimeMonitoring $true"
+    verify = "tests/defender_rtp_on_verify.ws"
+
+    step "realtime_on" {
+      description = "Turn real-time protection on"
+      resource = "realtime_protection"
+      properties { enabled = true }
+    }
+  }
 }
