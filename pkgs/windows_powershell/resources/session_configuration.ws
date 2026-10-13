@@ -1,169 +1,153 @@
 use value
-use fs
-use path
-use shell
-use sys
+use hash
 use json
+use sys
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn name(params: Value) -> Result[string, string] {
+    let n = common::param_str(params, "name", "")
+    common::require("name", n)?
+    common::no_wildcards("name", n)?
+    Ok(n)
 }
 
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
-}
+fn edition(params: Value) -> string { common::param_str(params, "edition", "auto") }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn resolved_edition(edition: string) -> string {
-    if edition != "auto" { return edition }
-    if sys::family() == "windows" { "windows_powershell" } else { "pwsh" }
-}
-
-// The MSI's PATH change is invisible to an already-running process, so a
-// PowerShell installed earlier in this same run cannot be found by name.
-// The well-known install roots are probed before falling back to PATH.
-fn pwsh_binary(preview: bool) -> string {
+fn validate(params: Value) -> Result[unit, string] {
     if sys::family() != "windows" {
-        if preview { return "pwsh-preview" }
-        return "pwsh"
+        return Err("WinRM session configurations are only supported on Windows")
     }
-    let pattern = if preview { "C:\\Program Files\\PowerShell\\*-preview\\pwsh.exe" } else { "C:\\Program Files\\PowerShell\\*\\pwsh.exe" }
-    if let Ok(found) = fs::glob(pattern) {
-        let best = ""
-        for candidate in found {
-            if !preview && candidate.contains("-preview") { continue }
-            best = candidate
-        }
-        if best != "" { return best }
+    name(params)?
+    let winps = common::resolved_edition(edition(params)) == "windows_powershell"
+    let psversion = common::param_str(params, "psversion", "")
+    common::version_chars("psversion", psversion)?
+    // PowerShell 7's Register-PSSessionConfiguration rejects -PSVersion and
+    // has no -SessionType at all.
+    if psversion != "" && !winps { return Err("'psversion' is only supported by Windows PowerShell endpoints (edition :windows_powershell)") }
+    if common::param_str(params, "session_type", "unmanaged") != "unmanaged" && !winps {
+        return Err("'session_type' is only supported by Windows PowerShell endpoints (edition :windows_powershell)")
     }
-    "pwsh"
+    Ok(())
 }
 
-fn ps_exe(edition: string) -> string {
-    let resolved = resolved_edition(edition)
-    if resolved == "windows_powershell" { return "powershell" }
-    pwsh_binary(resolved == "pwsh_preview")
-}
-
-fn dq(s: string) -> string { "\"" + s + "\"" }
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// Every PowerShell invocation carries a timeout. A resource that can hang
-// forever is a defect: the timeout kills the child and surfaces an Err, which
-// the engine reports as a failed step naming this resource.
-fn ps_argv(edition: string, file: string) -> string {
-    let ep = if sys::family() == "windows" { " -ExecutionPolicy Bypass" } else { "" }
-    dq(ps_exe(edition)) + " -NoProfile -NonInteractive" + ep + " -File " + dq(file)
-}
-
-fn run_ps(edition: string, script: string) -> Result[CmdOutput, string] {
-    let dir = fs::temp_dir()?
-    let file = path::join(dir, "config-weave-ps.ps1")
-    fs::write(file, "$ErrorActionPreference = 'Stop'\n" + script)?
-    let out = shell::run(ps_argv(edition, file), Value::Map(#{ "timeout": Value::Int(300) }))
-    fs::delete_dir(dir)?
-    out
-}
-
-fn run_ps_streaming(edition: string, script: string) -> Result[CmdOutput, string] {
-    let dir = fs::temp_dir()?
-    let file = path::join(dir, "config-weave-ps.ps1")
-    fs::write(file, "$ErrorActionPreference = 'Stop'\n" + script)?
-    let out = shell::run_streaming(ps_argv(edition, file), Value::Map(#{ "timeout": Value::Int(600) }))
-    fs::delete_dir(dir)?
-    out
-}
-
-fn ps_json(edition: string, script: string) -> Result[Value, string] {
-    let out = run_ps(edition, script)?
-    if !out.success { return Err(out.stderr.trim() + " " + out.stdout.trim()) }
-    let text = out.stdout.trim()
-    if text == "" { return Ok(Value::Null) }
-    json::parse(text)
-}
-
-fn pascal(symbol: string) -> string {
-    let out = ""
-    for word in symbol.split("_") {
-        if word != "" { out = out + word.slice(0, 1).to_upper() + word.slice(1, word.len()) }
+// Projected to plain scalars in PowerShell. Access mode is not a property:
+// :disabled is Enabled = false, and :local is an access-denied entry for the
+// NETWORK SID (S-1-5-2) in the endpoint's security descriptor, which is what
+// -AccessMode Local adds. The .pssc an endpoint was registered from is
+// copied verbatim, so its hash identifies the content.
+fn current_endpoint(params: Value) -> Result[Option[Value], string] {
+    let script = "$name = " + common::ps_q(name(params)?) + "\n$c = @(Get-PSSessionConfiguration -ErrorAction Stop | Where-Object {{ $_.Name -eq $name }}) | Select-Object -First 1\nif ($null -eq $c) {{ return }}\n$sd = New-Object System.Security.AccessControl.CommonSecurityDescriptor($false, $false, [string]$c.SecurityDescriptorSddl)\n$net = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-2')\n$deny = @($sd.DiscretionaryAcl | Where-Object {{ [string]$_.AceQualifier -eq 'AccessDenied' -and $_.SecurityIdentifier -eq $net }}).Count -gt 0\n$file = [string]$c.ConfigFilePath\n$hash = ''\nif ($file -ne '' -and (Test-Path -LiteralPath $file)) {{ $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash }}\n[pscustomobject]@{{ enabled = ([string]$c.Enabled).ToLower() -eq 'true'; deny_network = $deny; startup_script = [string]$c.startupscript; max_mb = [string]$c.psmaximumreceiveddatasizepercommandmb; psversion = [string]$c.PSVersion; session_type = [string]$c.sessiontype; has_config = $file -ne ''; config_hash = $hash }} | ConvertTo-Json -Compress"
+    if let Some(text) = common::query(edition(params), script)? {
+        if text == "" { return Ok(None) }
+        return Ok(Some(json::parse(text)?))
     }
-    out
+    // The edition is not installed yet: run 1 checks every step before the
+    // install step has applied, and nothing can be registered without it.
+    Ok(None)
 }
 
-fn current_endpoint(params: Value) -> Result[Value, string] {
-    let name = param_str(params, "name", "")
-    let script = "Get-PSSessionConfiguration -Name " + ps_q(name) + " -ErrorAction SilentlyContinue | Select-Object -First 1 @{{n='name';e={{[string]$_.Name}}}}, @{{n='access';e={{[string]$_.Permission}}}}, @{{n='psversion';e={{[string]$_.PSVersion}}}} | ConvertTo-Json -Compress"
-    // A machine with no WinRM configured answers "no such endpoint", which is
-    // a fact rather than a failure.
-    let out = run_ps(param_str(params, "edition", "auto"), script)
-    if let Ok(result) = out {
-        if result.success {
-            let text = result.stdout.trim()
-            if text == "" { return Ok(Value::Null) }
-            return json::parse(text)
-        }
+fn field(v: Value, key: string) -> string {
+    if let Some(x) = v.get(key) {
+        if let Some(s) = x.as_string() { return s }
+        if let Some(b) = x.as_bool() { return if b { "true" } else { "false" } }
     }
-    Ok(Value::Null)
+    ""
+}
+
+fn major_minor(version: string) -> string {
+    let parts = version.trim().split(".")
+    if parts.len() >= 2 { return parts[0] + "." + parts[1] }
+    version.trim()
+}
+
+// The name of the first setting that differs, or "" when the endpoint
+// matches every managed param.
+fn drift(params: Value, c: Value) -> Result[string, string] {
+    let enabled = field(c, "enabled") == "true"
+    let deny_network = field(c, "deny_network") == "true"
+    let access = common::param_str(params, "access_mode", "unmanaged")
+    if access == "disabled" && enabled { return Ok("access_mode") }
+    if access == "local" && (!enabled || !deny_network) { return Ok("access_mode") }
+    if access == "remote" && (!enabled || deny_network) { return Ok("access_mode") }
+
+    // Session configuration paths are Windows paths: compared case-insensitively.
+    let startup = common::param_str(params, "startup_script", "")
+    if field(c, "startup_script").to_lower() != startup.to_lower() { return Ok("startup_script") }
+
+    let limit = common::param_int(params, "max_received_data_size_mb", -1)
+    if limit >= 0 {
+        let have = field(c, "max_mb").trim().parse_float()
+        if have.is_none() || have.unwrap() != float(limit) { return Ok("max_received_data_size_mb") }
+    }
+
+    let psversion = common::param_str(params, "psversion", "")
+    if psversion != "" && major_minor(field(c, "psversion")) != major_minor(psversion) { return Ok("psversion") }
+
+    let session_type = common::param_str(params, "session_type", "unmanaged")
+    let workflow = field(c, "session_type").to_lower() == "workflow"
+    if session_type == "workflow" && !workflow { return Ok("session_type") }
+    if session_type == "default_remote_shell" && workflow { return Ok("session_type") }
+
+    let file = common::param_str(params, "path", "")
+    let has_config = field(c, "has_config") == "true"
+    if file == "" {
+        if has_config { return Ok("path") }
+    } else {
+        if !has_config { return Ok("path") }
+        if field(c, "config_hash").to_lower() != hash::sha256_file(file)?.to_lower() { return Ok("path") }
+    }
+    Ok("")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if sys::family() != "windows" {
-        return Err("WinRM session configurations are only supported on Windows")
-    }
-    let exists = !current_endpoint(params)?.is_null()
-    if want_present(params)? {
-        if exists { return Ok(CheckResult::AlreadyConfigured) }
+    validate(params)?
+    let current = current_endpoint(params)?
+    if !common::want_present(params)? {
+        if current.is_none() { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if exists { return Ok(CheckResult::NotConfigured) }
-    Ok(CheckResult::AlreadyConfigured)
+    if current.is_none() { return Ok(CheckResult::NotConfigured) }
+    if drift(params, current.unwrap())? == "" { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
+}
+
+fn register_args(params: Value) -> Result[string, string] {
+    let args = " -Name " + common::ps_q(name(params)?) + " -Force -NoServiceRestart"
+    let file = common::param_str(params, "path", "")
+    if file != "" { args = args + " -Path " + common::ps_q(file) }
+    let session_type = common::param_str(params, "session_type", "unmanaged")
+    if session_type != "unmanaged" { args = args + " -SessionType " + common::pascal(session_type) }
+    let access = common::param_str(params, "access_mode", "unmanaged")
+    if access != "unmanaged" { args = args + " -AccessMode " + common::pascal(access) }
+    let startup = common::param_str(params, "startup_script", "")
+    if startup != "" { args = args + " -StartupScript " + common::ps_q(startup) }
+    let limit = common::param_int(params, "max_received_data_size_mb", -1)
+    if limit >= 0 { args = args + " -MaximumReceivedDataSizePerCommandMB " + str(limit) }
+    let psversion = common::param_str(params, "psversion", "")
+    if psversion != "" { args = args + " -PSVersion " + common::ps_q(psversion) }
+    Ok(args)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if sys::family() != "windows" {
-        return Err("WinRM session configurations are only supported on Windows")
-    }
-    let edition = param_str(params, "edition", "auto")
+    validate(params)?
+    let n = name(params)?
+    let ed = edition(params)
+    if !common::ps_installed(ed) { return Err(common::not_installed(ed)) }
+    let exists = current_endpoint(params)?.is_some()
+    let unregister = "Unregister-PSSessionConfiguration -Name " + common::ps_q(n) + " -Force -NoServiceRestart"
 
-    if !want_present(params)? {
-        let script = "Unregister-PSSessionConfiguration -Name " + ps_q(name) + " -Force -NoServiceRestart"
-        let out = run_ps(edition, script)?
-        if !out.success { return Err("unregistering the session configuration '" + name + "' failed: " + out.stderr.trim()) }
+    if !common::want_present(params)? {
+        if !exists { return Ok(ApplyResult::Success) }
+        let out = common::run_ps(ed, unregister)?
+        if !out.success { return Err(common::failure("unregistering the session configuration '" + n + "'", out)) }
         return Ok(ApplyResult::Success)
     }
 
-    let args = " -Name " + ps_q(name) + " -Force -NoServiceRestart"
-    let file = param_str(params, "path", "")
-    if file != "" { args = args + " -Path " + ps_q(file) }
-    let session_type = param_str(params, "session_type", "unmanaged")
-    if session_type != "unmanaged" { args = args + " -SessionType " + pascal(session_type) }
-    let access = param_str(params, "access_mode", "unmanaged")
-    if access != "unmanaged" { args = args + " -AccessMode " + pascal(access) }
-    let startup = param_str(params, "startup_script", "")
-    if startup != "" { args = args + " -StartupScript " + ps_q(startup) }
-    let limit = param_int(params, "max_received_data_size_mb", -1)
-    if limit >= 0 { args = args + " -MaximumReceivedDataSizePerCommandMB " + str(limit) }
-    let psversion = param_str(params, "psversion", "")
-    if psversion != "" { args = args + " -PSVersion " + psversion }
-
-    let out = run_ps_streaming(edition, "Register-PSSessionConfiguration" + args)?
-    if !out.success { return Err("registering the session configuration '" + name + "' failed: " + out.stdout.trim() + " " + out.stderr.trim()) }
+    // Several settings (the .pssc, the session type) can only be given at
+    // registration, so an endpoint that drifted is re-registered whole.
+    let script = if exists { unregister + "\n" } else { "" }
+    script = script + "Register-PSSessionConfiguration" + register_args(params)?
+    let out = common::run_ps_streaming(ed, script, 600)?
+    if !out.success { return Err(common::failure("registering the session configuration '" + n + "'", out)) }
     Ok(ApplyResult::Success)
 }

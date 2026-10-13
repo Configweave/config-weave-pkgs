@@ -2,6 +2,7 @@ use value
 use fs
 use shell
 use json
+use registry
 
 fn verify(facts: Value) -> Result[bool, string] {
     let binary = "C:\\Program Files\\PowerShell\\7\\pwsh.exe"
@@ -23,6 +24,15 @@ fn verify(facts: Value) -> Result[bool, string] {
     if lines.len() < 2 { return Err("unexpected probe output: " + checked.stdout) }
     if lines[0].trim().parse_int().unwrap_or(0) < 1 { return Err("no PowerShell.7 remoting endpoint was registered") }
     if !lines[1].contains("1.0.1") { return Err("the AllUsers module install is not visible, found: " + lines[1].trim()) }
+
+    // The zip landed side by side in its own versioned root, and the
+    // refused install left the MSI's root at the MSI's version.
+    let zip = shell::run("\"C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe\" -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()", Value::Null)?
+    if !zip.success || zip.stdout.trim() != "7.4.6" { return Err("the side-by-side zip install does not report 7.4.6: " + zip.stdout.trim() + " " + zip.stderr.trim()) }
+
+    let pel = registry::HKLM + "\\SOFTWARE\\Policies\\Microsoft\\Windows\\EventLog\\ProtectedEventLogging"
+    let enabled = registry::read(pel, "EnableProtectedEventLogging")?
+    if enabled.is_none() || enabled.unwrap().as_int().unwrap_or(0) != 1 { return Err("protected event logging was not enabled under the EventLog policy key") }
 
     let profile = "C:\\Program Files\\PowerShell\\7\\profile.ps1"
     if !fs::is_file(profile) { return Err("the machine-wide profile was not written") }

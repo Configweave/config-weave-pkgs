@@ -29,6 +29,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     if dword(core + "\\ScriptBlockLogging", "EnableScriptBlockLogging")? != 1 { return Ok(false) }
     if dword(core + "\\ScriptBlockLogging", "EnableScriptBlockInvocationLogging")? != 1 { return Ok(false) }
     if dword(core + "\\ModuleLogging", "EnableModuleLogging")? != 1 { return Ok(false) }
+    if registry::read(core + "\\ModuleLogging\\ModuleNames", "CwExtra")?.is_some() { return Err("the module-logging name nobody asked for was left in the list") }
+    if sz(registry::HKCU + "\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore", "ExecutionPolicy")? != "" { return Err("the seeded user-policy execution policy was not removed") }
+    let winps = registry::HKLM + "\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell"
+    if dword(winps + "\\ModuleLogging", "EnableModuleLogging")? != 0 { return Err("Windows PowerShell module logging was not switched off") }
+    if registry::key_exists(winps + "\\ModuleLogging\\ModuleNames")? { return Err("switching module logging off left its module list behind") }
     if sz(core + "\\ModuleLogging\\ModuleNames", "PSReadLine")? != "PSReadLine" { return Err("the module list was not written as name = name values") }
     if dword(core + "\\Transcription", "EnableTranscripting")? != 1 { return Ok(false) }
     if sz(core + "\\Transcription", "OutputDirectory")? != "C:\\weave-ps\\transcripts" { return Ok(false) }
@@ -51,7 +56,9 @@ fn verify(facts: Value) -> Result[bool, string] {
         let found = if fs::is_dir(base) { fs::list_dir(base)?.join(", ") } else { "the directory does not exist" }
         return Err("expected the profile at " + all_hosts + " — that folder holds: " + found)
     }
-    if fs::read(all_hosts)? != "# managed by config-weave\n" { return Err("the all-hosts profile content is not the one the step declared") }
+    // Windows PowerShell 5.1 reads a BOM-less script as ANSI, so its
+    // profiles are written with a UTF-8 BOM.
+    if fs::read(all_hosts)? != "\u{FEFF}# managed by config-weave\n" { return Err("the all-hosts profile is not the declared content behind a UTF-8 BOM") }
 
     let host_profile = base + "Microsoft.PowerShell_profile.ps1"
     if !fs::is_file(host_profile) { return Err("the block-writing resources did not create the current-host profile") }

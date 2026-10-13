@@ -1,125 +1,75 @@
 use value
 use fs
 use path
-use shell
 use sys
 use http
 use hash
 use archive
+use json
+use common
+use psget
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn name(params: Value) -> Result[string, string] {
+    let n = common::param_str(params, "name", "")
+    common::path_segment("name", n)?
+    Ok(n)
 }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn resolved_edition(edition: string) -> string {
-    if edition != "auto" { return edition }
-    if sys::family() == "windows" { "windows_powershell" } else { "pwsh" }
-}
-
-// The MSI's PATH change is invisible to an already-running process, so a
-// PowerShell installed earlier in this same run cannot be found by name.
-// The well-known install roots are probed before falling back to PATH.
-fn pwsh_binary(preview: bool) -> string {
-    if sys::family() != "windows" {
-        if preview { return "pwsh-preview" }
-        return "pwsh"
+fn version(params: Value) -> Result[string, string] {
+    let v = common::param_str(params, "version", "")
+    if v != "" {
+        common::path_segment("version", v)?
+        common::version_chars("version", v)?
     }
-    let pattern = if preview { "C:\\Program Files\\PowerShell\\*-preview\\pwsh.exe" } else { "C:\\Program Files\\PowerShell\\*\\pwsh.exe" }
-    if let Ok(found) = fs::glob(pattern) {
-        let best = ""
-        for candidate in found {
-            if !preview && candidate.contains("-preview") { continue }
-            best = candidate
-        }
-        if best != "" { return best }
-    }
-    "pwsh"
-}
-
-fn ps_exe(edition: string) -> string {
-    let resolved = resolved_edition(edition)
-    if resolved == "windows_powershell" { return "powershell" }
-    pwsh_binary(resolved == "pwsh_preview")
-}
-
-fn dq(s: string) -> string { "\"" + s + "\"" }
-
-// Every PowerShell invocation carries a timeout. A resource that can hang
-// forever is a defect: the timeout kills the child and surfaces an Err, which
-// the engine reports as a failed step naming this resource.
-fn run_ps(edition: string, script: string) -> Result[CmdOutput, string] {
-    let dir = fs::temp_dir()?
-    let file = path::join(dir, "config-weave-ps.ps1")
-    fs::write(file, "$ErrorActionPreference = 'Stop'\n" + script)?
-    let ep = if sys::family() == "windows" { " -ExecutionPolicy Bypass" } else { "" }
-    let out = shell::run(dq(ps_exe(edition)) + " -NoProfile -NonInteractive" + ep + " -File " + dq(file), Value::Map(#{ "timeout": Value::Int(300) }))
-    fs::delete_dir(dir)?
-    out
+    Ok(v)
 }
 
 // The directory modules are installed under. `destination` wins; otherwise
 // the scope's standard location, computed locally when `home` is given so it
 // works without a PowerShell to ask (the guest agent's HOME is not the
-// invoking user's).
-fn modules_dir(params: Value) -> Result[string, string] {
-    let destination = param_str(params, "destination", "")
-    if destination != "" { return Ok(destination) }
-    let edition = param_str(params, "edition", "auto")
-    if param_str(params, "scope", "current_user") == "all_users" {
+// invoking user's). None when the PowerShell to ask is not installed.
+fn modules_dir(params: Value) -> Result[Option[string], string] {
+    let destination = common::param_str(params, "destination", "")
+    if destination != "" { return Ok(Some(destination)) }
+    let edition = common::param_str(params, "edition", "auto")
+    if common::param_str(params, "scope", "current_user") == "all_users" {
         let script = "if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path $env:ProgramFiles 'WindowsPowerShell\\Modules' }} elseif ($IsWindows) {{ Join-Path $env:ProgramFiles 'PowerShell\\Modules' }} else {{ Write-Output '/usr/local/share/powershell/Modules' }}"
-        let out = run_ps(edition, script)?
-        if !out.success { return Err("cannot resolve the machine-wide module directory: " + out.stderr.trim()) }
-        return Ok(out.stdout.trim())
+        return common::query(edition, script)
     }
-    let home = param_str(params, "home", "")
+    let home = common::param_str(params, "home", "")
     if home != "" {
         if sys::family() == "windows" {
-            let folder = if resolved_edition(edition) == "windows_powershell" { "WindowsPowerShell" } else { "PowerShell" }
-            return Ok(path::join(path::join(path::join(home, "Documents"), folder), "Modules"))
+            let folder = if common::resolved_edition(edition) == "windows_powershell" { "WindowsPowerShell" } else { "PowerShell" }
+            return Ok(Some(path::join(path::join(path::join(home, "Documents"), folder), "Modules")))
         }
-        return Ok(path::join(path::join(path::join(path::join(home, ".local"), "share"), "powershell"), "Modules"))
+        return Ok(Some(path::join(path::join(path::join(path::join(home, ".local"), "share"), "powershell"), "Modules")))
     }
-    let script = "if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\\Modules' }} elseif ($IsWindows) {{ Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\\Modules' }} else {{ Join-Path $HOME '.local/share/powershell/Modules' }}"
-    let out = run_ps(edition, script)?
-    if !out.success { return Err("cannot resolve the user module directory: " + out.stderr.trim()) }
-    Ok(out.stdout.trim())
+    // No home: the account config-weave runs as, usually SYSTEM or root.
+    let script = "if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'WindowsPowerShell\\Modules' }} elseif ($IsWindows) {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'PowerShell\\Modules' }} else {{ Join-Path $HOME '.local/share/powershell/Modules' }}"
+    common::query(edition, script)
 }
 
-fn module_root(params: Value) -> Result[string, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    Ok(path::join(modules_dir(params)?, name))
+fn require_modules_dir(params: Value) -> Result[string, string] {
+    if let Some(dir) = modules_dir(params)? { return Ok(dir) }
+    Err("cannot resolve the module directory: " + common::not_installed(common::param_str(params, "edition", "auto")))
 }
 
 // <Name>/<Version>/ is the layout Get-Module -ListAvailable expects for a
 // versioned module; a module with no version sits flat under <Name>/.
-fn target_dir(params: Value) -> Result[string, string] {
-    let root = module_root(params)?
-    let version = param_str(params, "version", "")
-    if version == "" { return Ok(root) }
-    Ok(path::join(root, version))
+fn target_dir(dir: string, params: Value) -> Result[string, string] {
+    let root = path::join(dir, name(params)?)
+    let v = version(params)?
+    if v == "" { return Ok(root) }
+    Ok(path::join(root, v))
 }
 
 // A module directory only counts as installed when it holds a manifest,
 // a root module or a binary named after the module — PowerShell refuses to
 // import one that does not.
-fn has_module_file(dir: string, name: string) -> bool {
+fn has_module_file(dir: string, n: string) -> bool {
     if !fs::is_dir(dir) { return false }
     for suffix in [".psd1", ".psm1", ".dll"] {
-        if fs::is_file(path::join(dir, name + suffix)) { return true }
+        if fs::is_file(path::join(dir, n + suffix)) { return true }
     }
     false
 }
@@ -134,12 +84,109 @@ fn copy_tree(from: string, to: string) -> Result[unit, string] {
     Ok(())
 }
 
+// One line per file and directory, with each file's SHA-256: two trees with
+// the same digest hold the same files with the same content.
+fn tree_lines(dir: string, rel: string) -> Result[List[string], string] {
+    let out: List[string] = []
+    for entry in fs::list_dir(dir)? {
+        let full = path::join(dir, entry)
+        let r = if rel == "" { entry } else { rel + "/" + entry }
+        if fs::is_dir(full) {
+            out.push("d " + r)
+            for line in tree_lines(full, r)? { out.push(line) }
+        } else {
+            out.push("f " + r + " " + hash::sha256_file(full)?)
+        }
+    }
+    Ok(out)
+}
+
+fn tree_digest(dir: string) -> Result[string, string] { Ok(hash::sha256(tree_lines(dir, "")?.join("\n"))) }
+
+// What an archive or URL install recorded about itself, kept outside the
+// module so the module directory holds only the module.
+fn record_path(target: string) -> string {
+    let base = if sys::family() == "windows" { "C:/ProgramData/config-weave/module_from_path" } else { "/var/lib/config-weave/module_from_path" }
+    base + "/" + hash::sha256(target).slice(0, 24) + ".json"
+}
+
+fn read_record(target: string) -> Value {
+    let file = record_path(target)
+    if !fs::is_file(file) { return Value::Null }
+    let text = fs::read(file)
+    if text.is_err() { return Value::Null }
+    json::parse(text.unwrap()).unwrap_or(Value::Null)
+}
+
+fn rec(v: Value, key: string) -> string { v.get(key).unwrap_or(Value::String("")).as_string().unwrap_or("") }
+
+// Decodes UTF-16LE through JSON escapes, since scripts have no
+// code-point-to-char conversion. Windows PowerShell's New-ModuleManifest
+// writes UTF-16.
+fn hex4(n: int) -> string {
+    let digits = "0123456789abcdef"
+    let out = ""
+    let v = n
+    for _i in [0, 1, 2, 3] {
+        out = digits.slice(v % 16, v % 16 + 1) + out
+        v = v / 16
+    }
+    out
+}
+
+fn decode_utf16le(bytes: List[int], start: int) -> Result[string, string] {
+    let escaped = ""
+    let i = start
+    while i + 1 < bytes.len() {
+        escaped = escaped + "\\u" + hex4(bytes[i] + bytes[i + 1] * 256)
+        i = i + 2
+    }
+    let decoded = json::parse("\"" + escaped + "\"")?
+    Ok(decoded.as_string().unwrap_or(""))
+}
+
+fn read_manifest(file: string) -> Result[string, string] {
+    let bytes = fs::read_bytes(file)?
+    if bytes.len() >= 2 && bytes[0] == 255 && bytes[1] == 254 { return decode_utf16le(bytes, 2) }
+    let text = fs::read(file)?
+    if text.starts_with("\u{FEFF}") { return Ok(text.slice(1, text.len())) }
+    Ok(text)
+}
+
+// The ModuleVersion a manifest declares, or "" when there is no manifest or
+// it names none.
+fn manifest_version(dir: string, n: string) -> Result[string, string] {
+    let file = path::join(dir, n + ".psd1")
+    if !fs::is_file(file) { return Ok("") }
+    for raw in read_manifest(file)?.split("\n") {
+        let line = raw.trim()
+        if line.to_lower().starts_with("moduleversion") {
+            if let Some(eq) = line.find("=") {
+                let v = line.slice(eq + 1, line.len()).trim()
+                if let Some(hash_at) = v.find("#") { v = v.slice(0, hash_at).trim() }
+                return Ok(v.replace("'", "").replace("\"", "").trim())
+            }
+        }
+    }
+    Ok("")
+}
+
+fn version_matches(dir: string, params: Value) -> Result[bool, string] {
+    let v = version(params)?
+    if v == "" { return Ok(true) }
+    let declared = manifest_version(dir, name(params)?)?
+    if declared == "" { return Ok(true) }
+    Ok(psget::version_eq(declared, v))
+}
+
+fn is_url(source: string) -> bool { source.starts_with("http://") || source.starts_with("https://") }
+
 // Resolves `source` to a directory holding the module's files, unpacking and
 // downloading into `work` as needed.
 fn staged_source(params: Value, work: string) -> Result[string, string] {
-    let source = param_str(params, "source", "")
+    let source = common::param_str(params, "source", "")
     if source == "" { return Err("'source' is required when ensure is :present") }
-    let expected = param_str(params, "sha256", "")
+    let expected = common::param_str(params, "sha256", "")
 
     let local = source
     if source.starts_with("http://") || source.starts_with("https://") {
@@ -171,7 +218,7 @@ fn staged_source(params: Value, work: string) -> Result[string, string] {
         archive::extract(local, unpacked)?
     }
 
-    if !param_bool(params, "strip_root", false) { return Ok(unpacked) }
+    if !common::param_bool(params, "strip_root", false) { return Ok(unpacked) }
     let entries = fs::list_dir(unpacked)?
     if entries.len() != 1 { return Err("strip_root needs the archive to hold exactly one top-level directory, found " + str(entries.len()) + " entries") }
     let inner = path::join(unpacked, entries[0])
@@ -179,42 +226,69 @@ fn staged_source(params: Value, work: string) -> Result[string, string] {
     Ok(inner)
 }
 
+// Whether the installed tree is exactly what `source` provides. A local
+// directory is compared file by file. An archive or URL is compared through
+// the record its install wrote: the same source, the same archive (re-hashed
+// when it is local), and an installed tree nobody has changed since. A URL
+// with no `sha256` cannot be re-checked without downloading it; set sha256
+// to make a changed upstream archive drift.
+fn content_matches(params: Value, target: string) -> Result[bool, string] {
+    let source = common::param_str(params, "source", "")
+    common::require("source", source)?
+    if !is_url(source) && fs::is_dir(source) {
+        return Ok(tree_digest(source)? == tree_digest(target)?)
+    }
+    let record = read_record(target)
+    if record.is_null() { return Ok(false) }
+    if rec(record, "source") != source { return Ok(false) }
+    if rec(record, "sha256") != common::param_str(params, "sha256", "").trim().to_lower() { return Ok(false) }
+    if rec(record, "strip_root") != str(common::param_bool(params, "strip_root", false)) { return Ok(false) }
+    if !is_url(source) {
+        if !fs::is_file(source) { return Err("source '" + source + "' is neither a file nor a directory") }
+        if rec(record, "archive") != hash::sha256_file(source)? { return Ok(false) }
+    }
+    Ok(rec(record, "tree") == tree_digest(target)?)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    // Resolving the module directory runs the target PowerShell, which may
-    // not be installed yet: run 1 checks every step before the install step
-    // has applied. That is "not configured", not a failure.
-    if modules_dir(params).is_err() {
-        if want_present(params)? { return Ok(CheckResult::NotConfigured) }
+    let n = name(params)?
+    version(params)?
+    let present = common::want_present(params)?
+    let resolved = modules_dir(params)?
+    if resolved.is_none() {
+        if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    if !want_present(params)? {
+    let dir = resolved.unwrap()
+    let target = target_dir(dir, params)?
+    if !present {
         // Removing a versioned install only removes that version; removing an
         // unversioned one takes the whole module.
-        let version = param_str(params, "version", "")
-        let gone = if version == "" { !fs::exists(module_root(params)?) } else { !fs::exists(target_dir(params)?) }
-        if gone { return Ok(CheckResult::AlreadyConfigured) }
-        return Ok(CheckResult::NotConfigured)
+        let doomed = if version(params)? == "" { path::join(dir, n) } else { target }
+        if fs::exists(doomed) { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
     }
-    if has_module_file(target_dir(params)?, name) { return Ok(CheckResult::AlreadyConfigured) }
-    Ok(CheckResult::NotConfigured)
+    if !has_module_file(target, n) { return Ok(CheckResult::NotConfigured) }
+    if !version_matches(target, params)? { return Ok(CheckResult::NotConfigured) }
+    if !content_matches(params, target)? { return Ok(CheckResult::NotConfigured) }
+    Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
+    let n = name(params)?
+    let v = version(params)?
+    let dir = require_modules_dir(params)?
+    let root = path::join(dir, n)
+    let target = target_dir(dir, params)?
 
-    if !want_present(params)? {
-        let version = param_str(params, "version", "")
-        let doomed = if version == "" { module_root(params)? } else { target_dir(params)? }
+    if !common::want_present(params)? {
+        let doomed = if v == "" { root } else { target }
         if fs::is_dir(doomed) { fs::delete_dir(doomed)? }
+        let record = record_path(target)
+        if fs::is_file(record) { fs::delete(record)? }
         // A version directory removed from an otherwise empty module leaves a
         // stub that would still shadow a later install.
-        if version != "" {
-            let root = module_root(params)?
-            if fs::is_dir(root) && fs::list_dir(root)?.is_empty() { fs::delete_dir(root)? }
-        }
+        if v != "" && fs::is_dir(root) && fs::list_dir(root)?.is_empty() { fs::delete_dir(root)? }
         return Ok(ApplyResult::Success)
     }
 
@@ -224,15 +298,38 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fs::delete_dir(work)?
         return Err(e)
     }
-    let target = target_dir(params)?
+    let from = staged.unwrap()
+    // The version directory must agree with the manifest, or PowerShell
+    // ignores the module.
+    let declared = manifest_version(from, n)
+    let mismatch = if let Ok(d) = declared { v != "" && d != "" && !psget::version_eq(d, v) } else { false }
+    if mismatch {
+        fs::delete_dir(work)?
+        return Err("the manifest " + n + ".psd1 declares ModuleVersion " + declared.unwrap() + ", but version is '" + v + "' — PowerShell ignores a module whose folder and manifest versions differ")
+    }
+    // The archive digest is taken now, from the file that was actually
+    // extracted.
+    let source = common::param_str(params, "source", "")
+    let archive_sha = ""
+    if !is_url(source) && fs::is_file(source) { archive_sha = hash::sha256_file(source)? }
     // Replaced rather than merged, so a shrinking module does not leave
     // orphaned files behind.
     if fs::is_dir(target) { fs::delete_dir(target)? }
-    let copied = copy_tree(staged.unwrap(), target)
+    let copied = copy_tree(from, target)
     fs::delete_dir(work)?
     copied?
-    if !has_module_file(target, name) {
-        return Err("nothing named '" + name + ".psd1', '" + name + ".psm1' or '" + name + ".dll' landed in '" + target + "' — PowerShell cannot import a module directory without one")
+    if !has_module_file(target, n) {
+        return Err("nothing named '" + n + ".psd1', '" + n + ".psm1' or '" + n + ".dll' landed in '" + target + "' — PowerShell cannot import a module directory without one")
     }
+    let record = record_path(target)
+    let parent = path::parent(record)
+    if parent != "" { fs::mkdir(parent)? }
+    fs::write(record, json::to_string(Value::Map(#{
+        "source": Value::String(source),
+        "sha256": Value::String(common::param_str(params, "sha256", "").trim().to_lower()),
+        "strip_root": Value::String(str(common::param_bool(params, "strip_root", false))),
+        "archive": Value::String(archive_sha),
+        "tree": Value::String(tree_digest(target)?)
+    })) + "\n")?
     Ok(ApplyResult::Success)
 }

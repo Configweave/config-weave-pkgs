@@ -11,9 +11,17 @@ package "windows_powershell" {
   // rather than a separate upgrade resource.
   //
   // :zip and :tarball are the only side-by-side-capable methods: they
-  // extract into a versioned root of their own, which is what Microsoft
-  // documents for running 7.4 next to 7.5. :winget, :msi and :repo all
-  // replace the installed stable build in place.
+  // extract into a versioned root of their own (by default named for the
+  // full version, e.g. /opt/microsoft/powershell/7.5.4), which is what
+  // Microsoft documents for running 7.4 next to 7.5. They mark the root they
+  // extract, and refuse to overwrite or delete a root a package manager owns
+  // (the MSI's C:\Program Files\PowerShell\7, a dpkg or rpm tree).
+  // :winget, :msi and :repo all replace the installed build in place; :repo
+  // pins the package version when `version` is set.
+  //
+  // :msi with ensure = :absent uninstalls by product code found under the
+  // Uninstall registry key, and only the requested channel: removing the
+  // stable build leaves a preview build alone, and the other way round.
   resource "pwsh_installed" {
     description = "Ensure a PowerShell 7 build is installed, at a given version, by MSI, winget, zip, the distro repository or the release tarball"
     script = "resources/pwsh_installed.ws"
@@ -26,14 +34,14 @@ package "windows_powershell" {
       symbol "present" { description = "Install PowerShell" }
       symbol "absent"  { description = "Uninstall PowerShell" }
     }
-    param "version" { description = "Exact version to install, e.g. 7.5.4; empty resolves the latest release of the channel" type = "string" default = "" }
+    param "version" { description = "Exact version to install, e.g. 7.5.4; empty accepts any installed build of the channel and installs the latest. :repo pins the distro package to it" type = "string" default = "" }
     param "channel" {
       description = "Release channel the version is resolved from when `version` is empty"
       type = "symbol"
       default = :stable
 
       symbol "stable"  { description = "The current stable release" }
-      symbol "lts"      { description = "The current long-term-servicing release" }
+      symbol "lts"      { description = "The current long-term-servicing release. On Linux :repo installs the powershell-lts package, reached as pwsh-lts; on Windows an LTS release is the same MSI, zip and winget package as any other, so set `version` to the LTS release" }
       symbol "preview"  { description = "The current preview release, which installs alongside stable as pwsh-preview" }
     }
     param "method" {
@@ -48,7 +56,7 @@ package "windows_powershell" {
       symbol "repo"    { description = "Linux: register packages.microsoft.com and install the distro package" }
       symbol "tarball" { description = "Linux: download the release tar.gz and extract it — the side-by-side method" }
     }
-    param "install_root" { description = "Directory the :zip / :tarball methods extract into; empty uses the platform default ($PSHOME for the major version)" type = "string" default = "" }
+    param "install_root" { description = "Directory the :zip / :tarball methods extract into; empty uses a root named for the full version (C:\\Program Files\\PowerShell\\<version>, /opt/microsoft/powershell/<version>). A root a package manager owns is refused" type = "string" default = "" }
     param "url" { description = "Explicit download URL for :msi / :zip / :tarball; empty derives it from the version and platform" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of the downloaded artefact; empty skips the check" type = "string" default = "" }
     param "add_path" { description = "MSI ADD_PATH: put the install directory on the machine PATH" type = "bool" default = true }
@@ -57,7 +65,7 @@ package "windows_powershell" {
     param "explorer_context_menu" { description = "MSI ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL: add the Open PowerShell here shell item" type = "bool" default = false }
     param "file_context_menu" { description = "MSI ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL: add the Run with PowerShell shell item" type = "bool" default = false }
     param "microsoft_update" { description = "MSI USE_MU and ENABLE_MU: receive PowerShell updates through Microsoft Update" type = "bool" default = false }
-    param "symlink" { description = "Linux :tarball only — path symlinked at the extracted pwsh so it lands on PATH; empty skips the symlink" type = "string" default = "" }
+    param "symlink" { description = "Linux :tarball only — path symlinked at the extracted pwsh so it lands on PATH; empty skips the symlink. :absent removes it only when it points into the root" type = "string" default = "" }
   }
 
   // Enable-PSRemoting configures the endpoint of whichever edition runs it,
@@ -89,11 +97,17 @@ package "windows_powershell" {
     param "skip_network_profile_check" { description = "Enable remoting even on a public network profile (-SkipNetworkProfileCheck)" type = "bool" default = false }
   }
 
+  // Every param is compared on an existing endpoint, not only at creation:
+  // access_mode through Enabled and the NETWORK deny entry -AccessMode Local
+  // adds, `path` by the hash of the .pssc copy the endpoint keeps. Several
+  // settings can only be given at registration, so an endpoint that drifted
+  // is unregistered and registered again — which also resets any permission
+  // changed by hand with Set-PSSessionConfiguration -ShowSecurityDescriptorUI.
   resource "session_configuration" {
     description = "Ensure a WinRM session configuration (a remoting endpoint) is registered with the given settings, or unregistered"
     script = "resources/session_configuration.ws"
     concurrency = "global"
-    param "name" { description = "Session configuration name, e.g. RestrictedAdmin" type = "string" required = true }
+    param "name" { description = "Session configuration name, e.g. RestrictedAdmin; wildcard characters are rejected" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -102,14 +116,13 @@ package "windows_powershell" {
       symbol "present" { description = "Register the session configuration" }
       symbol "absent"  { description = "Unregister the session configuration" }
     }
-    param "path" { description = "Session configuration file (.pssc) the endpoint is built from; empty registers a plain endpoint" type = "string" default = "" }
+    param "path" { description = "Session configuration file (.pssc) the endpoint is built from, compared by content; empty registers a plain endpoint, and an endpoint built from a file is drift" type = "string" default = "" }
     param "session_type" {
-      description = "Type of session the endpoint creates (the -SessionType enum). A constrained RestrictedRemoteServer endpoint is described by a session configuration file instead — point `path` at a .pssc"
+      description = "Type of session the endpoint creates (the -SessionType enum, Windows PowerShell only). A constrained or empty endpoint is described by a session configuration file instead — point `path` at a .pssc"
       type = "symbol"
       default = :unmanaged
 
       symbol "default_remote_shell"  { description = "A full PowerShell session — the cmdlet's default" }
-      symbol "empty"                 { description = "An empty session, to be populated by the startup script" }
       symbol "workflow"              { description = "A workflow-hosting session" }
       symbol "unmanaged"             { description = "Leave the session type at the cmdlet default" }
     }
@@ -123,9 +136,19 @@ package "windows_powershell" {
       symbol "disabled"  { description = "Nobody — the endpoint exists but is disabled" }
       symbol "unmanaged" { description = "Leave the access mode alone" }
     }
-    param "startup_script" { description = "Script run when a session starts; empty leaves it unset" type = "string" default = "" }
+    param "startup_script" { description = "Script run when a session starts; empty means none, and an endpoint with one is drift" type = "string" default = "" }
     param "max_received_data_size_mb" { description = "MaximumReceivedDataSizePerCommandMB limit; -1 leaves it unmanaged" type = "int" default = -1 }
-    param "psversion" { description = "PSVersion the endpoint hosts, e.g. 5.1; empty leaves it at the default" type = "string" default = "" }
+    param "psversion" { description = "PSVersion the endpoint hosts, e.g. 5.1, compared by major.minor (Windows PowerShell only); empty leaves it at the default" type = "string" default = "" }
+    param "edition" {
+      description = "Which PowerShell registers and hosts the endpoint"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"               { description = "Windows PowerShell on Windows, pwsh elsewhere" }
+      symbol "pwsh"               { description = "PowerShell 7 — no session_type or psversion" }
+      symbol "pwsh_preview"       { description = "The PowerShell preview build" }
+      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -183,7 +206,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition` by asking PowerShell" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "module_path" {
@@ -224,7 +247,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "experimental_feature" {
@@ -257,7 +280,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // The Windows PowerShell compatibility layer: whether PowerShell 7 may
@@ -296,12 +319,14 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // The non-Windows logging block of powershell.config.json — on Windows the
   // equivalent settings are the Group Policy keys the policy resources below
-  // manage instead.
+  // manage instead. PowerShell reads these four keys from the all-users
+  // $PSHOME file only, and reads LogChannels and LogKeywords as one string
+  // split on spaces, commas or pipes.
   resource "log_setting" {
     description = "Configure the Linux and macOS logging settings in powershell.config.json — LogLevel, LogChannels, LogKeywords and LogIdentity"
     script = "resources/log_setting.ws"
@@ -311,7 +336,7 @@ package "windows_powershell" {
       type = "symbol"
       default = :unmanaged
 
-      symbol "none"          { description = "Log nothing" }
+      symbol "none"          { description = "Only events logged unconditionally — written as LogAlways, since PowerShell has no None level and reads an unknown name as Informational" }
       symbol "critical"      { description = "Critical only" }
       symbol "error"         { description = "Error and above" }
       symbol "warning"       { description = "Warning and above" }
@@ -320,17 +345,16 @@ package "windows_powershell" {
       symbol "debug"         { description = "Everything, including debug" }
       symbol "unmanaged"     { description = "Leave the setting alone" }
     }
-    param "log_channels" { description = "LogChannels, from Operational and Analytic; an empty list leaves the key alone unless `manage_lists` is set" type = "list" }
-    param "log_keywords" { description = "LogKeywords, from Runspace, Pipeline, Protocol, Transport, Host, Cmdlet, Serializer, Session and ManagedPlugin" type = "list" }
+    param "log_channels" { description = "LogChannels, from Operational and Analytic, written as the comma-separated string PowerShell parses; an empty list leaves the key alone unless `manage_lists` is set" type = "list" }
+    param "log_keywords" { description = "LogKeywords, from Runspace, Pipeline, Protocol, Transport, Host, Cmdlet, Serializer, Session and ManagedPlugin, written as one comma-separated string" type = "list" }
     param "log_identity" { description = "LogIdentity written into each record; empty leaves the key alone" type = "string" default = "" }
-    param "manage_lists" { description = "Write the two lists even when they are empty, which is how a list is cleared" type = "bool" default = false }
+    param "manage_lists" { description = "Manage the two lists even when they are empty: an empty list removes the key, which restores PowerShell's default" type = "bool" default = false }
     param "scope" {
-      description = "Which configuration file is edited"
+      description = "Which configuration file is edited. PowerShell reads the logging settings only from the all-users file, so it is the only scope"
       type = "symbol"
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -341,7 +365,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact powershell.config.json to edit; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -353,24 +377,40 @@ package "windows_powershell" {
   //
   // `edition` picks the policy key — Windows PowerShell 5.1 reads
   // ...\Policies\Microsoft\Windows\PowerShell, PowerShell 7 reads
-  // ...\Policies\Microsoft\PowerShellCore.
+  // ...\Policies\Microsoft\PowerShellCore. Protected event logging is the
+  // exception: both read ...\Policies\Microsoft\Windows\EventLog. The
+  // console session configuration policy exists for PowerShell 7 only.
+  //
+  // Every ensure-driven switch writes 0 for :absent, and a policy that was
+  // never written already satisfies :absent — unset and 0 both mean off.
   // ---------------------------------------------------------------------
 
+  // `edition` also decides where the two preference scopes live: Windows
+  // PowerShell 5.1 keeps LocalMachine and CurrentUser under its ShellIds
+  // registry key, PowerShell 7 in the Microsoft.PowerShell:ExecutionPolicy
+  // key of powershell.config.json ($PSHOME's, or the user's). The two Group
+  // Policy scopes are registry keys for both.
   resource "execution_policy" {
-    description = "Ensure the PowerShell execution policy for one scope has the given value (the registry backing of Set-ExecutionPolicy)"
+    description = "Ensure the PowerShell execution policy for one scope has the given value, or is unset (what Set-ExecutionPolicy writes)"
     script = "resources/execution_policy.ws"
     concurrency = "global"
-    param "policy" {
-      description = "Execution policy to set"
+    param "ensure" {
+      description = "Desired state: :present sets `policy`, :absent removes the scope's value so the next scope in the chain decides"
       type = "symbol"
-      required = true
+      default = :present
+
+      symbol "present" { description = "Set the policy" }
+      symbol "absent"  { description = "Remove the policy value (Undefined)" }
+    }
+    param "policy" {
+      description = "Execution policy to set; required when ensure is :present"
+      type = "symbol"
 
       symbol "restricted"    { description = "Restricted — no script runs" }
       symbol "all_signed"    { description = "AllSigned — every script must be signed by a trusted publisher" }
       symbol "remote_signed" { description = "RemoteSigned — downloaded scripts must be signed" }
       symbol "unrestricted"  { description = "Unrestricted — all scripts run, with a prompt for downloaded ones" }
       symbol "bypass"        { description = "Bypass — nothing is blocked and nothing warns" }
-      symbol "undefined"     { description = "Undefined — remove the value so the next scope in the chain decides" }
     }
     param "scope" {
       description = "Scope the policy is written to, in the precedence order MachinePolicy, UserPolicy, CurrentUser, LocalMachine"
@@ -379,8 +419,8 @@ package "windows_powershell" {
 
       symbol "machine_policy" { description = "The machine Group Policy scope — HKLM policy key, highest precedence" }
       symbol "user_policy"    { description = "The user Group Policy scope — HKCU policy key" }
-      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds" }
-      symbol "local_machine"  { description = "The machine preference — HKLM ShellIds" }
+      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds for 5.1, the user's powershell.config.json for PowerShell 7" }
+      symbol "local_machine"  { description = "The machine preference — HKLM ShellIds for 5.1, $PSHOME/powershell.config.json for PowerShell 7" }
     }
     param "edition" {
       description = "Which PowerShell reads the policy"
@@ -388,8 +428,10 @@ package "windows_powershell" {
       default = :windows_powershell
 
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
+      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key, or powershell.config.json for the preference scopes" }
     }
+    param "path" { description = "PowerShell 7 preference scopes only — exact powershell.config.json to edit; empty resolves it from `scope` by asking pwsh" type = "string" default = "" }
+    param "home" { description = "PowerShell 7 :current_user only — home directory the user's powershell.config.json is derived from; empty asks pwsh, which answers for the account config-weave runs as — usually SYSTEM or root" type = "string" default = "" }
   }
 
   resource "script_block_logging" {
@@ -435,7 +477,7 @@ package "windows_powershell" {
       symbol "present" { description = "EnableModuleLogging = 1" }
       symbol "absent"  { description = "EnableModuleLogging = 0 and the module list is cleared" }
     }
-    param "module_names" { description = "Modules to log, each written as a ModuleNames value whose data is its own name; an empty list means the * wildcard. Applying rewrites the list exactly, but a check can only prove the listed names are present — the registry is read by value name and cannot be enumerated" type = "list" }
+    param "module_names" { description = "Modules to log, each written as a ModuleNames value whose data is its own name; an empty list means the * wildcard. The list is kept exact: a name nobody asked for is drift. Reading it back lists the key through Windows PowerShell, since the registry host module cannot enumerate values" type = "list" }
     param "edition" {
       description = "Which PowerShell reads the policy"
       type = "symbol"
@@ -479,7 +521,7 @@ package "windows_powershell" {
   }
 
   resource "protected_event_logging" {
-    description = "Enable or disable protected event logging, which encrypts logged event data to a CMS certificate"
+    description = "Enable or disable protected event logging, which encrypts logged event data to a CMS certificate. One policy key — HKLM\\Software\\Policies\\Microsoft\\Windows\\EventLog\\ProtectedEventLogging — serves both Windows PowerShell 5.1 and PowerShell 7"
     script = "resources/protected_event_logging.ws"
     concurrency = "global"
     param "ensure" {
@@ -490,19 +532,11 @@ package "windows_powershell" {
       symbol "present" { description = "EnableProtectedEventLogging = 1" }
       symbol "absent"  { description = "EnableProtectedEventLogging = 0" }
     }
-    param "encryption_certificate" { description = "EncryptionCertificate: the public certificate, as PEM text or a thumbprint, event data is encrypted to; required when :present" type = "string" default = "" }
-    param "edition" {
-      description = "Which PowerShell reads the policy"
-      type = "symbol"
-      default = :windows_powershell
-
-      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
-    }
+    param "encryption_certificate" { description = "EncryptionCertificate: the public certificate, as PEM text (one MULTI_SZ entry per line) or a thumbprint, event data is encrypted to; required when :present" type = "string" default = "" }
   }
 
   resource "console_session_configuration" {
-    description = "Ensure the console session configuration policy is enabled with the given endpoint name, so local consoles run inside that session configuration"
+    description = "Ensure the PowerShell 7 console session configuration policy is enabled with the given endpoint name, so local pwsh consoles run inside that session configuration"
     script = "resources/console_session_configuration.ws"
     concurrency = "global"
     param "ensure" {
@@ -515,12 +549,11 @@ package "windows_powershell" {
     }
     param "name" { description = "ConsoleSessionConfigurationName the console is launched in; required when :present" type = "string" default = "" }
     param "edition" {
-      description = "Which PowerShell reads the policy"
+      description = "Which PowerShell reads the policy. Only PowerShell 7 has this policy — Windows PowerShell 5.1 has no equivalent"
       type = "symbol"
-      default = :windows_powershell
+      default = :pwsh
 
-      symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
-      symbol "pwsh"               { description = "PowerShell 7 — the PowerShellCore policy key" }
+      symbol "pwsh" { description = "PowerShell 7 — the PowerShellCore policy key" }
     }
   }
 
@@ -539,6 +572,18 @@ package "windows_powershell" {
   // `check` regenerates the intended body and compares it with what is
   // between the markers, which is what makes them idempotent across
   // processes rather than only within one run.
+  //
+  // A BEGIN marker with no matching END is an error rather than a guess:
+  // treating the rest of the file as the block would delete it. A profile
+  // with CRLF line endings keeps them. A profile Windows PowerShell 5.1
+  // loads (edition :windows_powershell, or :auto on Windows) gets a UTF-8
+  // BOM, because 5.1 reads a BOM-less script as the ANSI code page and
+  // mangles any non-ASCII text in it; a BOM already present is kept. A
+  // profile that is not UTF-8 is refused rather than rewritten.
+  //
+  // With `home` and `path` empty, the current-user profiles are the ones of
+  // the account config-weave runs as — usually SYSTEM or root. Set `home` to
+  // manage an interactive user's profile.
   //
   // All are `global`: several of them write the same profile file.
   // ---------------------------------------------------------------------
@@ -583,7 +628,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is managed, e.g. Microsoft.PowerShell, Microsoft.VSCode or Microsoft.PowerShellISE" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to manage; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "profile_snippet" {
@@ -622,7 +667,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // Every documented Set-PSReadLineOption parameter, persisted as a managed
@@ -781,14 +826,14 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "psreadline_key_handler" {
     description = "Persist a Set-PSReadLineKeyHandler binding into a managed profile block, binding a chord to a named function or a script block"
     script = "resources/psreadline_key_handler.ws"
     concurrency = "global"
-    param "chord" { description = "Key chord to bind, e.g. Ctrl+d or UpArrow" type = "string" required = true }
+    param "chord" { description = "Key chord to bind, e.g. Ctrl+d or UpArrow. Case matters: Ctrl+d and Ctrl+D are different keys and get separate blocks. A block written by an older release under the lowercased name is migrated when it binds this exact chord" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -831,7 +876,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "default_parameter_values" {
@@ -880,7 +925,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "preference_variable" {
@@ -920,7 +965,7 @@ package "windows_powershell" {
       symbol "present" { description = "Set the variable" }
       symbol "absent"  { description = "Remove the block that sets it" }
     }
-    param "value" { description = "Value assigned to the variable, converted per `value_type`" type = "string" required = true }
+    param "value" { description = "Value assigned to the variable, converted per `value_type`; not needed for ensure = :absent" type = "string" default = "" }
     param "value_type" {
       description = "How `value` is rendered into the generated PowerShell"
       type = "symbol"
@@ -953,7 +998,7 @@ package "windows_powershell" {
     }
     param "host" { description = "Host whose current-host profile is edited" type = "string" default = "Microsoft.PowerShell" }
     param "path" { description = "Exact profile file to edit; empty derives it from `scope`, `edition` and `host`" type = "string" default = "" }
-    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the current-user profiles are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -1026,7 +1071,7 @@ package "windows_powershell" {
   }
 
   resource "module" {
-    description = "Ensure a module from a registered repository is installed at the given version and scope, or is uninstalled"
+    description = "Ensure a module from a registered repository is installed at the given version and scope, or is uninstalled. Only the scope's own module directory counts: a copy elsewhere on PSModulePath (another scope, $PSHOME, System32) neither satisfies :present nor blocks :absent"
     script = "resources/module.ws"
     concurrency = "exclusive"
     param "name" { description = "Module name as published to the repository" type = "string" required = true }
@@ -1036,9 +1081,9 @@ package "windows_powershell" {
       default = :present
 
       symbol "present" { description = "Install the module" }
-      symbol "absent"  { description = "Uninstall every installed version of the module" }
+      symbol "absent"  { description = "Uninstall every version of the module installed in `scope`" }
     }
-    param "version" { description = "Exact version to install, or a PSResourceGet range such as [1.0.0, 3.0.0); empty accepts any installed version and installs the newest" type = "string" default = "" }
+    param "version" { description = "Exact version to install, e.g. 2.1.0 or a prerelease such as 2.1.0-beta1 (matched against the manifest's Prerelease label), or a PSResourceGet range such as [1.0.0, 3.0.0); empty accepts any installed version and installs the newest" type = "string" default = "" }
     param "prerelease" { description = "Allow prerelease versions to satisfy `version`" type = "bool" default = false }
     param "repository" { description = "Repository the module is installed from; empty searches every registered repository" type = "string" default = "" }
     param "scope" {
@@ -1051,7 +1096,7 @@ package "windows_powershell" {
     }
     param "accept_license" { description = "Accept a module's licence without prompting" type = "bool" default = false }
     param "skip_dependency_check" { description = "Install without resolving the module's dependencies" type = "bool" default = false }
-    param "trust_repository" { description = "Install from an untrusted repository without prompting, without marking the repository trusted" type = "bool" default = true }
+    param "trust_repository" { description = "Install from an untrusted repository without prompting, without marking the repository trusted (-TrustRepository; -Force for PowerShellGet v2). Off by default: installing from an untrusted repository then fails, since nothing can answer the prompt — trust the repository with the `repository` resource, or set this" type = "bool" default = false }
     param "allow_clobber" { description = "Install even when the module's commands would shadow existing ones" type = "bool" default = false }
     param "provider" {
       description = "Which generation of the module cmdlets is used"
@@ -1077,6 +1122,14 @@ package "windows_powershell" {
   // The manual install: no repository, no package manager. The source is a
   // directory, a zip or a nupkg — local or fetched over HTTP — and it lands
   // in the <Name>/<Version>/ layout Get-Module -ListAvailable requires.
+  //
+  // check compares content, not just presence. A local directory source is
+  // compared file by file. An archive or URL install records what it
+  // installed (the source, the archive's hash and a digest of the installed
+  // tree) under the config-weave state directory; a different source, a
+  // changed local archive, or an installed file edited since is drift. A URL
+  // without `sha256` is not re-downloaded to compare — set sha256 so that a
+  // changed upstream archive is drift.
   resource "module_from_path" {
     description = "Install a module by copying or extracting it into a module directory, without a repository — the manual install path for private or vendored modules"
     script = "resources/module_from_path.ws"
@@ -1090,7 +1143,7 @@ package "windows_powershell" {
       symbol "present" { description = "Install the module from `source`" }
       symbol "absent"  { description = "Remove the installed module directory" }
     }
-    param "version" { description = "Version installed, which becomes the version subdirectory; empty installs flat under <Name>/ with no version folder" type = "string" default = "" }
+    param "version" { description = "Version installed, which becomes the version subdirectory and must agree with the manifest's ModuleVersion (a source that contradicts it is refused); empty installs flat under <Name>/ with no version folder" type = "string" default = "" }
     param "source" { description = "Local directory, .zip or .nupkg, or an HTTP(S) URL of one; required when :present" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of a downloaded or local archive; empty skips the check" type = "string" default = "" }
     param "strip_root" { description = "Drop a single top-level directory from the extracted archive, for archives that wrap their contents in one folder" type = "bool" default = false }
@@ -1113,7 +1166,7 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "home" { description = "Home directory the :current_user module path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user module path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
   }
 
   resource "script_resource" {
@@ -1140,7 +1193,7 @@ package "windows_powershell" {
       symbol "current_user" { description = "The user's scripts directory" }
       symbol "all_users"    { description = "The machine-wide scripts directory" }
     }
-    param "trust_repository" { description = "Install from an untrusted repository without prompting" type = "bool" default = true }
+    param "trust_repository" { description = "Install from an untrusted repository without prompting (-TrustRepository; -Force for PowerShellGet v2). Off by default: an untrusted repository then fails, since nothing can answer the prompt" type = "bool" default = false }
     param "provider" {
       description = "Which generation of the cmdlets is used"
       type = "symbol"
@@ -1167,8 +1220,8 @@ package "windows_powershell" {
   // installed, not refreshing metadata that does not exist. Hence `updated`
   // rather than `cache_updated`.
   //
-  // The update itself is untested by design: it hits the network. What the
-  // tests do cover is the max_age window, by seeding a fresh stamp file.
+  // The tests cover the max_age window, by seeding a fresh stamp file, and a
+  // real update of one named module from a local feed.
   resource "modules_updated" {
     description = "Update installed modules when the last update run is older than max_age"
     script = "resources/modules_updated.ws"
@@ -1180,6 +1233,7 @@ package "windows_powershell" {
     }
     param "names" { description = "Modules to update; an empty list updates every installed module" type = "list" }
     param "prerelease" { description = "Allow prerelease versions when updating" type = "bool" default = false }
+    param "trust_repository" { description = "Update from untrusted repositories without prompting (-TrustRepository; -Force for PowerShellGet v2). Off by default, so only trusted repositories are updated from" type = "bool" default = false }
     param "scope" {
       description = "Which installation scope is updated"
       type = "symbol"
@@ -1207,11 +1261,16 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory" type = "string" default = "" }
+    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory named for the edition, scope, names and prerelease, so steps that update different things keep separate windows" type = "string" default = "" }
   }
 
-  // Also untested by design: Update-Help downloads help content from the
-  // internet. The max_age window is what the tests exercise.
+  // Update-Help reports an error for every module without downloadable help,
+  // which is normal, so errors are collected and reported rather than fatal.
+  // The step fails — and the window stays open — when there are at least as
+  // many errors as modules targeted, which is what "nothing was updated"
+  // looks like. The tests exercise that failure through a missing
+  // source_path; a real download is untested by design (it needs the
+  // internet).
   resource "help_updated" {
     description = "Run Update-Help when the last help refresh is older than max_age"
     script = "resources/help_updated.ws"
@@ -1243,14 +1302,16 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory" type = "string" default = "" }
+    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory named for the edition, scope, modules, culture and source, so steps that refresh different help keep separate windows" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
   // Gatherers
   //
   // Every one returns its empty shape rather than failing when PowerShell is
-  // missing — a gatherer failure aborts the whole run before any step.
+  // missing — a gatherer failure aborts the whole run before any step. A
+  // PowerShell that is installed but whose query fails is an error, not an
+  // empty answer: an empty answer would make :absent steps look converged.
   // ---------------------------------------------------------------------
 
   gatherer "powershell_info" {
@@ -1266,7 +1327,7 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "home" { description = "Home directory the per-user paths are derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the per-user paths are derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
     returns "family" {
       description = "Operating system family the facts were gathered on"
       type = "symbol"
@@ -1275,7 +1336,7 @@ package "windows_powershell" {
       symbol "windows" { description = "Windows" }
       symbol "macos"   { description = "macOS" }
     }
-    returns "pwsh_installed" { description = "True when a pwsh binary is on PATH" type = "bool" }
+    returns "pwsh_installed" { description = "True when a pwsh binary is found — the MSI's root first, then any other root beside it, then PATH" type = "bool" }
     returns "pwsh_version" { description = "Version reported by pwsh; empty when it is not installed" type = "string" }
     returns "pwsh_home" { description = "$PSHOME of the pwsh install; empty when it is not installed" type = "string" }
     returns "windows_powershell_installed" { description = "True when Windows PowerShell 5.1 is present" type = "bool" }
@@ -1290,7 +1351,7 @@ package "windows_powershell" {
   }
 
   gatherer "execution_policies" {
-    description = "Report the execution policy of every scope and the effective policy that results (Get-ExecutionPolicy -List)"
+    description = "Report the execution policy of every scope and the effective policy that results (Get-ExecutionPolicy -List). PowerShell is run with -Command and no -ExecutionPolicy switch, so the Process scope reports what a new session inherits rather than the gatherer's own bypass"
     script = "gatherers/execution_policies.ws"
     param "edition" {
       description = "Which PowerShell is asked"
@@ -1395,7 +1456,7 @@ package "windows_powershell" {
       symbol "pwsh_preview" { description = "The preview install" }
     }
     param "path" { description = "Exact file to read; empty resolves it from `scope` and `edition`" type = "string" default = "" }
-    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell" type = "string" default = "" }
+    param "home" { description = "Home directory the :current_user path is derived from; empty asks PowerShell, which answers for the account config-weave runs as — usually SYSTEM or root, not an interactive user" type = "string" default = "" }
     returns "exists" { description = "True when the configuration file is present" type = "bool" }
     returns "path" { description = "Path that was read" type = "string" }
     returns "settings" { description = "The whole parsed document" type = "map" }
@@ -1443,7 +1504,7 @@ package "windows_powershell" {
     group = "pwsh"
     // Seeds the drift each :absent step converges away from. Run 1 checks
     // every step before any apply, so the seeded keys must exist up front.
-    setup = "mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json"
+    setup = "mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json && printf '%s' '{\"Microsoft.PowerShell:ExecutionPolicy\":\"Bypass\",\"CWKeep\":1}' > /etc/cw/ep.config.json"
     verify = "tests/config_verify.ws"
 
     step "execution_policy_key" {
@@ -1574,11 +1635,36 @@ package "windows_powershell" {
       requires = ["win_compat_block"]
       properties {
         log_level = :informational
-        log_channels = ["Operational"]
+        log_channels = ["Operational", "Analytic"]
         log_keywords = ["Runspace", "Pipeline"]
         log_identity = "cwtest"
         manage_lists = true
         path = "/etc/cw/powershell.config.json"
+      }
+    }
+
+    // PowerShell 7 keeps the two preference scopes of its execution policy in
+    // powershell.config.json, not in the 5.1 ShellIds registry key — which is
+    // also why these run on Linux at all.
+    step "pwsh_user_execution_policy" {
+      description = "Set the PowerShell 7 current-user execution policy in the user's configuration file"
+      resource = "execution_policy"
+      properties {
+        policy = :all_signed
+        scope = :current_user
+        edition = :pwsh
+        home = "/cwep"
+      }
+    }
+
+    step "pwsh_machine_execution_policy_absent" {
+      description = "Remove the machine execution policy setup seeded, leaving the rest of the file"
+      resource = "execution_policy"
+      properties {
+        ensure = :absent
+        scope = :local_machine
+        edition = :pwsh
+        path = "/etc/cw/ep.config.json"
       }
     }
 
@@ -1601,7 +1687,11 @@ package "windows_powershell" {
     group = "pwsh"
     // A pre-existing profile with a stale managed block and hand-written
     // lines around it: the snippet steps must edit only their own block.
-    setup = "mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1"
+    //
+    // Three more seeded files: one with CRLF line endings, which a rewrite
+    // must keep; one with a BEGIN marker and no END, which must be refused
+    // rather than truncated; and a preference block for the :absent step.
+    setup = "mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' '# BEGIN config-weave: preference-warning-preference' '$WarningPreference = 1' '# END config-weave: preference-warning-preference' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1 && printf '# keep\\r\\n# BEGIN config-weave: old\\r\\nWrite-Host old\\r\\n# END config-weave: old\\r\\n# keep too\\r\\n' > /cwhome/crlf_profile.ps1 && printf '# BEGIN config-weave: broken\\nWrite-Host broken\\n# hand written after the unterminated block\\n' > /cwhome/broken_profile.ps1"
     verify = "tests/profile_verify.ws"
 
     step "all_hosts_profile" {
@@ -1675,6 +1765,64 @@ package "windows_powershell" {
         home = "/cwhome"
       }
     }
+
+    // No value: removing a preference must not demand the value it removes.
+    step "warning_pref_absent" {
+      description = "Remove the preference block setup seeded"
+      resource = "preference_variable"
+      requires = ["progress_off"]
+      properties {
+        name = :warning_preference
+        ensure = :absent
+        edition = :pwsh
+        home = "/cwhome"
+      }
+    }
+
+    step "crlf_snippet" {
+      description = "Add a block to a CRLF profile, which keeps its line endings"
+      resource = "profile_snippet"
+      properties {
+        name = "crlf"
+        content = "Set-Alias gg Get-Location"
+        path = "/cwhome/crlf_profile.ps1"
+      }
+    }
+
+    step "crlf_remove" {
+      description = "Remove the seeded block from the CRLF profile"
+      resource = "profile_snippet"
+      requires = ["crlf_snippet"]
+      properties {
+        name = "old"
+        ensure = :absent
+        path = "/cwhome/crlf_profile.ps1"
+      }
+    }
+
+    step "unterminated_refused" {
+      description = "A BEGIN marker with no END is an error, not a licence to drop the rest of the file"
+      resource = "profile_snippet"
+      expect = "error"
+      properties {
+        name = "broken"
+        content = "Write-Host fixed"
+        path = "/cwhome/broken_profile.ps1"
+      }
+    }
+
+    // A Windows PowerShell 5.1 profile, written on Linux through an explicit
+    // path: 5.1 reads a BOM-less file as ANSI, so it must get a UTF-8 BOM.
+    step "winps_bom" {
+      description = "A profile for Windows PowerShell 5.1 is written with a UTF-8 BOM"
+      resource = "profile_snippet"
+      properties {
+        name = "accented"
+        content = "Write-Host 'café'"
+        edition = :windows_powershell
+        path = "/cwhome/winps_profile.ps1"
+      }
+    }
   }
 
   test "psreadline_converges" {
@@ -1711,6 +1859,32 @@ package "windows_powershell" {
       properties {
         chord = "UpArrow"
         function = "HistorySearchBackward"
+        edition = :pwsh
+        home = "/cwhome2"
+      }
+    }
+
+    // Ctrl+x and Ctrl+X are different keys to PSReadLine, so they are two
+    // blocks, not one overwriting the other.
+    step "key_handler_lower" {
+      description = "Bind Ctrl+x"
+      resource = "psreadline_key_handler"
+      requires = ["options"]
+      properties {
+        chord = "Ctrl+x"
+        function = "Cut"
+        edition = :pwsh
+        home = "/cwhome2"
+      }
+    }
+
+    step "key_handler_upper" {
+      description = "Bind Ctrl+X, which must not replace the Ctrl+x binding"
+      resource = "psreadline_key_handler"
+      requires = ["key_handler_lower"]
+      properties {
+        chord = "Ctrl+X"
+        function = "Copy"
         edition = :pwsh
         home = "/cwhome2"
       }
@@ -1778,19 +1952,23 @@ package "windows_powershell" {
   }
 
   test "modules_local_repo_converge" {
-    description = "Module install, version pinning and removal converge against a local repository, with no network"
+    description = "Module and script install, version pinning, prerelease, scope and removal converge against a local repository, with no network"
     image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
     group = "pwshmod"
-    // Builds two versions each of three trivial modules and publishes them
-    // into a local file repository, so the whole test is hermetic. Setup runs
-    // before the playbook is copied in, so it cannot call a script from the
-    // package — it is inlined. sh's single quotes keep PowerShell's `$` and
-    // double quotes intact.
+    // Builds trivial modules (one a prerelease) and two scripts and publishes
+    // them into a local file repository, so the whole test is hermetic. The
+    // same feed is registered a second time untrusted. Setup runs before the
+    // playbook is copied in, so it cannot call a script from the package —
+    // it is inlined. sh's single quotes keep PowerShell's `$` and double
+    // quotes intact.
     //
     // :all_users throughout: the machine-wide module directory is a fixed
     // path, whereas the per-user one moves with HOME, which the guest agent
     // sets to / rather than the invoking user's home.
-    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/cw-modules-updated /var/lib/config-weave/cw-help-updated && pwsh -NoProfile -NonInteractive -Command 'New-Item -ItemType Directory -Force -Path /srv/cwfeed,/srv/cwbuild | Out-Null; Register-PSResourceRepository -Name cwfeed -Uri /srv/cwfeed -Trusted -Force; foreach ($p in \"CwSample:1.0.0\",\"CwSample:1.2.0\",\"CwPinned:1.0.0\",\"CwPinned:2.0.0\",\"CwSeeded:1.0.0\") { $n,$v = $p -split \":\"; $md = Join-Path (Join-Path /srv/cwbuild ($n + \"-\" + $v)) $n; New-Item -ItemType Directory -Force -Path $md | Out-Null; Set-Content -LiteralPath (Join-Path $md ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { \" + $v + \" }\"); New-ModuleManifest -Path (Join-Path $md ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw; Publish-PSResource -Path $md -Repository cwfeed }; Install-PSResource -Name CwSeeded -Repository cwfeed -TrustRepository -Scope AllUsers'"
+    //
+    // The stamp at the old, unqualified default path is fresh: an update
+    // step that still used it would wrongly skip.
+    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/cw-modules-updated /var/lib/config-weave/powershell-modules-updated && pwsh -NoProfile -NonInteractive -Command 'New-Item -ItemType Directory -Force -Path /srv/cwfeed,/srv/cwbuild | Out-Null; Register-PSResourceRepository -Name cwfeed -Uri /srv/cwfeed -Trusted -Force; Register-PSResourceRepository -Name cwuntrusted -Uri /srv/cwfeed -Force; foreach ($p in \"CwSample:1.0.0:\",\"CwSample:1.2.0:\",\"CwPinned:1.0.0:\",\"CwPinned:2.0.0:\",\"CwSeeded:1.0.0:\",\"CwOtherScope:1.0.0:\",\"CwUntrusted:1.0.0:\",\"CwPre:1.0.0:beta1\") { $n,$v,$pre = $p -split \":\"; $md = Join-Path (Join-Path /srv/cwbuild ($n + \"-\" + $v + $pre)) $n; New-Item -ItemType Directory -Force -Path $md | Out-Null; Set-Content -LiteralPath (Join-Path $md ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); $extra = @{}; if ($pre) { $extra.Prerelease = $pre }; New-ModuleManifest -Path (Join-Path $md ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw @extra; Publish-PSResource -Path $md -Repository cwfeed }; foreach ($sn in \"CwScript\",\"CwScriptSeeded\") { $sf = Join-Path /srv/cwbuild ($sn + \".ps1\"); New-PSScriptFileInfo -Path $sf -Version 1.0.0 -Description cw -Author cw; Publish-PSResource -Path $sf -Repository cwfeed }; Install-PSResource -Name CwSeeded -Repository cwfeed -TrustRepository -Scope AllUsers; Install-PSResource -Name CwOtherScope -Repository cwfeed -TrustRepository -Scope AllUsers; Install-PSResource -Name CwScriptSeeded -Repository cwfeed -TrustRepository -Scope AllUsers'"
     verify = "tests/module_verify.ws"
 
     step "install" {
@@ -1824,12 +2002,78 @@ package "windows_powershell" {
       }
     }
 
-    step "remove_seeded" {
-      description = "Uninstall the module setup pre-installed"
+    step "prerelease_pinned" {
+      description = "A prerelease pin matches the installed prerelease, so the second run is a no-op"
       resource = "module"
       requires = ["pinned"]
       properties {
+        name = "CwPre"
+        version = "1.0.0-beta1"
+        prerelease = true
+        repository = "cwfeed"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "remove_seeded" {
+      description = "Uninstall the module setup pre-installed"
+      resource = "module"
+      requires = ["prerelease_pinned"]
+      properties {
         name = "CwSeeded"
+        ensure = :absent
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    // Installed machine-wide only, so the current-user scope has nothing to
+    // remove — the check looks where the uninstall acts.
+    step "other_scope_absent" {
+      description = "A module installed only for all users is already absent from the current-user scope"
+      resource = "module"
+      expect = "already_configured"
+      properties {
+        name = "CwOtherScope"
+        ensure = :absent
+        scope = :current_user
+        edition = :pwsh
+      }
+    }
+
+    step "untrusted_refused" {
+      description = "Installing from an untrusted repository fails unless trust_repository is set"
+      resource = "module"
+      expect = "error"
+      requires = ["remove_seeded"]
+      properties {
+        name = "CwUntrusted"
+        repository = "cwuntrusted"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "script_install" {
+      description = "Install a script from the local repository"
+      resource = "script_resource"
+      requires = ["remove_seeded"]
+      properties {
+        name = "CwScript"
+        version = "1.0.0"
+        repository = "cwfeed"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "script_remove_seeded" {
+      description = "Uninstall the script setup pre-installed"
+      resource = "script_resource"
+      requires = ["script_install"]
+      properties {
+        name = "CwScriptSeeded"
         ensure = :absent
         scope = :all_users
         edition = :pwsh
@@ -1847,30 +2091,51 @@ package "windows_powershell" {
       }
     }
 
-    step "help_window_fresh" {
-      description = "A freshly stamped help window needs no run"
-      resource = "help_updated"
-      expect = "already_configured"
+    // No stamp_path: the default stamp is qualified by edition, scope and
+    // names, so the fresh unqualified stamp setup wrote does not count, and
+    // the update really runs against the local feed.
+    step "update_named" {
+      description = "Update one named module machine-wide from the trusted local feed"
+      resource = "modules_updated"
+      requires = ["script_remove_seeded"]
       properties {
         max_age = 24h
-        stamp_path = "/var/lib/config-weave/cw-help-updated"
+        names = ["CwSample"]
+        scope = :all_users
+        trust_repository = true
+        edition = :pwsh
+      }
+    }
+
+    // Every module fails when the help source does not exist. That must be a
+    // failed step that leaves the window open, not a silent success.
+    step "help_all_failed" {
+      description = "Update-Help failing for every module is an error and does not stamp"
+      resource = "help_updated"
+      expect = "error"
+      properties {
+        modules = ["Microsoft.PowerShell.Utility"]
+        source_path = "/srv/cw-no-such-help"
+        stamp_path = "/var/lib/config-weave/cw-help-failed"
         edition = :pwsh
       }
     }
   }
 
   test "module_from_path_converges" {
-    description = "The manual module install converges from a directory and from a zip, and removes cleanly"
+    description = "The manual module install converges from a directory and from a zip, replaces stale content, refuses a version the manifest contradicts, and removes cleanly"
     image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
     group = "pwshmod"
     // Builds a source directory, a zip that wraps its contents in one folder
-    // (which is what strip_root exists for), and a hand-installed module for
-    // the :absent step to remove.
-    setup = "pwsh -NoProfile -NonInteractive -Command 'foreach ($n in \"CwLocalDir\",\"CwLocalZip\") { $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion 1.0.0 -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $seed = \"/cwhome3/.local/share/powershell/Modules/CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"'"
+    // (which is what strip_root exists for), a source whose manifest
+    // disagrees with the version asked for, a hand-installed module for the
+    // :absent step to remove, and a stale copy of CwLocalDir already in place
+    // under the right version folder — present, but with the wrong content.
+    setup = "pwsh -NoProfile -NonInteractive -Command 'foreach ($p in \"CwLocalDir:2.1.0\",\"CwLocalZip:1.4.2\",\"CwMismatch:1.0.0\") { $n,$v = $p -split \":\"; $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $m = \"/cwhome3/.local/share/powershell/Modules\"; $seed = Join-Path $m \"CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"; $stale = Join-Path $m \"CwLocalDir/2.1.0\"; New-Item -ItemType Directory -Force -Path $stale | Out-Null; Copy-Item /srv/cwsrc/CwLocalDir/* $stale; Set-Content -LiteralPath (Join-Path $stale \"CwLocalDir.psm1\") -Value \"function Get-CwLocalDir { 0 }\"'"
     verify = "tests/module_from_path_verify.ws"
 
     step "from_dir" {
-      description = "Install a module by copying a directory into the user module path"
+      description = "Install a module by copying a directory over a stale copy of it"
       resource = "module_from_path"
       properties {
         name = "CwLocalDir"
@@ -1891,6 +2156,20 @@ package "windows_powershell" {
         version = "1.4.2"
         source = "/srv/cwsrc/CwLocalZip.zip"
         strip_root = true
+        scope = :current_user
+        edition = :pwsh
+        home = "/cwhome3"
+      }
+    }
+
+    step "version_mismatch" {
+      description = "A version folder the manifest contradicts is refused"
+      resource = "module_from_path"
+      expect = "error"
+      properties {
+        name = "CwMismatch"
+        version = "9.9.9"
+        source = "/srv/cwsrc/CwMismatch"
         scope = :current_user
         edition = :pwsh
         home = "/cwhome3"
@@ -2010,7 +2289,9 @@ package "windows_powershell" {
     description = "Installing PowerShell from the release tarball into its own root, and removing it, converge"
     image = "debian:12"
     group = "pwshtar"
-    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null"
+    // Seeds an unmarked tarball-style root from an older release — a pwsh
+    // that answers with its version — for the :absent step to remove.
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-7.4.6 && printf '#!/bin/sh\\necho 7.4.6\\n' > /opt/pwsh-7.4.6/pwsh && chmod +x /opt/pwsh-7.4.6/pwsh"
     verify = "tests/install_verify.ws"
 
     step "install" {
@@ -2024,10 +2305,9 @@ package "windows_powershell" {
       }
     }
 
-    step "remove_other" {
-      description = "A root that was never populated is already absent"
+    step "remove_seeded" {
+      description = "Remove the tarball root setup seeded"
       resource = "pwsh_installed"
-      expect = "already_configured"
       properties {
         ensure = :absent
         method = :tarball
@@ -2035,18 +2315,69 @@ package "windows_powershell" {
         install_root = "/opt/pwsh-7.4.6"
       }
     }
+
+    step "remove_never_installed" {
+      description = "A root that was never populated is already absent"
+      resource = "pwsh_installed"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        method = :tarball
+        version = "7.3.12"
+      }
+    }
+  }
+
+  // powershell-lts is its own package (/opt/microsoft/powershell/7-lts,
+  // pwsh-lts). Unpinned, so the test follows the repository's LTS line;
+  // verify checks that the binary and the package agree. Its xz-compressed
+  // deb needs more memory to unpack than the container default.
+  test "pwsh_installs_lts_from_repo" {
+    description = "channel = :lts installs the powershell-lts package and is checked through pwsh-lts"
+    image = "debian:12"
+    group = "pwshlts"
+    memory = "2GiB"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg apt-transport-https >/dev/null"
+    verify = "tests/lts_install_verify.ws"
+
+    step "install" {
+      description = "Install the LTS distro package"
+      resource = "pwsh_installed"
+      properties {
+        method = :repo
+        channel = :lts
+      }
+    }
   }
 
   test "pwsh_installs_from_repo" {
-    description = "Installing PowerShell from the Microsoft package repository converges"
+    description = "Installing a pinned PowerShell from the Microsoft package repository converges, and the archive method will not touch the package's tree"
     image = "debian:12"
     group = "pwshrepo"
     setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg apt-transport-https >/dev/null"
+    verify = "tests/repo_install_verify.ws"
 
+    // Pinned to an older release than the repository's newest, so only a
+    // pinned package spec converges.
     step "install" {
-      description = "Register packages.microsoft.com and install the distro package"
+      description = "Register packages.microsoft.com and install the pinned distro package"
       resource = "pwsh_installed"
-      properties { method = :repo }
+      properties {
+        method = :repo
+        version = "7.4.6"
+      }
+    }
+
+    step "package_root_refused" {
+      description = "A tarball install pointed at the package's own root is refused"
+      resource = "pwsh_installed"
+      expect = "error"
+      requires = ["install"]
+      properties {
+        method = :tarball
+        version = "7.5.4"
+        install_root = "/opt/microsoft/powershell/7"
+      }
     }
   }
 
@@ -2064,7 +2395,11 @@ package "windows_powershell" {
     description = "The registry-backed policy resources, profiles and detection paths converge on Windows"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & exit 0"
+    // Seeds the drift the steps converge away from: a user-policy execution
+    // policy for PowerShell 7 to remove, a PowerShell 7 module-logging list
+    // that is enabled with the two wanted names plus one nobody asked for,
+    // and Windows PowerShell module logging to switch off.
+    setup = "mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & reg add HKCU\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore /v ExecutionPolicy /t REG_SZ /d Restricted /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v Microsoft.PowerShell.Utility /t REG_SZ /d Microsoft.PowerShell.Utility /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v PSReadLine /t REG_SZ /d PSReadLine /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v CwExtra /t REG_SZ /d CwExtra /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames /v CwSeeded /t REG_SZ /d CwSeeded /f & exit 0"
     verify = "tests/windows_verify.ws"
 
     step "user_execution_policy" {
@@ -2096,8 +2431,20 @@ package "windows_powershell" {
       }
     }
 
+    step "user_policy_absent" {
+      description = "Remove the PowerShell 7 user-policy execution policy setup seeded"
+      resource = "execution_policy"
+      properties {
+        ensure = :absent
+        scope = :user_policy
+        edition = :pwsh
+      }
+    }
+
+    // setup enabled the list with both names plus CwExtra, so this converges
+    // only because the extra name is detected as drift.
     step "module_logging" {
-      description = "Turn on module logging for two named modules"
+      description = "Turn on module logging for exactly two named modules"
       resource = "module_logging"
       properties {
         module_names = ["Microsoft.PowerShell.Utility", "PSReadLine"]
@@ -2119,7 +2466,28 @@ package "windows_powershell" {
       description = "Protected event logging was never enabled, so :absent is already configured"
       resource = "protected_event_logging"
       expect = "already_configured"
-      properties { ensure = :absent edition = :pwsh }
+      properties { ensure = :absent }
+    }
+
+    // Never-written switches already satisfy :absent — unset means off.
+    step "script_block_logging_unset_absent" {
+      description = "Script block logging that was never configured is already absent"
+      resource = "script_block_logging"
+      expect = "already_configured"
+      properties { ensure = :absent edition = :windows_powershell }
+    }
+
+    step "transcription_unset_absent" {
+      description = "Transcription that was never configured is already absent"
+      resource = "transcription"
+      expect = "already_configured"
+      properties { ensure = :absent edition = :windows_powershell }
+    }
+
+    step "module_logging_absent" {
+      description = "Switch off the Windows PowerShell module logging setup seeded, clearing its list"
+      resource = "module_logging"
+      properties { ensure = :absent edition = :windows_powershell }
     }
 
     step "console_session" {
@@ -2198,7 +2566,7 @@ package "windows_powershell" {
       description = "An in-box module is detected as installed"
       resource = "module"
       expect = "already_configured"
-      properties { name = "PackageManagement" edition = :windows_powershell }
+      properties { name = "PackageManagement" scope = :all_users edition = :windows_powershell }
     }
 
     step "ghost_module_absent" {
@@ -2218,6 +2586,18 @@ package "windows_powershell" {
       resource = "repository"
       expect = "already_configured"
       properties { name = "cw-no-such-repo" ensure = :absent edition = :windows_powershell }
+    }
+
+    // Windows Server's default is RemoteSigned. A probe that bypassed the
+    // policy itself would report bypass here.
+    gather "policies" {
+      description = "The effective execution policy, not the gatherer's own process override"
+      from = "execution_policies"
+      params { edition = :windows_powershell }
+      expect {
+        supported = true
+        effective = :remote_signed
+      }
     }
 
     gather "info" {
@@ -2247,6 +2627,30 @@ package "windows_powershell" {
         version = "7.5.4"
         add_path = true
         register_manifest = true
+      }
+    }
+
+    // Side by side with the MSI: the default root is named for the full
+    // version, never the MSI's own C:\Program Files\PowerShell\7.
+    step "zip_side_by_side" {
+      description = "Extract an older release zip into its own versioned root beside the MSI install"
+      resource = "pwsh_installed"
+      requires = ["install_pwsh"]
+      properties {
+        method = :zip
+        version = "7.4.6"
+      }
+    }
+
+    step "msi_root_refused" {
+      description = "A zip install pointed at the MSI's own root is refused rather than overwriting it"
+      resource = "pwsh_installed"
+      expect = "error"
+      requires = ["install_pwsh"]
+      properties {
+        method = :zip
+        version = "7.4.6"
+        install_root = "C:\\Program Files\\PowerShell\\7"
       }
     }
 
@@ -2299,6 +2703,16 @@ package "windows_powershell" {
       }
     }
 
+    // On this throwaway VM only: the policy applies to every PowerShell on
+    // the machine. A thumbprint is enough for the policy to hold.
+    step "protected_logging" {
+      description = "Enable protected event logging under the EventLog policy key both editions read"
+      resource = "protected_event_logging"
+      properties {
+        encryption_certificate = "0123456789ABCDEF0123456789ABCDEF01234567"
+      }
+    }
+
     step "all_users_profile" {
       description = "Write the machine-wide PowerShell 7 profile"
       resource = "profile"
@@ -2312,16 +2726,23 @@ package "windows_powershell" {
   }
 
   test "pwsh7_session_configuration" {
-    description = "Session configuration registration and the machine execution policy converge under PowerShell 7"
+    description = "Session configuration registration and drift, remoting removal and the PowerShell 7 machine execution policy converge"
     template = "x86_64/windows-server-2025"
     group = "win2025ps7"
     memory = "4GiB"
+    // Two endpoints to converge away from: one registered for remote access
+    // that the step wants local-only, and one the :absent step removes.
+    // No double quotes in a Windows setup: they reach PowerShell escaped,
+    // and it reads the whole command as one string literal. Clearing the
+    // cwtest.* endpoints first keeps the setup repeatable on a shared VM.
+    setup = "powershell -NoProfile -NonInteractive -Command Unregister-PSSessionConfiguration -Name cwtest.* -Force -NoServiceRestart -ErrorAction SilentlyContinue; Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart"
+    verify = "tests/pwsh7_session_verify.ws"
 
     // Not :remote_signed — the PowerShell 7 MSI already leaves the machine
     // preference there, so that value would report already_configured and
     // prove nothing about the resource.
     step "machine_policy" {
-      description = "Set the machine execution policy preference for PowerShell 7"
+      description = "Set the machine execution policy preference for PowerShell 7, in $PSHOME/powershell.config.json"
       resource = "execution_policy"
       properties {
         policy = :all_signed
@@ -2337,14 +2758,89 @@ package "windows_powershell" {
         name = "cwtest.restricted"
         session_type = :default_remote_shell
         access_mode = :local
+        max_received_data_size_mb = 20
+        edition = :windows_powershell
       }
+    }
+
+    step "endpoint_drift" {
+      description = "An existing remote-access endpoint is re-registered local-only"
+      resource = "session_configuration"
+      properties {
+        name = "cwtest.drift"
+        access_mode = :local
+        edition = :windows_powershell
+      }
+    }
+
+    step "endpoint_absent" {
+      description = "Unregister the endpoint setup registered"
+      resource = "session_configuration"
+      properties { name = "cwtest.gone" ensure = :absent edition = :windows_powershell }
     }
 
     step "ghost_endpoint_absent" {
       description = "An endpoint that was never registered is already absent"
       resource = "session_configuration"
       expect = "already_configured"
-      properties { name = "cwtest.never" ensure = :absent }
+      properties { name = "cwtest.never" ensure = :absent edition = :windows_powershell }
+    }
+
+    // Windows Server ships with Windows PowerShell remoting enabled. This VM
+    // is throwaway, and the guest agent does not use WinRM.
+    step "remoting_absent" {
+      description = "Disable the Windows PowerShell remoting endpoint"
+      resource = "psremoting"
+      requires = ["endpoint", "endpoint_drift", "endpoint_absent", "ghost_endpoint_absent"]
+      properties {
+        ensure = :absent
+        edition = :windows_powershell
+        configuration_name = "microsoft.powershell"
+      }
+    }
+  }
+
+  // Last in the group: removes what the two tests above installed. Its
+  // setup installs the MSI and the zip itself when they are missing, so it
+  // also runs on its own.
+  test "pwsh7_removed" {
+    description = "Removing the MSI install (only its channel, through the Uninstall key) and a zip root converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025ps7"
+    memory = "4GiB"
+    // No double quotes in a Windows setup: they reach PowerShell escaped.
+    setup = "powershell -NoProfile -NonInteractive -Command $ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile C:\\cw-pwsh.zip; Expand-Archive C:\\cw-pwsh.zip -DestinationPath 'C:\\Program Files\\PowerShell\\7.4.6' -Force }"
+    verify = "tests/pwsh7_removed_verify.ws"
+
+    step "preview_absent" {
+      description = "The preview channel was never installed, so removing it leaves the stable MSI alone"
+      resource = "pwsh_installed"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        method = :msi
+        channel = :preview
+      }
+    }
+
+    step "zip_absent" {
+      description = "Remove the zip root"
+      resource = "pwsh_installed"
+      properties {
+        ensure = :absent
+        method = :zip
+        version = "7.4.6"
+      }
+    }
+
+    step "msi_absent" {
+      description = "Uninstall the stable MSI by its product code"
+      resource = "pwsh_installed"
+      requires = ["preview_absent", "zip_absent"]
+      properties {
+        ensure = :absent
+        method = :msi
+      }
     }
   }
 }

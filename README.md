@@ -137,52 +137,84 @@ are not loaded, each with an `enabled` state.
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting
-it reads. 26 resources and 6 gatherers:
+it reads. 26 resources and 6 gatherers. Shared helpers (choosing and running a
+PowerShell, quoting, validation, profile blocks, `powershell.config.json`, the
+policy keys) live in `pkgs/windows_powershell/lib/`.
 
 - `pwsh_installed` — install or remove PowerShell 7 by `:msi`, `:winget` or
   `:zip` on Windows and `:repo` or `:tarball` on Linux. The archive methods
-  own a versioned `install_root` of their own, which is what makes them the
-  only side-by-side-capable ones; the MSI method carries the documented
-  properties (`add_path`, `enable_remoting`, `register_manifest`, the two
-  context-menu items, Microsoft Update) and reports `RebootRequired` on
-  msiexec 3010.
+  extract into a root named for the full version by default
+  (`/opt/microsoft/powershell/7.5.4`), mark it as theirs, and refuse to
+  overwrite or delete a root the MSI or a distro package owns — which is what
+  makes them the only side-by-side-capable ones. `:repo` pins the package to
+  `version`. `:msi` with `ensure = :absent` removes only the requested
+  channel, by product code from the Uninstall key. The MSI method carries the
+  documented properties (`add_path`, `enable_remoting`, `register_manifest`,
+  the two context-menu items, Microsoft Update) and reports `RebootRequired`
+  on msiexec 3010.
 - `psremoting` and `session_configuration` — the WinRM endpoints. Which
   endpoint `Enable-PSRemoting` registers depends on the PowerShell that runs
   it, so `edition` is what picks between `microsoft.powershell` and
   `PowerShell.7` rather than a name the caller has to know.
+  `session_configuration` compares every setting on an existing endpoint —
+  access mode, startup script, size limit, PSVersion, session type and the
+  `.pssc` content — and re-registers one that drifted. PowerShell 7
+  endpoints take no `psversion` or `session_type`.
 - `config_setting`, `module_path`, `experimental_feature`, `win_compat` and
   `log_setting` — `powershell.config.json`. `config_setting` is the generic
   escape hatch: a dotted key path, or `literal_key` for a module-qualified
   key such as `Microsoft.PowerShell:ExecutionPolicy`. All take a `path`
   override, which is what lets them run on a machine with no PowerShell 7
-  installed at all.
+  installed at all. `log_setting` writes the all-users file only (the only
+  one PowerShell reads for logging), with `LogChannels` and `LogKeywords` as
+  the comma-separated strings PowerShell parses.
 - `execution_policy`, `script_block_logging`, `module_logging`,
   `transcription`, `protected_event_logging` and
-  `console_session_configuration` — the registry behind `Set-ExecutionPolicy`
-  and the PowerShell Group Policy settings, driven through the `registry`
-  host module. `edition` picks the policy key: Windows PowerShell 5.1 reads
+  `console_session_configuration` — what `Set-ExecutionPolicy` writes and
+  the PowerShell Group Policy settings, driven through the `registry` host
+  module. `edition` picks the policy key: Windows PowerShell 5.1 reads
   `…\Policies\Microsoft\Windows\PowerShell`, PowerShell 7 reads
-  `…\Policies\Microsoft\PowerShellCore`.
+  `…\Policies\Microsoft\PowerShellCore`. Two exceptions: PowerShell 7 keeps
+  the `:local_machine` and `:current_user` execution policies in
+  `powershell.config.json`, and protected event logging is one key under
+  `…\Policies\Microsoft\Windows\EventLog` for both editions. The console
+  session configuration policy exists for PowerShell 7 only. Every switch
+  takes `ensure`, and a policy never written already satisfies `:absent`.
 - `profile`, `profile_snippet`, `psreadline_option`,
   `psreadline_key_handler`, `default_parameter_values` and
   `preference_variable` — the profiles. PSReadLine options,
   `$PSDefaultParameterValues` and the preference variables are session state
   that no file stores, so each owns a marked block of a profile script
-  (`# BEGIN config-weave: <name>`) and leaves every other line alone.
-  `psreadline_option` carries the whole documented `Set-PSReadLineOption`
-  surface, each option defaulting to `:unmanaged`, `-1` or `""`.
+  (`# BEGIN config-weave: <name>`) and leaves every other line alone. A
+  `BEGIN` with no `END` is an error rather than a truncated profile, CRLF
+  files keep CRLF, and a profile Windows PowerShell 5.1 loads gets a UTF-8
+  BOM (5.1 reads a BOM-less script as ANSI). With `home` empty, the
+  current-user profiles are those of the account config-weave runs as —
+  usually SYSTEM or root. `psreadline_option` carries the whole documented
+  `Set-PSReadLineOption` surface, each option defaulting to `:unmanaged`,
+  `-1` or `""`.
 - `repository`, `module`, `module_from_path`, `script_resource`,
   `modules_updated` and `help_updated` — the package-manager shape.
   PowerShell has two generations of these cmdlets, so `provider` defaults to
   `:auto` and prefers PSResourceGet when it can be imported, falling back to
-  the PowerShellGet v2 a stock Windows Server ships. `module_from_path` is
-  the manual install: a directory, zip or nupkg, local or fetched, copied
-  into the `<Name>/<Version>/` layout `Get-Module -ListAvailable` needs.
+  the PowerShellGet v2 a stock Windows Server ships. `trust_repository` is
+  off by default, so an untrusted repository fails rather than being
+  trusted silently. `module_from_path` is the manual install: a directory,
+  zip or nupkg, local or fetched, copied into the `<Name>/<Version>/` layout
+  `Get-Module -ListAvailable` needs, compared by content, and refused when the
+  manifest contradicts the version folder. The update windows keep a stamp
+  per edition, scope and module set, and `help_updated` fails without
+  stamping when every module failed to update.
 
-Detection deliberately uses `Get-Module -ListAvailable` rather than the
-provider's own inventory: `Get-InstalledPSResource` and `Get-InstalledModule`
-only know about resources those cmdlets installed, so an in-box or
-hand-copied module would read as missing and be reinstalled on every run.
+Module detection uses `Get-Module -ListAvailable` rather than the provider's
+own inventory — `Get-InstalledPSResource` and `Get-InstalledModule` only know
+about resources those cmdlets installed, so a hand-copied module would read as
+missing and be reinstalled on every run — filtered to the scope's own module
+directory, the only place install and uninstall act.
+
+A PowerShell that is not installed is a fact (run 1 checks every step before
+the install step has applied); a PowerShell that is installed but whose query
+fails is an error in every resource and gatherer, never "absent".
 
 ### `windows_iis`
 

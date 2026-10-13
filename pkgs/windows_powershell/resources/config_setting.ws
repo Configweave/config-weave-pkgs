@@ -1,115 +1,7 @@
 use value
-use fs
-use path
-use shell
-use sys
 use json
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-// shell::powershell probes `powershell` before `pwsh`, so on Windows it can
-// only ever reach Windows PowerShell 5.1. Every resource here picks its own
-// binary instead.
-// The MSI's PATH change is invisible to an already-running process, so a
-// PowerShell installed earlier in this same run cannot be found by name.
-// The well-known install roots are probed before falling back to PATH.
-fn pwsh_binary(preview: bool) -> string {
-    if sys::family() != "windows" {
-        if preview { return "pwsh-preview" }
-        return "pwsh"
-    }
-    let pattern = if preview { "C:\\Program Files\\PowerShell\\*-preview\\pwsh.exe" } else { "C:\\Program Files\\PowerShell\\*\\pwsh.exe" }
-    if let Ok(found) = fs::glob(pattern) {
-        let best = ""
-        for candidate in found {
-            if !preview && candidate.contains("-preview") { continue }
-            best = candidate
-        }
-        if best != "" { return best }
-    }
-    "pwsh"
-}
-
-fn ps_exe(edition: string) -> string {
-    if edition == "windows_powershell" { return "powershell" }
-    if edition == "pwsh_preview" { return pwsh_binary(true) }
-    if edition == "pwsh" { return pwsh_binary(false) }
-    if sys::family() == "windows" { "powershell" } else { pwsh_binary(false) }
-}
-
-fn dq(s: string) -> string { "\"" + s + "\"" }
-
-// -File with a temp .ps1 sidesteps shell-words quoting entirely, so the
-// script may be multi-line and hold any quote character. -ExecutionPolicy is
-// a Windows-only switch — and it is what keeps these invocations working
-// under a policy this very package may have set.
-// Every PowerShell invocation carries a timeout. A resource that can hang
-// forever is a defect: the timeout kills the child and surfaces an Err, which
-// the engine reports as a failed step naming this resource.
-fn run_ps(edition: string, script: string) -> Result[CmdOutput, string] {
-    let dir = fs::temp_dir()?
-    let file = path::join(dir, "config-weave-ps.ps1")
-    fs::write(file, "$ErrorActionPreference = 'Stop'\n" + script)?
-    let ep = if sys::family() == "windows" { " -ExecutionPolicy Bypass" } else { "" }
-    let out = shell::run(dq(ps_exe(edition)) + " -NoProfile -NonInteractive" + ep + " -File " + dq(file), Value::Map(#{ "timeout": Value::Int(300) }))
-    fs::delete_dir(dir)?
-    out
-}
-
-// Resolve the powershell.config.json this resource owns. An explicit `path`
-// wins, which is what lets the config resources run on a machine with no
-// PowerShell 7 installed at all.
-fn config_path(params: Value) -> Result[string, string] {
-    let explicit = param_str(params, "path", "")
-    if explicit != "" { return Ok(explicit) }
-    let edition = param_str(params, "edition", "pwsh")
-    if param_str(params, "scope", "all_users") == "all_users" {
-        let out = run_ps(edition, "Write-Output $PSHOME")?
-        if !out.success { return Err("cannot resolve $PSHOME: " + out.stderr.trim()) }
-        return Ok(path::join(out.stdout.trim(), "powershell.config.json"))
-    }
-    let home = param_str(params, "home", "")
-    if home != "" {
-        if sys::family() == "windows" {
-            return Ok(path::join(path::join(path::join(home, "Documents"), "PowerShell"), "powershell.config.json"))
-        }
-        return Ok(path::join(path::join(path::join(home, ".config"), "powershell"), "powershell.config.json"))
-    }
-    let out = run_ps(edition, "Write-Output (Split-Path -Parent $PROFILE.CurrentUserCurrentHost)")?
-    if !out.success { return Err("cannot resolve the user configuration directory: " + out.stderr.trim()) }
-    Ok(path::join(out.stdout.trim(), "powershell.config.json"))
-}
-
-fn read_doc(p: string) -> Result[Value, string] {
-    if !fs::is_file(p) { return Ok(Value::Map(#{})) }
-    let text = fs::read(p)?.trim()
-    if text == "" { return Ok(Value::Map(#{})) }
-    json::parse(text)
-}
-
-fn write_doc(p: string, doc: Value) -> Result[unit, string] {
-    let parent = path::parent(p)
-    if parent != "" { fs::mkdir(parent)? }
-    fs::write(p, json::to_string_pretty(doc) + "\n")
-}
-
-// json::to_string sorts its keys, so this is a stable structural comparison.
-fn same_value(a: Value, b: Value) -> bool { json::to_string(a) == json::to_string(b) }
+use common
+use config_file
 
 fn get_at(doc: Value, keys: List[string], idx: int) -> Option[Value] {
     let cur = doc.get(keys[idx])
@@ -150,15 +42,15 @@ fn del_at(doc: Value, keys: List[string], idx: int) -> Value {
 // `Microsoft.PowerShell:ExecutionPolicy` is one literal key, which is what
 // literal_key is for.
 fn key_parts(params: Value) -> Result[List[string], string] {
-    let key = param_str(params, "key", "")
+    let key = common::param_str(params, "key", "")
     if key == "" { return Err("missing 'key' parameter") }
-    if param_bool(params, "literal_key", false) { return Ok([key]) }
+    if common::param_bool(params, "literal_key", false) { return Ok([key]) }
     Ok(key.split("."))
 }
 
 fn desired_value(params: Value) -> Result[Value, string] {
-    let raw = param_str(params, "value", "")
-    let kind = param_str(params, "value_type", "string")
+    let raw = common::param_str(params, "value", "")
+    let kind = common::param_str(params, "value_type", "string")
     if kind == "string" { return Ok(Value::String(raw)) }
     if kind == "bool" {
         let normal = raw.trim().to_lower()
@@ -184,35 +76,36 @@ fn desired_value(params: Value) -> Result[Value, string] {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let keys = key_parts(params)?
-    // Resolving the path runs the target PowerShell, which may not be
-    // installed yet: run 1 checks every step before the install step has
-    // applied. That is "not configured", not a failure.
-    let file = ""
-    if let Ok(resolved) = config_path(params) { file = resolved } else {
-        if want_present(params)? { return Ok(CheckResult::NotConfigured) }
+    let present = common::want_present(params)?
+    let wanted = if present { Some(desired_value(params)?) } else { None }
+    let resolved = config_file::config_path(params)?
+    if resolved.is_none() {
+        if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let doc = read_doc(file)?
-    let current = get_at(doc, keys, 0)
-    if !want_present(params)? {
-        if current.is_none() { return Ok(CheckResult::AlreadyConfigured) }
+    // An unreadable file is drift; apply says why it cannot rewrite it.
+    let read = config_file::read_doc(resolved.unwrap())
+    if read.is_err() { return Ok(CheckResult::NotConfigured) }
+    let current = get_at(read.unwrap(), keys, 0)
+    if let Some(want) = wanted {
+        if let Some(existing) = current {
+            if config_file::same_value(existing, want) { return Ok(CheckResult::AlreadyConfigured) }
+        }
         return Ok(CheckResult::NotConfigured)
     }
-    if let Some(existing) = current {
-        if same_value(existing, desired_value(params)?) { return Ok(CheckResult::AlreadyConfigured) }
-    }
+    if current.is_none() { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let keys = key_parts(params)?
-    let file = config_path(params)?
-    let doc = read_doc(file)?
-    let updated = if want_present(params)? {
+    let file = config_file::require_config_path(params)?
+    let doc = config_file::read_doc(file)?
+    let updated = if common::want_present(params)? {
         set_at(doc, keys, 0, desired_value(params)?)
     } else {
         del_at(doc, keys, 0)
     }
-    write_doc(file, updated)?
+    config_file::write_doc(file, updated)?
     Ok(ApplyResult::Success)
 }
