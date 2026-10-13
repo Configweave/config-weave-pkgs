@@ -156,9 +156,54 @@ a `store` param to opt into `web.config` instead. Optional attributes have
 **no default** — an omitted param means "leave this setting alone", which is
 the only way a bool or int can say so.
 
+Behaviour worth knowing before writing a playbook:
+
+- **Existing objects are reconciled, not just created.** Every attribute a
+  step names is compared and set in place on an object that already exists.
+  Collection entries (handlers, rewrite rules, tracing rules) keep their
+  position, since IIS evaluates them in order. The few exceptions are named
+  in the param docs: `certificate.exportable` is applied at import only, and
+  `self_signed_certificate.valid_days` sets the lifetime of a new
+  certificate, while `renew_before` decides when an existing one is
+  replaced.
+- **Names are matched the way IIS matches them** — case-insensitively — and
+  looked up exactly. A site or pool name is never a wildcard pattern, and a
+  collection key that differs only in case updates the existing entry.
+- **Removal is `ensure = :absent`** everywhere, including
+  `config_property`, which deletes an attribute at one level so the
+  inherited value applies again. Removing an https `binding` (or the
+  `site` that owns it) also deletes its HTTP.sys certificate binding unless
+  another https binding uses the same endpoint. `global_module` refuses
+  to unregister a module that a `<modules>` entry still names, and
+  `application` refuses to remove a site's root application.
+- **Secrets stay off the command line.** Passwords (app pool,
+  anonymous authentication, virtual directory, PFX import, central
+  certificate store) reach PowerShell through the environment and are
+  masked in the log. Write-only passwords are compared where IIS hands them
+  back decrypted; the central certificate store keeps a salted hash of what
+  it last wrote.
+- **Certificates.** `binding` checks both the configured certificate hash
+  and the HTTP.sys binding. `self_signed_certificate` only ever matches
+  self-signed certificates (issuer equal to subject) and, when it replaces
+  one — renewal, or changed `dns_names` or `key_length` — moves every https
+  binding on the old thumbprint to the new certificate before deleting the
+  old one. `certificate` refuses to remove by subject when more than one
+  certificate matches, and checks a `sha256` when given.
+- **URL Rewrite conditions** are `"input|pattern"` strings with an optional
+  last field of flags: `"{REQUEST_FILENAME}||isFile,negate"`. The pattern
+  runs to the flags field, so a regex alternation keeps its `|`.
+  `rewrite_rule.server_variables` takes `"NAME|value"` strings; each name
+  must be allowed with `rewrite_allowed_server_variable` first.
+  `rewrite_module` installs only an MSI that matches `sha256` or carries a
+  valid Microsoft signature, and refuses plain http without `sha256`.
+
 Shells out to PowerShell's `WebAdministration` module, so the target needs
-the IIS management scripting tools (`feature` with `:scripting_tools`, or
-`:web_server` with `include_management_tools = true`).
+the IIS management scripting tools: `feature` with `:scripting_tools`
+(`include_management_tools = true` on `:web_server` brings only IIS
+Manager). The shared script
+code lives in the package's `lib/`: `common.ws` (helpers and the PowerShell
+prelude), `section.ws` and `collection.ws` (the read-compare-write behind
+most resources) and `rewrite.ws`.
 
 ### `mssql`
 
