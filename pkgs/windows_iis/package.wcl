@@ -1006,7 +1006,7 @@ package "windows_iis" {
       symbol "replace"      { description = "Always replace it with the custom page" }
       symbol "pass_through" { description = "Always keep the application's own body" }
     }
-    param "default_path" { description = "defaultPath: the response used for a status with no error entry" type = "string" default = "" }
+    param "default_path" { description = "defaultPath: the response used for a status with no error entry. The stock applicationHost.config lists defaultPath in httpErrors' lockAttributes, so with store = :web_config a site gets a 500.19 at request time; the default store = :apphost writes it under a <location> and is not affected" type = "string" default = "" }
     param "default_response_mode" {
       description = "defaultResponseMode: how default_path is served"
       type = "symbol"
@@ -2087,7 +2087,7 @@ package "windows_iis" {
 
       symbol "allow"   { description = "Unlock the section, so web.config files may set it" }
       symbol "deny"    { description = "Lock it, so only applicationHost.config may set it" }
-      symbol "inherit" { description = "Clear the explicit setting and take the parent's" }
+      symbol "inherit" { description = "Clear the explicit setting and take the parent's. The current setting is read from the <location overrideMode> in applicationHost.config" }
     }
     param "location" { description = "Site or path the delegation applies to; empty is the server-wide default" type = "string" default = "" }
   }
