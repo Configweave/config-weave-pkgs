@@ -160,6 +160,42 @@ Shells out to PowerShell's `WebAdministration` module, so the target needs
 the IIS management scripting tools (`feature` with `:scripting_tools`, or
 `:web_server` with `include_management_tools = true`).
 
+### `windows_service`
+
+One `service` resource covers a Windows service's whole SCM registration:
+existence (`ensure`), the executable and its `arguments`, `display_name`,
+`description`, the account (`user`, `password`, `password_revision`), the
+startup type and the running state. Every field is reconciled on an existing
+service, not only at creation. An empty string or `:unmanaged` leaves that
+field alone, so the resource can stop the Print Spooler without restating its
+binary or account.
+
+- The service is matched by its exact name, never by display name or
+  wildcard.
+- `path` is the bare executable and is always registered quoted, which closes
+  the unquoted-service-path hole. Arguments go in `arguments`.
+- `user` is compared by SID, so `LocalSystem` and `NT AUTHORITY\SYSTEM`, or
+  `.\svc` and `HOST\svc`, are the same account. Any account other than the
+  built-in and `NT SERVICE\…` ones is granted `SeServiceLogonRight`, which
+  neither `New-Service` nor `Win32_Service.Change` does.
+- Passwords reach PowerShell through the environment, never a command line.
+  The SCM cannot report a password back, so it is pushed when the service is
+  created, when `user` changes, or when `password_revision` changes. Bump
+  the revision whenever the password changes.
+- `startup` includes `:automatic_delayed`.
+- Start, stop and resume wait for the target state, up to `timeout` (60s).
+  Pending states are waited out, and a paused service is resumed. A service
+  whose `path` or account changed while it should be `:running` is restarted
+  so the change takes effect.
+- `ensure = :absent` stops the service and waits before deleting it. A
+  service that is already marked for deletion and stopped counts as absent,
+  because the SCM removes it when its last handle closes.
+
+**Migrating from the old `path`:** `path` used to hold the executable and
+its arguments in one unquoted string. Split it:
+`path = "C:\\svc\\app.exe"` and `arguments = "-k foo"`. A `path` that does
+not exist and contains ` -` or ` /` is rejected with that hint.
+
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
