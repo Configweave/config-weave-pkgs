@@ -169,3 +169,45 @@ fn write_atomic(p: string, text: string) -> Result[unit, string] {
     }
     Ok(())
 }
+
+// Drop-ins sort ahead of distribution and cloud-init ones (50-cloud-init,
+// 50-redhat): ssh and sshd both keep the first value they read.
+fn dropin_prefix() -> string { "10-config-weave-" }
+
+// An option name becomes part of a file name and the start of a config
+// line: letters and digits only, and never a block keyword.
+fn valid_option_key(key: string, reserved: List[string]) -> Result[unit, string] {
+    if key == "" { return Err("missing 'key' parameter") }
+    for c in key.chars() {
+        if !("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(str(c))) {
+            return Err("'key' must be an option name of letters and digits, got '" + key + "'")
+        }
+    }
+    if reserved.contains(key.to_lower()) { return Err("'" + key + "' opens a block and cannot be set as an option") }
+    Ok(())
+}
+
+fn shadowed(key: string, p: string) -> string {
+    key + " is set by another file that sshd reads before " + p + " (an earlier sshd_config.d drop-in, or sshd_config above its Include line), or sshd_config has no Include for sshd_config.d; sshd -T does not show the wanted value"
+}
+
+// Make a running sshd re-read its configuration. Under systemd the unit is
+// ssh (Debian, Ubuntu) or sshd (RHEL, Fedora, SUSE, Arch); an inactive unit
+// (socket activation before the first connection) needs nothing. Without
+// systemd, HUP the listener from its pid file.
+fn reload_sshd() -> Result[unit, string] {
+    if fs::is_dir("/run/systemd/system") {
+        for unit in ["ssh.service", "sshd.service"] {
+            if shell::bash("systemctl is-active --quiet " + unit, Value::Null)?.success {
+                return run("systemctl reload " + unit, "systemctl reload " + unit)
+            }
+        }
+        return Ok(())
+    }
+    for pf in ["/run/sshd.pid", "/var/run/sshd.pid"] {
+        if fs::is_file(pf) {
+            return run("reloading sshd", "pid=$(cat " + q(pf) + ") && if kill -0 \"$pid\" 2>/dev/null; then kill -HUP \"$pid\"; fi")
+        }
+    }
+    Ok(())
+}

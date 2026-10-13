@@ -1,22 +1,22 @@
 package "linux_ssh" {
-  description = "Manage SSH keys, known hosts and client/daemon configuration"
+  description = "Manage SSH authorized keys, known hosts and ssh/sshd configuration drop-ins"
 
   resource "authorized_key" {
-    description = "Ensure an SSH authorized key is present or absent"
+    description = "Ensure an SSH key is present in or absent from a user's ~/.ssh/authorized_keys. Lines match on key type and base64 blob, so a line for the same key with other options or another comment is rewritten to the wanted text when :present, and removed when :absent. When :present, check also requires what sshd's StrictModes requires: .ssh mode 700 and authorized_keys mode 600, both owned by the user (group: the user's login group). The home directory itself must not be group- or world-writable either; that is not managed here. The file is replaced through a temp file and rename"
     script = "resources/authorized_key.ws"
     // read-modify-write on a shared authorized_keys file — parallel steps lose updates
     concurrency = "exclusive"
-    param "user" { description = "Account name" type = "string" required = true }
-    param "key" { description = "Authorized key line" type = "string" required = true }
+    param "user" { description = "Account name; it must exist when :present" type = "string" required = true }
+    param "key" { description = "One authorized_keys line: [options] type base64 [comment]. Line breaks are rejected" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Add the key to authorized_keys" }
-      symbol "absent"  { description = "Remove the key from authorized_keys" }
+      symbol "present" { description = "Add the key, or rewrite its line to the wanted options and comment" }
+      symbol "absent"  { description = "Remove every line for the key, whatever its options or comment. A missing user or file is already absent" }
     }
-    param "home" { description = "Optional home directory override" type = "string" default = "" }
+    param "home" { description = "Absolute home directory override; defaults to the user's home from its passwd entry" type = "string" default = "" }
   }
 
   resource "known_host" {
@@ -39,28 +39,29 @@ package "linux_ssh" {
   }
 
   resource "ssh_config_setting" {
-    description = "Ensure an ssh client option is set via an ssh_config.d drop-in"
+    description = "Ensure an ssh client option is set for a host pattern through its own /etc/ssh/ssh_config.d drop-in: 10-config-weave-<key>.conf for host *, or 10-config-weave-<key>-<host>-<digest>.conf for any other pattern, so one key can be set for several patterns. ssh keeps the first value it reads, so the 10- prefix puts these ahead of distribution drop-ins such as 50-redhat.conf, and a host-specific file sorts ahead of the all-hosts one. Needs `Include /etc/ssh/ssh_config.d/*.conf` near the top of /etc/ssh/ssh_config (Debian, Ubuntu and Fedora ship it); a user's ~/.ssh/config still overrides. A drop-in left by an older version (50-config-weave-<key>.conf) for the same host is removed"
     script = "resources/ssh_config_setting.ws"
-    concurrency = "parallel"
-    param "key" { description = "ssh_config option name, such as StrictHostKeyChecking" type = "string" required = true }
-    param "value" { description = "Option value (required when present)" type = "string" default = "" }
+    // steps for one key share the legacy file name they migrate from
+    concurrency = "exclusive"
+    param "key" { description = "ssh_config option name, such as StrictHostKeyChecking: letters and digits only; Host, Match and Include are rejected" type = "string" required = true }
+    param "value" { description = "Option value (required when present), on one line" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Write the ssh_config.d drop-in" }
-      symbol "absent"  { description = "Remove the drop-in" }
+      symbol "absent"  { description = "Remove the drop-in for this key and host" }
     }
-    param "host" { description = "Host pattern the option applies to" type = "string" default = "*" }
+    param "host" { description = "Host pattern list the option applies to, as written after `Host`, on one line" type = "string" default = "*" }
   }
 
   resource "sshd_config_setting" {
-    description = "Ensure an sshd option is set via an sshd_config.d drop-in"
+    description = "Ensure an sshd option is set through its own drop-in, /etc/ssh/sshd_config.d/10-config-weave-<key>.conf. sshd keeps the first value it reads, so the 10- prefix puts it ahead of 50-cloud-init.conf. When sshd is installed and `validate` is on, apply runs sshd -t and restores the previous drop-in (or removes the new one) when sshd rejects it, and check compares the effective value from sshd -T, so a value set by an earlier drop-in, by sshd_config above its Include line, or a missing `Include /etc/ssh/sshd_config.d/*.conf` is an error rather than reported converged. sshd -T and -t need the host keys and /run/sshd to exist. A running sshd keeps its old configuration until reloaded: set `reload`, or restart it with a service resource. A drop-in left by an older version (50-config-weave-<key>.conf) is removed"
     script = "resources/sshd_config_setting.ws"
     concurrency = "exclusive"
-    param "key" { description = "sshd_config option name, such as PasswordAuthentication" type = "string" required = true }
-    param "value" { description = "Option value (required when present)" type = "string" default = "" }
+    param "key" { description = "sshd_config option name, such as PasswordAuthentication: letters and digits only; Match and Include are rejected" type = "string" required = true }
+    param "value" { description = "Option value (required when present), on one line" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -69,68 +70,8 @@ package "linux_ssh" {
       symbol "present" { description = "Write the sshd_config.d drop-in" }
       symbol "absent"  { description = "Remove the drop-in" }
     }
-    param "validate" { description = "Run sshd -t validation when sshd is available" type = "bool" default = true }
-  }
-
-  // The absent steps converge on files seeded during setup (run 1 checks every
-  // step before any apply).
-  test "ssh_converges" {
-    description = "Keys, known hosts and config drop-ins converge in a Debian container"
-    image = "debian:12"
-    setup = "mkdir -p /root/.ssh /etc/ssh/sshd_config.d && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old\\n' > /root/.ssh/authorized_keys && printf 'X11Forwarding yes\\n' > /etc/ssh/sshd_config.d/50-config-weave-x11forwarding.conf"
-    verify = "tests/ssh_verify.ws"
-
-    step "key" {
-      description = "Install an authorized key for root"
-      resource = "authorized_key"
-      properties {
-        user = "root"
-        home = "/root"
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey config-weave"
-      }
-    }
-
-    step "rm_key" {
-      description = "Remove the seeded key line"
-      resource = "authorized_key"
-      requires = ["key"]
-      properties {
-        user = "root"
-        home = "/root"
-        key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldKeyGoesAway cw-old"
-        ensure = :absent
-      }
-    }
-
-    // `home` is explicit: without it the resource falls back to $HOME, and
-    // the guest agent runs execs with HOME=/ rather than the user's home.
-    step "known" {
-      description = "Add a known_hosts entry"
-      resource = "known_host"
-      properties {
-        home = "/root"
-        name = "cw-test.example"
-        key = "cw-test.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestConfigWeaveKey"
-      }
-    }
-
-    step "client" {
-      description = "Set a client option"
-      resource = "ssh_config_setting"
-      properties { key = "StrictHostKeyChecking" value = "no" }
-    }
-
-    step "daemon" {
-      description = "Set a daemon option"
-      resource = "sshd_config_setting"
-      properties { key = "PasswordAuthentication" value = "no" }
-    }
-
-    step "rm_daemon" {
-      description = "Remove the seeded daemon drop-in"
-      resource = "sshd_config_setting"
-      properties { key = "X11Forwarding" ensure = :absent }
-    }
+    param "validate" { description = "When sshd is installed: validate with sshd -t after writing (rolling back on failure) and compare the effective value from sshd -T in check. false compares the drop-in's content only" type = "bool" default = true }
+    param "reload" { description = "After a change, reload a running sshd: systemctl reload of an active ssh or sshd unit, or SIGHUP to the pid in /run/sshd.pid without systemd. Nothing is done when sshd is not running" type = "bool" default = false }
   }
 
   // Root's file is seeded with modes sshd's StrictModes rejects, a key whose
@@ -241,6 +182,129 @@ package "linux_ssh" {
       resource = "known_host"
       expect = "error"
       properties { key = "a.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey\nb.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey" }
+    }
+  }
+
+  // Seeds: a cloud-init drop-in the 10- prefix must beat, drop-ins with the
+  // old 50- name, a valid drop-in a rejected update must leave in place, and
+  // an earlier drop-in that shadows a key. sshd is started so `reload` has
+  // something to reload; verify sees the banner only if it did.
+  test "sshd_config_converges" {
+    description = "sshd_config_setting wins over cloud-init, migrates old drop-ins, rolls back what sshd -t rejects, reports shadowed keys and reloads sshd"
+    image = "debian:12"
+    group = "ssh"
+    setup = "(test -x /usr/sbin/sshd || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server openssh-client >/dev/null)) && mkdir -p /run/sshd /etc/ssh/sshd_config.d && cd /etc/ssh/sshd_config.d && printf 'PasswordAuthentication yes\\n' > 50-cloud-init.conf && printf 'X11Forwarding no\\n' > 50-config-weave-x11forwarding.conf && printf 'MaxAuthTries 3\\n' > 50-config-weave-maxauthtries.conf && printf 'LogLevel VERBOSE\\n' > 10-config-weave-loglevel.conf && printf 'ClientAliveInterval 30\\n' > 05-local.conf && echo cw-banner-text > /etc/cw-banner && (test -s /run/sshd.pid && kill -0 $(cat /run/sshd.pid) 2>/dev/null || /usr/sbin/sshd)"
+    verify = "tests/sshd_config_verify.ws"
+
+    step "password" {
+      description = "A value that 50-cloud-init.conf also sets takes effect"
+      resource = "sshd_config_setting"
+      properties { key = "PasswordAuthentication" value = "no" }
+    }
+
+    step "migrate" {
+      description = "A 50-config-weave drop-in with the same value is moved to the 10- name"
+      resource = "sshd_config_setting"
+      properties { key = "X11Forwarding" value = "no" }
+    }
+
+    step "rm_legacy" {
+      description = "Removal also removes the old-named drop-in"
+      resource = "sshd_config_setting"
+      properties { key = "MaxAuthTries" ensure = :absent }
+    }
+
+    step "normalised" {
+      description = "A value sshd -T prints differently (2m as 120) still converges"
+      resource = "sshd_config_setting"
+      properties { key = "LoginGraceTime" value = "2m" }
+    }
+
+    step "reload" {
+      description = "A banner set with reload reaches the running sshd"
+      resource = "sshd_config_setting"
+      properties { key = "Banner" value = "/etc/cw-banner" reload = true }
+    }
+
+    step "rejected_update" {
+      description = "sshd -t rejects the new value and the previous drop-in is restored"
+      resource = "sshd_config_setting"
+      expect = "error"
+      properties { key = "LogLevel" value = "BOGUS" }
+    }
+
+    step "rejected_new" {
+      description = "sshd -t rejects a new drop-in and it is removed"
+      resource = "sshd_config_setting"
+      expect = "error"
+      properties { key = "MaxSessions" value = "many" }
+    }
+
+    step "shadowed" {
+      description = "A key an earlier drop-in sets cannot take effect, which is an error"
+      resource = "sshd_config_setting"
+      expect = "error"
+      properties { key = "ClientAliveInterval" value = "60" }
+    }
+
+    step "block_key" {
+      description = "Match is a block, not an option"
+      resource = "sshd_config_setting"
+      expect = "error"
+      properties { key = "Match" value = "all" }
+    }
+
+    step "injected" {
+      description = "A value with a line break would add a second directive"
+      resource = "sshd_config_setting"
+      expect = "error"
+      properties { key = "PermitRootLogin" value = "no\nPasswordAuthentication yes" }
+    }
+  }
+
+  test "ssh_config_converges" {
+    description = "ssh_config_setting keeps one drop-in per key and host, migrates old drop-ins and removes its own"
+    image = "debian:12"
+    group = "ssh"
+    setup = "(test -x /usr/bin/ssh || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-client >/dev/null)) && mkdir -p /etc/ssh/ssh_config.d && cd /etc/ssh/ssh_config.d && printf 'Host *\\n    StrictHostKeyChecking ask\\n' > 50-config-weave-stricthostkeychecking.conf && printf 'Host other.example\\n    Compression no\\n' > 50-config-weave-compression.conf && printf 'Host *\\n    ForwardAgent yes\\n' > 10-config-weave-forwardagent.conf"
+    verify = "tests/ssh_config_verify.ws"
+
+    step "all_hosts" {
+      description = "Set an option for every host, replacing the old-named drop-in"
+      resource = "ssh_config_setting"
+      properties { key = "StrictHostKeyChecking" value = "no" }
+    }
+
+    step "one_host" {
+      description = "The same option for one pattern gets its own drop-in instead of fighting the all-hosts one"
+      resource = "ssh_config_setting"
+      properties { key = "StrictHostKeyChecking" value = "accept-new" host = "*.cw.example" }
+    }
+
+    step "foreign_legacy" {
+      description = "An old-named drop-in for another host is left to that host's step"
+      resource = "ssh_config_setting"
+      properties { key = "Compression" value = "yes" }
+    }
+
+    step "remove" {
+      description = "Remove a drop-in"
+      resource = "ssh_config_setting"
+      properties { key = "ForwardAgent" ensure = :absent }
+    }
+
+    step "injected_host" {
+      description = "A host with a line break would add a directive outside the Host block"
+      resource = "ssh_config_setting"
+      expect = "error"
+      properties { key = "User" value = "cw" host = "a\nProxyCommand evil" }
+    }
+
+    step "path_key" {
+      description = "A key that is not an option name cannot reach the file name"
+      resource = "ssh_config_setting"
+      expect = "error"
+      properties { key = "../../../tmp/x" value = "y" }
     }
   }
 }
