@@ -336,7 +336,7 @@ package "windows_iis" {
       symbol "present" { description = "Create the site" }
       symbol "absent"  { description = "Delete the site" }
     }
-    param "physical_path" { description = "Directory backing the site's root application, created when missing; required when present" type = "string" default = "" }
+    param "physical_path" { description = "Directory backing the site's root application, created when missing. Required to create the site; empty leaves an existing site's path alone" type = "string" default = "" }
     param "app_pool" { description = "Application pool the root application runs in; empty leaves IIS's choice alone" type = "string" default = "" }
     param "state" {
       description = "Runtime state to enforce"
@@ -348,7 +348,7 @@ package "windows_iis" {
       symbol "unmanaged" { description = "Leave the runtime state alone" }
     }
     param "server_auto_start" { description = "serverAutoStart: start the site when the World Wide Web Publishing Service starts" type = "bool" }
-    param "id" { description = "Numeric site id; 0 lets IIS assign one. Create-only — an existing site is not renumbered" type = "int" default = 0 }
+    param "id" { description = "Numeric site id. 0 picks the next free id when the site is created and leaves an existing site's id alone; any other value is reconciled, which renumbers an existing site (its log directory, W3SVC<id>, moves with it)" type = "int" default = 0 }
   }
 
   // Identity is the whole tuple (site, protocol, ip, port, host_header) —
@@ -410,7 +410,7 @@ package "windows_iis" {
       default = :present
 
       symbol "present" { description = "Create the application" }
-      symbol "absent"  { description = "Delete the application" }
+      symbol "absent"  { description = "Delete the application. Refused for path = \"/\", the site's root application" }
     }
     param "physical_path" { description = "Directory backing the application's root virtual directory, created when missing; required when present" type = "string" default = "" }
     param "app_pool" { description = "Application pool to run in; empty inherits the site's" type = "string" default = "" }
@@ -436,8 +436,9 @@ package "windows_iis" {
       symbol "absent"  { description = "Delete the virtual directory" }
     }
     param "physical_path" { description = "Directory the virtual path maps to, created when missing and local; required when present" type = "string" default = "" }
-    param "username" { description = "userName: account used to reach the physical path, for a UNC share; empty uses pass-through authentication" type = "string" default = "" }
-    param "password" { description = "password: the password for username" type = "string" default = "" }
+    param "username" { description = "userName: account used to reach the physical path, for a UNC share. Empty leaves the current credentials alone; use pass_through to clear them" type = "string" default = "" }
+    param "password" { description = "password: the password for username, compared with the stored (decrypted) password whenever username is set. Passed to PowerShell through the environment and never logged" type = "string" default = "" }
+    param "pass_through" { description = "true clears userName and password, so IIS reaches the physical path with pass-through authentication. Cannot be combined with username or password; false or omitted leaves the credentials alone" type = "bool" }
     param "logon_method" {
       description = "logonMethod: the logon type used for username"
       type = "symbol"

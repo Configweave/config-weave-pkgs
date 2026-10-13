@@ -94,6 +94,12 @@ fn hms(ns: int) -> string {
 // the provider's or Microsoft.Web.Administration's) and maps it to the schema
 // name — flags as the comma-joined names of the set bits, "" for none. Any
 // other attribute returns $fallback. CwKind says which: enum, flags or "".
+//
+// CwSm hands back a Microsoft.Web.Administration ServerManager, whose Sites
+// and ApplicationPools indexers look a name up exactly. The WebAdministration
+// cmdlets' -Name (Get-Website, Start-WebAppPool, ...) is a wildcard pattern,
+// so a site called "a[1]" would not be found by its own name. CwMkdir
+// creates a directory without New-Item's wildcard-aware -Path.
 fn ps_head() -> string {
     "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
     "Import-Module WebAdministration; " +
@@ -104,6 +110,9 @@ fn ps_head() -> string {
     "if ($x -is [bool]) {{ if ($x) {{ return 'true' }} else {{ return 'false' }} }}; " +
     "if ($x -is [timespan]) {{ return $x.ToString() }}; " +
     "return ([string]$x) }}; " +
+    "function CwSm {{ Add-Type -Path (Join-Path $env:windir 'system32\\inetsrv\\Microsoft.Web.Administration.dll'); " +
+    "New-Object Microsoft.Web.Administration.ServerManager }}; " +
+    "function CwMkdir($p) {{ [void][IO.Directory]::CreateDirectory($p) }}; " +
     "function CwKind($el, $name) {{ try {{ $sch = $el.Schema.AttributeSchemas[$name]; " +
     "if ([string]$sch.Type -eq 'flags' -or $sch.IsCombinedFlags -eq $true) {{ return 'flags' }}; " +
     "if ([string]$sch.Type -eq 'enum' -or ($null -ne $sch.EnumValues -and @($sch.EnumValues).Count -gt 0)) {{ return 'enum' }} }} catch {{ }}; return '' }}; " +

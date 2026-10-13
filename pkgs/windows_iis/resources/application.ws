@@ -86,7 +86,17 @@ fn probe(params: Value) -> Result[Value, string] {
     json::parse(common::ps_out(script + "[pscustomobject]$o | ConvertTo-Json -Compress")?)
 }
 
+// The root application "/" is the site itself: removing it leaves a site that
+// cannot serve anything, and windows_iis.site is what removes a site.
+fn refuse_root(params: Value) -> Result[unit, string] {
+    if !common::want_present(params)? && app_path(params)? == "/" {
+        return Err("path = \"/\" is the site's root application and cannot be removed; remove the site with windows_iis.site instead")
+    }
+    Ok(())
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
+    refuse_root(params)?
     let there = exists(params)?
     if !common::want_present(params)? {
         if there { return Ok(CheckResult::NotConfigured) }
@@ -108,6 +118,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    refuse_root(params)?
     let path = app_path(params)?
     if !common::want_present(params)? {
         if !exists(params)? { return Ok(ApplyResult::Success) }
@@ -124,8 +135,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         }
         log::info("creating application " + path + " at " + physical)
         common::ps_run(
-            "if (-not (Test-Path -LiteralPath " + common::ps_q(physical) + ")) {{ " +
-            "New-Item -ItemType Directory -Path " + common::ps_q(physical) + " | Out-Null }}; " +
+            "CwMkdir " + common::ps_q(physical) + "; " +
             // As for a site: whether the application's root virtual
             // directory is materialised with it depends on
             // virtualDirectoryDefaults, so handle both.
@@ -143,8 +153,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let script = ""
     if physical != "" && !same_path(common::get_str(s, "physical_path"), physical) {
         script = script +
-            "if (-not (Test-Path -LiteralPath " + common::ps_q(physical) + ")) {{ " +
-            "New-Item -ItemType Directory -Path " + common::ps_q(physical) + " | Out-Null }}; " +
+            "CwMkdir " + common::ps_q(physical) + "; " +
             "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
             common::ps_q(vdir_filter(params)?) + " -Name 'physicalPath' -Value " + common::ps_q(physical) + "; "
     }

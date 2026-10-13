@@ -45,18 +45,56 @@ fn logon_method(params: Value) -> Result[string, string] {
     Err("invalid 'logon_method' value '" + m + "'")
 }
 
-// 'ABSENT', or the attributes this resource owns.
+// 'ABSENT', or the attributes this resource owns. The virtual directory is
+// matched as IIS matches it, case-insensitively, and "path" is its path as
+// IIS stores it, so the XPath that addresses it for an update matches too.
+// The password reads back decrypted, which is what lets a changed password be
+// detected rather than written only alongside a changed userName.
 fn probe(params: Value) -> Result[string, string] {
     common::ps_out(
         "$v = @(Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
         common::ps_q(app_filter(params)? + "/virtualDirectory") + " | Where-Object {{ " +
         "[string]$_.path -eq " + common::ps_q(vdir_path(params)?) + " }}); " +
         "if ($v.Count -eq 0) {{ 'ABSENT' }} else {{ [pscustomobject]@{{ " +
+        "path = CwV($v[0].GetAttributeValue('path')); " +
         "physical_path = CwV($v[0].GetAttributeValue('physicalPath')); " +
         "username = CwV($v[0].GetAttributeValue('userName')); " +
-        "logon_method = CwV($v[0].GetAttributeValue('logonMethod')); " +
+        "password = CwV($v[0].GetAttributeValue('password')); " +
+        "logon_method = (CwEnum $v[0] 'logonMethod' (CwV($v[0].GetAttributeValue('logonMethod')))); " +
         "allow_sub_dir_config = CwV($v[0].GetAttributeValue('allowSubDirConfig')) }} | " +
         "ConvertTo-Json -Compress }}")
+}
+
+// [IIS attribute, desired text, kind] for every attribute that differs.
+fn drift(params: Value, v: Value) -> Result[List[List[string]], string] {
+    let out: List[List[string]] = []
+    let physical = common::param_str(params, "physical_path", "")
+    if physical != "" && norm_path(common::get_str(v, "physical_path")) != norm_path(physical) {
+        out.push(["physicalPath", physical, "str"])
+    }
+    let user = common::param_str(params, "username", "")
+    let pw = common::param_str(params, "password", "")
+    if common::param_bool(params, "pass_through", false) {
+        if user != "" || pw != "" {
+            return Err("pass_through = true cannot be combined with 'username' or 'password'")
+        }
+        if common::get_str(v, "username") != "" { out.push(["userName", "", "str"]) }
+        if common::get_str(v, "password") != "" { out.push(["password", "", "secret"]) }
+    } else if user != "" {
+        if common::get_str(v, "username") != user { out.push(["userName", user, "str"]) }
+        if common::get_str(v, "password") != pw { out.push(["password", pw, "secret"]) }
+    }
+    let lm = logon_method(params)?
+    if lm != "" && common::get_str(v, "logon_method").to_lower() != lm.to_lower() {
+        out.push(["logonMethod", lm, "str"])
+    }
+    if common::has(params, "allow_sub_dir_config") {
+        let want = if common::param_bool(params, "allow_sub_dir_config", true) { "true" } else { "false" }
+        if common::get_str(v, "allow_sub_dir_config").to_lower() != want {
+            out.push(["allowSubDirConfig", want, "bool"])
+        }
+    }
+    Ok(out)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -65,29 +103,15 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    let path = common::param_str(params, "physical_path", "")
     if st == "ABSENT" {
-        if path == "" {
+        if common::param_str(params, "physical_path", "") == "" {
             return Err("virtual directory '" + vdir_path(params)? +
                 "' does not exist and no 'physical_path' was given to create it")
         }
         return Ok(CheckResult::NotConfigured)
     }
-    let v = json::parse(st)?
-    if path != "" && norm_path(common::get_str(v, "physical_path")) != norm_path(path) {
-        return Ok(CheckResult::NotConfigured)
-    }
-    let user = common::param_str(params, "username", "")
-    if user != "" && common::get_str(v, "username") != user { return Ok(CheckResult::NotConfigured) }
-    let lm = logon_method(params)?
-    if lm != "" && common::get_str(v, "logon_method").to_lower() != lm.to_lower() {
-        return Ok(CheckResult::NotConfigured)
-    }
-    if common::has(params, "allow_sub_dir_config") {
-        let want = if common::param_bool(params, "allow_sub_dir_config", true) { "true" } else { "false" }
-        if common::get_str(v, "allow_sub_dir_config").to_lower() != want { return Ok(CheckResult::NotConfigured) }
-    }
-    Ok(CheckResult::AlreadyConfigured)
+    if drift(params, json::parse(st)?)?.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
@@ -98,7 +122,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing virtual directory " + path)
         common::ps_run("Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            filter + " -Name '.' -AtElement @{{path=" + common::ps_q(path) + "}}")?
+            filter + " -Name '.' -AtElement @{{path=" +
+            common::ps_q(common::get_str(json::parse(st)?, "path")) + "}}")?
         return Ok(ApplyResult::Success)
     }
     let physical = common::param_str(params, "physical_path", "")
@@ -110,44 +135,28 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         log::info("creating virtual directory " + path + " at " + physical)
         // A UNC path is left alone; anything else is created if missing.
         common::ps_run(
-            "if (-not " + common::ps_q(physical) + ".StartsWith('\\\\') -and " +
-            "-not (Test-Path -LiteralPath " + common::ps_q(physical) + ")) {{ " +
-            "New-Item -ItemType Directory -Path " + common::ps_q(physical) + " | Out-Null }}; " +
+            "if (-not " + common::ps_q(physical) + ".StartsWith('\\\\')) {{ CwMkdir " + common::ps_q(physical) + " }}; " +
             "Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
             filter + " -Name '.' -Value @{{path=" + common::ps_q(path) + "; physicalPath=" +
             common::ps_q(physical) + "}}")?
     }
-    let elem = common::ps_q(app_filter(params)? + "/virtualDirectory[@path='" + common::xp(path)? + "']")
-    let script = ""
     let v = json::parse(probe(params)?)?
-    if physical != "" && norm_path(common::get_str(v, "physical_path")) != norm_path(physical) {
+    let elem = common::ps_q(app_filter(params)? + "/virtualDirectory[@path='" +
+        common::xp(common::get_str(v, "path"))? + "']")
+    let script = ""
+    for d in drift(params, v)? {
+        let attr = d.get(0).unwrap_or("")
+        let kind = d.get(2).unwrap_or("")
+        let lit = if kind == "secret" { "$env:CW_SECRET" }
+            else if kind == "bool" { if d.get(1).unwrap_or("") == "true" { "$true" } else { "$false" } }
+            else { common::ps_q(d.get(1).unwrap_or("")) }
         script = script + "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            elem + " -Name 'physicalPath' -Value " + common::ps_q(physical) + "; "
-    }
-    let user = common::param_str(params, "username", "")
-    if user != "" && common::get_str(v, "username") != user {
-        script = script + "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            elem + " -Name 'userName' -Value " + common::ps_q(user) + "; " +
-            "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            elem + " -Name 'password' -Value " + common::ps_q(common::param_str(params, "password", "")) + "; "
-    }
-    let lm = logon_method(params)?
-    if lm != "" && common::get_str(v, "logon_method").to_lower() != lm.to_lower() {
-        script = script + "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            elem + " -Name 'logonMethod' -Value " + common::ps_q(lm) + "; "
-    }
-    if common::has(params, "allow_sub_dir_config") {
-        let on = common::param_bool(params, "allow_sub_dir_config", true)
-        let want = if on { "true" } else { "false" }
-        if common::get_str(v, "allow_sub_dir_config").to_lower() != want {
-            script = script + "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-                elem + " -Name 'allowSubDirConfig' -Value " +
-                (if on { "$true" } else { "$false" }) + "; "
-        }
+            elem + " -Name " + common::ps_q(attr) + " -Value " + lit + "; "
     }
     if script != "" {
         log::info("updating virtual directory " + path)
-        common::ps_run(script)?
+        // The password goes through the environment, never the script text.
+        common::ps_run_env(script, common::secret_env(common::param_str(params, "password", "")))?
     }
     Ok(ApplyResult::Success)
 }

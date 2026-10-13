@@ -29,25 +29,30 @@ fn root_app(params: Value) -> Result[string, string] {
     Ok(site_filter(params)? + "/application[@path='/']")
 }
 
+// Looked up through ServerManager rather than Get-Website, whose -Name is a
+// wildcard pattern: [, ], * and ? in a site name would match other sites, or
+// fail to match this one.
 fn exists(name: string) -> Result[bool, string] {
-    let st = common::ps_out("if (Get-Website -Name " + common::ps_q(name) +
-        " -ErrorAction SilentlyContinue) {{ 'YES' }} else {{ 'NO' }}")?
+    let st = common::ps_out("if ($null -ne (CwSm).Sites[" + common::ps_q(name) +
+        "]) {{ 'YES' }} else {{ 'NO' }}")?
     Ok(st == "YES")
 }
 
-// { physical_path, app_pool, auto_start, state }.
+// { id, physical_path, app_pool, auto_start, state }.
 fn probe(params: Value) -> Result[Value, string] {
     let name = common::param_str(params, "name", "")
     json::parse(common::ps_out(
         "$o=@{{}}; " +
+        "$o['id']=CwV(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
+        common::ps_q(site_filter(params)?) + " -Name 'id'); " +
         "$o['physical_path']=CwV(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
         common::ps_q(root_vdir(params)?) + " -Name 'physicalPath'); " +
         "$o['app_pool']=CwV(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
         common::ps_q(root_app(params)?) + " -Name 'applicationPool'); " +
         "$o['auto_start']=CwV(Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
         common::ps_q(site_filter(params)?) + " -Name 'serverAutoStart'); " +
-        "$o['state']=''; try {{ $o['state']=[string](Get-Website -Name " + common::ps_q(name) +
-        ").State }} catch {{ }}; " +
+        "$o['state']=''; try {{ $o['state']=[string](CwSm).Sites[" + common::ps_q(name) +
+        "].State }} catch {{ }}; " +
         "[pscustomobject]$o | ConvertTo-Json -Compress")?)
 }
 
@@ -92,6 +97,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
         let want = if common::param_bool(params, "server_auto_start", true) { "true" } else { "false" }
         if common::get_str(s, "auto_start").to_lower() != want { return Ok(CheckResult::NotConfigured) }
     }
+    let id = common::param_int(params, "id", 0)
+    if id != 0 && common::get_str(s, "id") != common::itoa(id) { return Ok(CheckResult::NotConfigured) }
     let st = desired_state(params)?
     if st != "unmanaged" && common::get_str(s, "state").to_lower() != st { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
@@ -104,7 +111,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::want_present(params)? {
         if !exists(name)? { return Ok(ApplyResult::Success) }
         log::info("removing site " + name)
-        common::ps_run("Remove-Website -Name " + qn)?
+        common::ps_run("$sm = CwSm; $sm.Sites.Remove($sm.Sites[" + qn + "]); $sm.CommitChanges()")?
         return Ok(ApplyResult::Success)
     }
     let path = common::param_str(params, "physical_path", "")
@@ -124,8 +131,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         log::info("creating site " + name + " at " + path)
         common::ps_run(
             id_expr +
-            "if (-not (Test-Path -LiteralPath " + common::ps_q(path) + ")) {{ " +
-            "New-Item -ItemType Directory -Path " + common::ps_q(path) + " | Out-Null }}; " +
+            "CwMkdir " + common::ps_q(path) + "; " +
             "Add-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' " +
             "-Filter 'system.applicationHost/sites' -Name '.' -Value @{{name=" + qn + "; id=$id}}; " +
             // Whether adding the application also materialises its root
@@ -147,8 +153,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let script = ""
     if path != "" && !same_path(common::get_str(s, "physical_path"), path) {
         script = script +
-            "if (-not (Test-Path -LiteralPath " + common::ps_q(path) + ")) {{ " +
-            "New-Item -ItemType Directory -Path " + common::ps_q(path) + " | Out-Null }}; " +
+            "CwMkdir " + common::ps_q(path) + "; " +
             "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
             common::ps_q(root_vdir(params)?) + " -Name 'physicalPath' -Value " + common::ps_q(path) + "; "
     }
@@ -168,17 +173,20 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
                 (if on { "$true" } else { "$false" }) + "; "
         }
     }
+    let id = common::param_int(params, "id", 0)
+    if id != 0 && common::get_str(s, "id") != common::itoa(id) {
+        script = script +
+            "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
+            common::ps_q(site_filter(params)?) + " -Name 'id' -Value " + common::itoa(id) + "; "
+    }
     if script != "" {
         log::info("updating site " + name)
         common::ps_run(script)?
     }
     let st = desired_state(params)?
     if st != "unmanaged" && common::get_str(probe(params)?, "state").to_lower() != st {
-        if st == "started" {
-            common::ps_run("Start-Website -Name " + qn)?
-        } else {
-            common::ps_run("Stop-Website -Name " + qn)?
-        }
+        let verb = if st == "started" { "Start" } else { "Stop" }
+        common::ps_run("[void](CwSm).Sites[" + qn + "]." + verb + "()")?
     }
     Ok(ApplyResult::Success)
 }
