@@ -162,13 +162,23 @@ fn tmp_sibling(p: string) -> string {
 }
 
 // Put a finished temp file in place at `p`. A plain path is replaced by an
-// atomic rename; a symlink at `p` is written through, like every other
-// write in this package, so the link itself survives.
+// atomic rename, after the temp file takes the old file's owner, group and
+// mode (a rename would otherwise reset whatever the playbook does not
+// manage). A symlink at `p` is written through, like every other write in
+// this package, so the link itself survives.
 fn install_tmp(tmp: string, p: string) -> Result[unit, string] {
     if fs::read_link(p).is_ok() {
         let r = fs::copy(tmp, p)
         fs::delete(tmp).unwrap_or(())
         return r
+    }
+    if fs::is_file(p) {
+        // stat -c rather than --reference, which busybox lacks
+        let keep = "chown -- \"$(stat -c '%u:%g' -- " + q(p) + ")\" " + q(tmp) + " && chmod -- \"$(stat -c '%a' -- " + q(p) + ")\" " + q(tmp)
+        if let Err(e) = run("copying owner and mode of " + p, keep) {
+            fs::delete(tmp).unwrap_or(())
+            return Err(e)
+        }
     }
     if let Err(e) = fs::move(tmp, p) {
         fs::delete(tmp).unwrap_or(())

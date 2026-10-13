@@ -2,10 +2,10 @@ package "linux_files" {
   description = "Manage Linux filesystem state"
 
   resource "file" {
-    description = "Ensure a file exists with exact content or fetched from a URL, or is absent"
+    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Content that is not valid UTF-8 counts as drift and is replaced."
     script = "resources/file.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -15,23 +15,23 @@ package "linux_files" {
       symbol "absent"  { description = "Delete the file" }
     }
     param "content" { description = "Desired file content; mutually exclusive with url" type = "string" default = "" }
-    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content" type = "string" default = "" }
-    param "sha256" { description = "Optional expected SHA-256 digest (url mode)" type = "string" default = "" }
-    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
-    param "owner" { description = "Optional file owner" type = "string" default = "" }
-    param "group" { description = "Optional file group" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded beside the target and only renamed into place once it passes sha256. Without sha256 it is fetched once and never re-checked: a changed upstream file is not drift, so set sha256 whenever the content matters" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error and leaves the existing file untouched" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
+    param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional file group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "template" {
     description = "Render a Tera template to a file with exact content"
     script = "resources/template.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
     param "template" { description = "Tera template body (author as a raw heredoc)" type = "string" required = true }
     param "vars" { description = "Variables exposed to the template" type = "map" }
-    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
-    param "owner" { description = "Optional file owner" type = "string" default = "" }
-    param "group" { description = "Optional file group" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
+    param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional file group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "directory" {
@@ -116,6 +116,9 @@ package "linux_files" {
     description = "Core file resources converge"
     image = "debian:12"
     group = "files"
+    // binary.txt starts as non-UTF-8 bytes, which fs::read cannot decode;
+    // keep.txt has an owner and mode the playbook does not manage.
+    setup = "mkdir -p /tmp/cw-files && chmod 700 /tmp/cw-files && printf '\\377\\376\\n' > /tmp/cw-files/binary.txt && printf 'old\\n' > /tmp/cw-files/keep.txt && chown 65534:65534 /tmp/cw-files/keep.txt && chmod 604 /tmp/cw-files/keep.txt"
     verify = "tests/files_verify.ws"
 
     step "dir" {
@@ -129,6 +132,20 @@ package "linux_files" {
       resource = "file"
       requires = ["dir"]
       properties { path = "/tmp/cw-files/a.txt" content = "alpha\n" mode = "0644" }
+    }
+
+    step "binary" {
+      description = "Replace non-UTF-8 content"
+      resource = "file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/binary.txt" content = "text\n" }
+    }
+
+    step "keep" {
+      description = "Rewrite content without resetting an unmanaged owner and mode"
+      resource = "file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/keep.txt" content = "new\n" }
     }
 
     step "link" {
@@ -276,7 +293,7 @@ TMPL
   test "file_url_and_permissions_converge" {
     description = "file fetches by url over local HTTP and permissions converges a mode"
     image = "python:3.12-slim"
-    setup = "mkdir -p /srv/www && printf 'payload\\n' > /srv/www/payload.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
+    setup = "mkdir -p /srv/www /srv/dl && printf 'payload\\n' > /srv/www/payload.txt && printf 'old\\n' > /srv/dl/keep.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
     verify = "tests/download_verify.ws"
 
     step "fetch" {
@@ -295,6 +312,19 @@ TMPL
       resource = "file"
       expect = "error"
       properties { path = "/srv/dl/conflict.txt" url = "http://127.0.0.1:8080/payload.txt" content = "nope" }
+    }
+
+    // The digest is the empty file's, so the download can never match: the
+    // file already at the path must survive, and no temp file is left.
+    step "bad_digest" {
+      description = "a download that fails its sha256 leaves the existing file alone"
+      resource = "file"
+      expect = "error"
+      properties {
+        path = "/srv/dl/keep.txt"
+        url = "http://127.0.0.1:8080/payload.txt"
+        sha256 = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+      }
     }
 
     step "perms" {
