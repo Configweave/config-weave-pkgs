@@ -116,6 +116,20 @@ fn promote(m: Machine, key: string, props: Value) -> Result[bool, string] {
     Ok(true)
 }
 
+// promote(), allowing one extra reboot for a change finished in two steps.
+fn promote_twice(m: Machine, key: string, props: Value) -> Result[bool, string] {
+    let r = m.apply_resource(key, props)?
+    if r.status != "reboot_required" { return Err(key + ": expected reboot_required, got " + r.status + " (" + r.message + ")") }
+    m.reboot()?
+    let r2 = m.apply_resource(key, props)?
+    if r2.status == "already_configured" { return Ok(true) }
+    if r2.status != "reboot_required" { return Err(key + ": after the reboot, got " + r2.status + " (" + r2.message + ")") }
+    m.reboot()?
+    let r3 = m.apply_resource(key, props)?
+    if r3.status != "already_configured" { return Err(key + ": did not converge after a second reboot, got " + r3.status + " (" + r3.message + ")") }
+    Ok(true)
+}
+
 // Install the AD-DS role and fail loudly if it does not converge.
 fn install_role(m: Machine) -> Result[bool, string] {
     let r = m.apply_resource("windows_features.windows_server_feature", Value::Map(#{
@@ -223,7 +237,9 @@ fn run(lab: Lab) -> Result[bool, string] {
         "new_name": s("MEMBER01X"),
         "ou_path": s("OU=Servers,DC=corp,DC=example,DC=com")
     })
-    promote(mem, "windows_domain.domain_member", join)?
+    // A rename that could not finish with the join is completed after the
+    // first reboot, which asks for one more.
+    promote_twice(mem, "windows_domain.domain_member", join)?
     let pm = membership(mem)?
     if !gv_bool(pm, "part_of_domain") || gv_str(pm, "role") != "member_server" || gv_str(pm, "computer_name") != "MEMBER01X" {
         return Err("member01 did not join as MEMBER01X (role '" + gv_str(pm, "role") + "', name '" + gv_str(pm, "computer_name") + "')")

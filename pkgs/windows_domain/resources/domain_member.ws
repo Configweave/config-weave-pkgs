@@ -72,10 +72,19 @@ fn join(params: Value, domain: string, user: string, other: bool) -> Result[Appl
         // Moving from another domain needs that domain's unjoin rights too.
         (if other { " -UnjoinDomainCredential $cred" } else { "" })
     log::info("joining " + domain)
+    // Add-Computer can join and then fail the rename it was asked for ("the
+    // directory service is busy" while the new account settles). The join
+    // stands, so the rename is retried on its own; if it still fails, the
+    // check after the reboot sees the old name and renames then.
+    let rename_retry = if nn != "" {
+        "catch {{ if ($_.Exception.Message -notmatch 'successfully joined') {{ throw }}; " +
+        "$renamed = $false; for ($i = 0; $i -lt 6 -and -not $renamed; $i++) {{ Start-Sleep -Seconds 10; " +
+        "try {{ Rename-Computer -NewName " + common::ps_q(nn) + " -DomainCredential $cred -Force -WarningAction SilentlyContinue; $renamed = $true }} catch {{ }} }} }}; "
+    } else { "catch {{ throw }}; " }
     common::ps_env("joining " + domain,
         common::cred_ps(user) +
-        "Add-Computer -DomainName " + common::ps_q(domain) + " -Credential $cred" + opts + " -Force -WarningAction SilentlyContinue | Out-Null; " +
-        common::mark_ps("domain_member"),
+        "try {{ Add-Computer -DomainName " + common::ps_q(domain) + " -Credential $cred" + opts + " -Force -WarningAction SilentlyContinue | Out-Null }} " +
+        rename_retry + common::mark_ps("domain_member"),
         secrets(params))?
     Ok(ApplyResult::RebootRequired)   // joining a domain requires a reboot to finish
 }
