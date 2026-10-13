@@ -98,10 +98,12 @@ fn reconcile(params: Value, domain: string, user: string, m: Value) -> Result[Ap
     let move = if !common::get_bool(m, "ou_ok") {
         log::info("moving this computer's account to " + ou)
         ou_ps(ou) +
-        "$guid = (New-Object Guid (,[byte[]]$comp.Properties['objectguid'][0])).ToString(); " +
-        "$e = New-Object System.DirectoryServices.DirectoryEntry(('LDAP://<GUID=' + $guid + '>'), " + common::ps_q(user) + ", $env:CW_CRED_PW); " +
-        "$t = New-Object System.DirectoryServices.DirectoryEntry(('LDAP://' + $ouDn.Replace('/', '\\/')), " + common::ps_q(user) + ", $env:CW_CRED_PW); " +
-        "$e.MoveTo($t); "
+        // Both entries are bound on the same DC by DN, with the credential;
+        // a serverless <GUID=...> binding failed MoveTo with "Unspecified
+        // error".
+        "$dc = ([System.DirectoryServices.ActiveDirectory.Domain]::GetComputerDomain()).FindDomainController().Name; " +
+        "function Entry($dn) {{ New-Object System.DirectoryServices.DirectoryEntry(('LDAP://' + $dc + '/' + $dn.Replace('/', '\\/')), " + common::ps_q(user) + ", $env:CW_CRED_PW, 'Secure') }}; " +
+        "(Entry $cdn).MoveTo((Entry $ouDn)); "
     } else { "" }
     let rename = if reboot {
         log::info("renaming this computer to " + nn)
