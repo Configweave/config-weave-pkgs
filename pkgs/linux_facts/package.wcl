@@ -15,16 +15,16 @@ package "linux_facts" {
   }
 
   gatherer "init_system" {
-    description = "Detect the init/service manager"
+    description = "Detect the init/service manager from PID 1 (/proc/1/comm and, when readable, /proc/1/exe), not from which tools are installed. In a container whose PID 1 is a plain entrypoint this is :unknown"
     script = "gatherers/init_system.ws"
     returns "init" {
       description = "Detected init/service manager"
       type = "symbol"
-      symbol "systemd"  { description = "systemd — /run/systemd/system exists and systemctl runs" }
-      symbol "openrc"   { description = "OpenRC" }
-      symbol "runit"    { description = "runit" }
-      symbol "sysvinit" { description = "SysV init scripts, detected via `service`" }
-      symbol "unknown"  { description = "No init manager could be detected" }
+      symbol "systemd"  { description = "systemd is PID 1" }
+      symbol "openrc"   { description = "OpenRC: PID 1 is openrc-init, or /run/openrc exists (OpenRC booted under sysvinit's or busybox's init)" }
+      symbol "runit"    { description = "runit is PID 1" }
+      symbol "sysvinit" { description = "SysV init: PID 1 is an init reading /etc/inittab, other than busybox's" }
+      symbol "unknown"  { description = "PID 1 is none of the above, such as a container entrypoint" }
     }
   }
 
@@ -103,9 +103,14 @@ package "linux_facts" {
       }
     }
 
+    // PID 1 is vmlab's /init. Debian's `service` used to make every such
+    // host :sysvinit.
     gather "init" {
-      description = "Init system is detected"
+      description = "A container entrypoint as PID 1 is not mistaken for an init system"
       from = "init_system"
+      expect {
+        init = :unknown
+      }
     }
 
     gather "net" {
