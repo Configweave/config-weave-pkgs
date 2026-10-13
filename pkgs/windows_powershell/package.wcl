@@ -2681,6 +2681,16 @@ package "windows_powershell" {
       }
     }
 
+    // On this throwaway VM only: the policy applies to every PowerShell on
+    // the machine. A thumbprint is enough for the policy to hold.
+    step "protected_logging" {
+      description = "Enable protected event logging under the EventLog policy key both editions read"
+      resource = "protected_event_logging"
+      properties {
+        encryption_certificate = "0123456789ABCDEF0123456789ABCDEF01234567"
+      }
+    }
+
     step "all_users_profile" {
       description = "Write the machine-wide PowerShell 7 profile"
       resource = "profile"
