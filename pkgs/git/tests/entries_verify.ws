@@ -48,6 +48,7 @@ fn verify(facts: Value) -> Result[bool, string] {
 
     // Removing one entry of a multi-valued key must leave its siblings.
     let multi = want_all("safe.directory", "/srv/repo")? &&
+        want_all("alias.st", "status -sb")? &&
         want_all("url.git@example.com:.insteadOf", "https://two.invalid/")?
 
     let raw = want("branch.main.rebase", "true")?

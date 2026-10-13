@@ -14,15 +14,16 @@ fn alias_name(params: Value) -> Result[string, string] {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = alias_name(params)?
-    let have = common::cfg_get(params, "alias." + name)?
+    let have = common::cfg_get_all(params, "alias." + name)?
     if !common::want_present(params)? {
-        if have.is_none() { return Ok(CheckResult::AlreadyConfigured) }
+        if have.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
     let command = common::param_str(params, "command", "")
     if command == "" { return Err("missing 'command' parameter") }
+    // Exactly one definition, since apply writes with --replace-all.
     // Compared literally, not through fold_words(): an alias is arbitrary text.
-    if have.unwrap_or("") == command { return Ok(CheckResult::AlreadyConfigured) }
+    if have.len() == 1 && have.get(0).unwrap_or("") == command { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 

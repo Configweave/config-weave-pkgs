@@ -1261,7 +1261,7 @@ package "git" {
     description = "Aliases, safe directories and raw entries converge and are removable"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/entries && printf '[alias]\\n\\toldco = checkout\\n[safe]\\n\\tdirectory = /srv/stale\\n[core]\\n\\teditor = seeded-editor\\n[http]\\n\\textraHeader = X-One: 1\\n\\textraHeader = X-Two: 2\\n[url \"git@example.com:\"]\\n\\tinsteadOf = https://one.invalid/\\n\\tinsteadOf = https://two.invalid/\\n' > /root/entries/.gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/entries && printf '[alias]\\n\\toldco = checkout\\n\\tst = status\\n\\tst = status -sb\\n[safe]\\n\\tdirectory = /srv/stale\\n[core]\\n\\teditor = seeded-editor\\n[http]\\n\\textraHeader = X-One: 1\\n\\textraHeader = X-Two: 2\\n[url \"git@example.com:\"]\\n\\tinsteadOf = https://one.invalid/\\n\\tinsteadOf = https://two.invalid/\\n' > /root/entries/.gitconfig"
     verify = "tests/entries_verify.ws"
 
     // The value carries # and " — the characters the old hand-rolled INI
@@ -1291,6 +1291,14 @@ package "git" {
       description = "A raw entry whose value spans two lines"
       resource = "config_entry"
       properties { key = "cw.multiline" value = "first\nsecond" home = "/root/entries" }
+    }
+
+    // Seeded twice. git uses the last definition, which already matches,
+    // but apply writes one value with --replace-all, so two is drift.
+    step "alias_duplicated" {
+      description = "An alias defined twice is collapsed to one definition"
+      resource = "alias"
+      properties { name = "st" command = "status -sb" home = "/root/entries" }
     }
 
     step "rm_alias" {
