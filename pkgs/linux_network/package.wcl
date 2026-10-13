@@ -64,11 +64,26 @@ package "linux_network" {
     param "from" { description = "Optional source address or CIDR; empty or any means every source" type = "string" default = "" }
   }
 
+  // nftables names (table, chain) are identifiers: a letter or '_' first,
+  // then letters, digits, '_', '-' and '.'; nft itself rejects a name that
+  // is one of its keywords (fwd, counter, ...). Nothing here persists the
+  // ruleset; it lives in the kernel until saved to /etc/nftables.conf.
   resource "nftables_table" {
-    description = "Ensure an nftables table exists or is absent"
+    description = "Ensure an nftables table exists or is absent in the running ruleset"
     script = "resources/nftables_table.ws"
     concurrency = "global"
-    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
+    param "family" {
+      description = "Address family"
+      type = "symbol"
+      default = :inet
+
+      symbol "inet"   { description = "IPv4 and IPv6" }
+      symbol "ip"     { description = "IPv4 only" }
+      symbol "ip6"    { description = "IPv6 only" }
+      symbol "arp"    { description = "ARP" }
+      symbol "bridge" { description = "Bridged traffic" }
+      symbol "netdev" { description = "Per-device ingress and egress" }
+    }
     param "name" { description = "Table name" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -81,41 +96,85 @@ package "linux_network" {
   }
 
   resource "nftables_chain" {
-    description = "Ensure an nftables chain exists or is absent (base chain when type/hook are set)"
+    description = "Ensure an nftables chain exists with the given shape, or is absent, in the running ruleset. A base chain is compared on type, hook, priority and (when set) policy, read from nft -j. A policy change is made in place; a different type, hook or priority, or turning a regular chain into a base chain or back, deletes and recreates the chain, which drops its rules, so nftables_rule steps for the chain should require this step to add them back. Removal flushes the chain first; a chain another rule still jumps to cannot be removed"
     script = "resources/nftables_chain.ws"
     concurrency = "global"
-    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
-    param "table" { description = "Owning table name" type = "string" required = true }
+    param "family" {
+      description = "Address family"
+      type = "symbol"
+      default = :inet
+
+      symbol "inet"   { description = "IPv4 and IPv6" }
+      symbol "ip"     { description = "IPv4 only" }
+      symbol "ip6"    { description = "IPv6 only" }
+      symbol "arp"    { description = "ARP" }
+      symbol "bridge" { description = "Bridged traffic" }
+      symbol "netdev" { description = "Per-device ingress and egress" }
+    }
+    param "table" { description = "Owning table name; the table must exist (see nftables_table)" type = "string" required = true }
     param "name" { description = "Chain name" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the chain" }
-      symbol "absent"  { description = "Delete the chain" }
+      symbol "present" { description = "Create the chain, or reshape it" }
+      symbol "absent"  { description = "Flush and delete the chain" }
     }
-    param "type" { description = "Base chain type: filter, nat or route (empty for a regular chain)" type = "string" default = "" }
-    param "hook" { description = "Base chain hook: input, output, forward, prerouting or postrouting" type = "string" default = "" }
-    param "priority" { description = "Base chain priority" type = "int" default = 0 }
-    param "policy" { description = "Base chain policy: accept or drop (empty leaves the default)" type = "string" default = "" }
+    param "type" {
+      description = "Base chain type; leave unset for a regular chain (a jump target with no hook)"
+      type = "symbol"
+
+      symbol "filter" { description = "Filter packets" }
+      symbol "nat"    { description = "Address translation; first packet of a connection only" }
+      symbol "route"  { description = "Reroute locally generated packets whose marks or addresses change (output hook)" }
+    }
+    param "hook" {
+      description = "Base chain hook; set together with type"
+      type = "symbol"
+
+      symbol "prerouting"  { description = "Every packet as it arrives, before routing" }
+      symbol "input"       { description = "Packets for this host" }
+      symbol "forward"     { description = "Packets routed through this host" }
+      symbol "output"      { description = "Packets this host sends" }
+      symbol "postrouting" { description = "Every packet as it leaves, after routing" }
+    }
+    param "priority" { description = "Base chain priority as a number (filter is 0, dstnat -100, srcnat 100)" type = "int" default = 0 }
+    param "policy" {
+      description = "Base chain policy; unset leaves the chain's policy unmanaged (nft creates accept). Rejected on a regular chain"
+      type = "symbol"
+
+      symbol "accept" { description = "Accept packets no rule decided" }
+      symbol "drop"   { description = "Drop packets no rule decided" }
+    }
   }
 
   resource "nftables_rule" {
-    description = "Ensure an nftables rule is present in or absent from a chain"
+    description = "Ensure an nftables rule is present in or absent from a chain in the running ruleset. Rules are compared as text against nft -a list chain, ignoring whitespace and the state of stateful statements (counter packets/bytes, quota used), so write the rule as nft prints it back. When nft stores an added rule in another form (tcp dport ssh becomes tcp dport 22, limit gains burst 5 packets), apply takes it out again and fails, naming the form to use. :absent deletes every copy of the rule. A missing chain or table means the rule is absent"
     script = "resources/nftables_rule.ws"
     concurrency = "global"
-    param "family" { description = "Address family: inet, ip, ip6, arp, bridge or netdev" type = "string" default = "inet" }
+    param "family" {
+      description = "Address family"
+      type = "symbol"
+      default = :inet
+
+      symbol "inet"   { description = "IPv4 and IPv6" }
+      symbol "ip"     { description = "IPv4 only" }
+      symbol "ip6"    { description = "IPv6 only" }
+      symbol "arp"    { description = "ARP" }
+      symbol "bridge" { description = "Bridged traffic" }
+      symbol "netdev" { description = "Per-device ingress and egress" }
+    }
     param "table" { description = "Owning table name" type = "string" required = true }
     param "chain" { description = "Owning chain name" type = "string" required = true }
-    param "rule" { description = "Rule expression as nft prints it, such as 'tcp dport 22 accept'" type = "string" required = true }
+    param "rule" { description = "Rule expression as nft prints it, such as 'tcp dport 22 accept'; one rule, so no line breaks or ';'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Add the rule to the chain" }
-      symbol "absent"  { description = "Delete the rule from the chain" }
+      symbol "present" { description = "Add the rule to the end of the chain" }
+      symbol "absent"  { description = "Delete every copy of the rule from the chain" }
     }
   }
 
@@ -162,55 +221,115 @@ package "linux_network" {
     }
   }
 
-  // The firewall resources need a real kernel and NET_ADMIN, so they run in
-  // VMs: nftables and ufw on Ubuntu (both ship in the image), firewalld on
-  // Fedora. Write nftables rules exactly as `nft` prints them back — the
-  // resource compares against that text.
-  test "nftables_and_ufw_converge" {
-    description = "An nftables table, chain and rule and a ufw rule converge"
+  // nftables needs nf_tables in the kernel, which the container micro-VM
+  // kernel lacks, so it runs in an Ubuntu VM (nft ships in the image).
+  // Setup seeds table cwseed with chains and rules to reshape and remove.
+  // Drift chains hook forward, so a drop policy never cuts the guest off.
+  test "nftables_converge" {
+    description = "nftables tables, chains and rules are created, reshaped and removed"
     template = "x86_64/ubuntu-24.04"
-    verify = "tests/firewall_verify.ws"
+    setup = "printf 'add table ip cwgone\\nadd table inet cwseed\\nadd chain inet cwseed seedfwd { type filter hook forward priority 0; policy drop; }\\nadd rule inet cwseed seedfwd tcp dport 2222 counter accept\\nadd rule inet cwseed seedfwd udp dport 5353 counter drop\\nadd rule inet cwseed seedfwd udp dport 5353 counter drop\\nadd chain inet cwseed reshape { type filter hook forward priority 10; }\\nadd rule inet cwseed reshape counter\\nadd chain inet cwseed doomed\\nadd rule inet cwseed doomed counter accept\\n' | nft -f -"
+    verify = "tests/nftables_verify.ws"
 
     step "table" {
       description = "Create an nftables table"
       resource = "nftables_table"
-      properties { family = "inet" name = "cwtest" ensure = :present }
+      properties { name = "cwtest" }
     }
 
     step "chain" {
       description = "Create a base chain in the table"
       resource = "nftables_chain"
       requires = ["table"]
-      properties {
-        family = "inet"
-        table = "cwtest"
-        name = "input"
-        type = "filter"
-        hook = "input"
-        priority = 0
-        policy = "accept"
-        ensure = :present
-      }
+      properties { table = "cwtest" name = "input" type = :filter hook = :input priority = 0 policy = :accept }
+    }
+
+    step "regular_chain" {
+      description = "Create a regular chain"
+      resource = "nftables_chain"
+      requires = ["table"]
+      properties { table = "cwtest" name = "jumps" }
     }
 
     step "rule" {
       description = "Add a rule to the chain"
       resource = "nftables_rule"
       requires = ["chain"]
-      properties {
-        family = "inet"
-        table = "cwtest"
-        chain = "input"
-        rule = "tcp dport 8080 accept"
-        ensure = :present
-      }
+      properties { table = "cwtest" chain = "input" rule = "tcp dport 8080 accept" }
+    }
+
+    step "counter_rule" {
+      description = "Add a counting rule, which nft prints back with packet and byte counts"
+      resource = "nftables_rule"
+      requires = ["chain"]
+      properties { table = "cwtest" chain = "input" rule = "tcp dport 8081 counter accept" }
+    }
+
+    step "policy_drift" {
+      description = "Open a seeded drop policy in place, keeping the chain's rules"
+      resource = "nftables_chain"
+      properties { table = "cwseed" name = "seedfwd" type = :filter hook = :forward policy = :accept }
+    }
+
+    step "seeded_counter_rule" {
+      description = "A seeded counting rule is found, not added again"
+      resource = "nftables_rule"
+      expect = "already_configured"
+      properties { table = "cwseed" chain = "seedfwd" rule = "tcp dport 2222 counter accept" }
+    }
+
+    step "reshape" {
+      description = "Recreate a seeded chain whose hook and priority changed"
+      resource = "nftables_chain"
+      properties { table = "cwseed" name = "reshape" type = :filter hook = :prerouting priority = -5 }
+    }
+
+    step "remove_rule" {
+      description = "Delete both copies of a seeded rule"
+      resource = "nftables_rule"
+      properties { table = "cwseed" chain = "seedfwd" rule = "udp dport 5353 counter drop" ensure = :absent }
+    }
+
+    step "remove_chain" {
+      description = "Delete a seeded chain that still has rules"
+      resource = "nftables_chain"
+      properties { table = "cwseed" name = "doomed" ensure = :absent }
+    }
+
+    step "remove_table" {
+      description = "Delete a seeded table"
+      resource = "nftables_table"
+      properties { family = :ip name = "cwgone" ensure = :absent }
     }
 
     step "absent_table_stays_absent" {
       description = "A table that was never created is already configured"
       resource = "nftables_table"
       expect = "already_configured"
-      properties { family = "inet" name = "cw-never-created" ensure = :absent }
+      properties { name = "cw-never-created" ensure = :absent }
+    }
+
+    step "noncanonical" {
+      description = "A rule nft stores in another form is taken out again and refused"
+      resource = "nftables_rule"
+      requires = ["chain"]
+      expect = "error"
+      properties { table = "cwtest" chain = "input" rule = "tcp dport ssh accept" }
+    }
+
+    step "injection" {
+      description = "A rule that would run a second nft command is rejected"
+      resource = "nftables_rule"
+      requires = ["chain"]
+      expect = "error"
+      properties { table = "cwtest" chain = "input" rule = "accept; add table inet cwpwned" }
+    }
+
+    step "policy_on_regular" {
+      description = "A policy on a regular chain is rejected"
+      resource = "nftables_chain"
+      expect = "error"
+      properties { table = "cwtest" name = "nopolicy" policy = :drop }
     }
   }
 

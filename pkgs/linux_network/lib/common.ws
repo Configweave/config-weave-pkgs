@@ -77,3 +77,37 @@ fn nft_name(key: string, v: string) -> Result[unit, string] {
     }
     Ok(())
 }
+
+fn nft_family(params: Value) -> Result[string, string] {
+    let f = param_str(params, "family", "inet")
+    if f == "inet" || f == "ip" || f == "ip6" || f == "arp" || f == "bridge" || f == "netdev" { return Ok(f) }
+    Err("invalid 'family' value '" + f + "' (expected :inet, :ip, :ip6, :arp, :bridge or :netdev)")
+}
+
+// Run an nft script through `nft -f -`: one transaction, and nothing in it
+// passes through a shell.
+fn nft_script(what: string, script: string, flags: string) -> Result[CmdOutput, string] {
+    let out = shell::bash("nft " + flags + " -f -", Value::Map(#{ "stdin": Value::String(script + "\n") }))?
+    if !out.success { return Err(cmd_err(what, out)) }
+    Ok(out)
+}
+
+// A table or chain reference for nft: the family, then each name. nft
+// (1.0.9 at least) does not accept quoted names here, so a name that is
+// also an nft keyword (fwd, counter, ...) fails with nft's syntax error.
+fn nft_ref(family: string, names: List[string]) -> string {
+    let out = family
+    for n in names { out = out + " " + n }
+    out
+}
+
+// `nft <flags> list <what> <ref>`: None when it does not exist, an error
+// for any other failure (no permission, no nf_tables in the kernel). nft
+// joins its arguments into one command, so the whole command is one
+// shell-quoted word.
+fn nft_list(flags: string, what: string) -> Result[Option[string], string] {
+    let out = shell::bash("nft " + flags + " " + q("list " + what), Value::Null)?
+    if out.success { return Ok(Some(out.stdout)) }
+    if out.stderr.contains("No such file or directory") { return Ok(None) }
+    Err(cmd_err("nft list " + what, out))
+}
