@@ -70,6 +70,118 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 
+### `linux_accounts`
+
+Local users, groups and per-user sudo rules. 3 resources:
+
+- `user` — `uid`, primary `group` (name or gid), `home` and `shell`, each
+  compared only when set and reconciled on an existing user with one
+  `usermod`. A new `home` is moved there with `usermod -m`, unless the
+  directory already exists: then it is adopted as it is and the old home is
+  left in place. `system` only applies at creation; an existing account on
+  the wrong side of `UID_MIN` is an error unless `uid` is set. `:absent`
+  takes `remove_home` (`userdel -r`).
+- `group` — `gid` is reconciled with `groupmod -g`, which does not re-own
+  files carrying the old gid. `:absent` fails while the group is still a
+  user's primary group, so remove the user first with `requires`.
+- `sudoers_user` — one rule, `<user> ALL=(ALL:ALL) [NOPASSWD: ]<commands>`,
+  in `/etc/sudoers.d/<user>`, owned by root with mode 0440. A dotted user
+  (`john.doe`) gets `john_doe`, since sudo skips file names with a dot.
+  The rule is checked with `visudo -cf` under a name sudo ignores and only
+  then renamed into place, so an invalid rule never goes live. `user` may be
+  `%group`.
+
+Only `/etc/passwd` and `/etc/group` are read: an LDAP or SSSD account of the
+same name is not treated as local. Names are letters, digits, `_`, `.` and
+`-`, not starting with `-` or `.`; `home` and `shell` are absolute paths;
+`commands` is one non-empty line.
+
+### `linux_ssh`
+
+Keys, known hosts and ssh/sshd configuration. 4 resources:
+
+- `authorized_key` — one key in a user's `~/.ssh/authorized_keys`. Lines
+  match on key type and blob, so a line for the same key with other options
+  or another comment is rewritten (`:present`) or removed (`:absent`). check
+  also requires what sshd's StrictModes requires: `.ssh` 700 and the file
+  600, both owned by the user.
+- `known_host` — one `known_hosts` entry, with `ensure`. `name` makes the
+  step own a host: a new key of the same type replaces the old one, and
+  `:absent` with only `name` removes every plain entry for that host. The
+  default file is in the passwd home of the user config-weave runs as, not
+  `$HOME`. In a home, `.ssh` and the file belong to the home's owner.
+- `ssh_config_setting` — one `/etc/ssh/ssh_config.d` drop-in per key and
+  `host` pattern.
+- `sshd_config_setting` — one `/etc/ssh/sshd_config.d` drop-in per key. When
+  sshd is installed, apply runs `sshd -t` and puts the old drop-in back if
+  sshd rejects the new one. check compares the effective value from
+  `sshd -T`, so a key set earlier by another file is an error, not a false
+  converge. `reload = true` reloads a running sshd; otherwise the running
+  daemon keeps its old settings until it is restarted.
+
+Drop-ins are named `10-config-weave-…` so they sort ahead of
+`50-cloud-init.conf` and other distribution drop-ins: ssh and sshd keep the
+first value they read. Files left by older versions under the
+`50-config-weave-…` name are removed when the step next applies. Both
+drop-in resources need the distribution's `Include …/*.d/*.conf` line in
+the main config, which Debian, Ubuntu and Fedora ship. Option keys are
+letters and digits only, and line breaks in any value are rejected.
+
+### `linux_network`
+
+Hosts entries and firewall rules. 6 resources:
+
+- `hosts_entry` — exactly one `/etc/hosts` line for an address, mapping it
+  to exactly the given names in order. Lines match on their first field, so
+  spacing and trailing comments do not matter; a line with old names is
+  rewritten in place and extra lines for the address are dropped.
+  `:absent` removes every line for the address. The file is rewritten in
+  place because container runtimes bind-mount it.
+- `firewalld_rule` — one service, port, source or rich rule in a zone.
+  firewalld must be running (`firewall-cmd` needs the daemon even for
+  `--permanent`). `permanent = true`, the default, manages both the running
+  firewall and the saved configuration; `false` manages the running
+  firewall only, which a reload resets.
+- `ufw_rule` — a ufw rule for a port spec (`22/tcp`, `6000:6007/tcp`) or an
+  application profile (`OpenSSH`, `WWW Full`), optionally from a source.
+  `action` is `:allow`, `:deny`, `:reject` or `:limit`. Presence is read
+  from `ufw show added`, so it works while ufw is inactive; enabling ufw is
+  not managed.
+- `nftables_table`, `nftables_chain`, `nftables_rule` — the running nftables
+  ruleset; nothing is saved to `/etc/nftables.conf`. `family`, `type`,
+  `hook` and `policy` are symbols. A chain is compared on its type, hook,
+  priority and policy (from `nft -j`): a policy change is made in place,
+  and any other change recreates the chain, which drops its rules, so rule
+  steps for the chain should `require` the chain step. Rules compare as
+  text, ignoring whitespace and counter and quota state, so write them as
+  `nft list chain` prints them. When nft stores a rule in another form
+  (`tcp dport ssh` becomes `tcp dport 22`), apply removes the copy it added
+  and fails, naming the form to use.
+
+### `linux_kde`
+
+KDE Plasma configuration files, edited directly with no KDE tools needed.
+1 resource and 2 gatherers:
+
+- `kconfig_entry` — one key in a file under `~/.config`, in `[group]` or
+  `[group][subgroup]`. Keys match the way KConfig reads them (split at the
+  first `=`, whitespace trimmed), values are escaped the way `kwriteconfig6`
+  writes them, and a duplicate key is removed. `value` is required when
+  `:present`; `""` writes an empty value. Files and directories it creates
+  belong to the owner of `home`, and `home` must already exist. Steps run
+  exclusively, so several steps can edit one file.
+- `kde_paths` — the home, `~/.config` and `~/.local/share` paths, and
+  whether `kreadconfig6`, `kwriteconfig6` and `plasma-apply-colorscheme` are
+  on `PATH`.
+- `kde_version` — `plasma_major` from `plasmashell --version`, and the
+  KConfig tool generation on `PATH` (`kconfig_tools_major`,
+  `has_legacy_kconfig_tools` when only the 5 tools exist).
+
+Without `home`, both use the passwd home of the account config-weave runs
+as. A running Plasma session can write its own settings back over an edit:
+apply while the user is logged out, or reload the component afterwards (for
+example `qdbus org.kde.KWin /KWin reconfigure`) or log in again.
+
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting
