@@ -2,19 +2,19 @@ package "linux_apt" {
   description = "Manage packages on apt/dpkg systems"
 
   resource "package" {
-    description = "Ensure an apt package is installed or absent"
+    description = "Ensure an apt package is installed, at an exact version if one is given, or absent. Installed means dpkg reports it installed: a removed package whose conffiles remain (the \"rc\" state) counts as absent. A package held with apt-mark is an error to change, version or removal alike; release the hold first with linux_apt.hold. apt-get waits up to five minutes for the dpkg lock, but different linux_apt resource types can still run at the same time, so order package, hold, debconf_selection and cache_updated steps with requires"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "Package name, optionally with :arch; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "absent"  { description = "Remove the package with apt-get remove; its conffiles stay (the rc state)" }
     }
-    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+    param "version" { description = "Exact version to install when present, the full Debian version as apt-cache policy shows it including any epoch (1:2.38-1); empty means any version. A version below the installed one is a downgrade, which is allowed. This installs a version once; it does not stop later upgrades, which is what linux_apt.hold is for" type = "string" default = "" }
   }
 
   resource "cache_updated" {
@@ -121,6 +121,74 @@ package "linux_apt" {
       resource = "package"
       expect = "already_configured"
       properties { name = "cw-no-such-package" ensure = :absent }
+    }
+  }
+
+  // Versions, removal and holds against a local file repository of tiny
+  // packages that setup builds with dpkg-deb, so every version exists and
+  // stays put. Setup is idempotent: the group shares one container.
+  test "package_versions" {
+    description = "package pins versions (downgrades included), treats the rc state as absent, removes for real and guards dependents and holds"
+    image = "debian:12"
+    group = "debian"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+d=/srv/cw-repo
+rm -rf "$d" && mkdir -p "$d"
+mk() {
+  b=$(mktemp -d) && mkdir -p "$b/DEBIAN"
+  { printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: cw <cw@config-weave.invalid>\n' "$1" "$2"; [ -z "$3" ] || echo "Depends: $3"; echo 'Description: config-weave test package'; } > "$b/DEBIAN/control"
+  if [ "$1" = cw-rc ]; then mkdir -p "$b/etc" && echo x > "$b/etc/cw-rc.conf" && echo /etc/cw-rc.conf > "$b/DEBIAN/conffiles"; fi
+  dpkg-deb -Zgzip --build "$b" "$d/$1_$2_all.deb" >/dev/null && rm -rf "$b"
+}
+mk cw-pin 1.0 ''; mk cw-pin 2.0 ''; mk cw-held 1.0 ''; mk cw-held 2.0 ''
+mk cw-rc 1.0 ''; mk cw-gone 1.0 ''
+mk cw-base 1.0 ''; mk cw-dep 1.0 cw-base
+mk cw-base2 1.0 ''; mk cw-dep2 1.0 cw-base2
+cd "$d" && for f in *.deb; do dpkg-deb -f "$f"; printf 'Filename: ./%s\nSize: %s\nSHA256: %s\n\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"; done > Packages
+echo 'deb [trusted=yes] file:/srv/cw-repo ./' > /etc/apt/sources.list.d/cw-local.list
+apt-get update -qq
+apt-mark unhold cw-held >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades cw-pin=2.0 cw-held=2.0 cw-rc cw-gone cw-dep cw-dep2 >/dev/null
+apt-mark hold cw-held >/dev/null
+dpkg -r cw-rc >/dev/null
+SETUP
+    verify = "tests/apt_versions_verify.ws"
+
+    step "rc_state_pin" {
+      description = "A removed package whose conffiles remain is not installed, even at the pinned version"
+      resource = "package"
+      properties { name = "cw-rc" version = "1.0" }
+    }
+
+    step "downgrade" {
+      description = "Pin below the installed version"
+      resource = "package"
+      requires = ["rc_state_pin"]
+      properties { name = "cw-pin" version = "1.0" }
+    }
+
+    step "remove" {
+      description = "Remove an installed package"
+      resource = "package"
+      requires = ["downgrade"]
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "held_pin" {
+      description = "A held package is not silently re-versioned"
+      resource = "package"
+      expect = "error"
+      requires = ["remove"]
+      properties { name = "cw-held" version = "1.0" }
+    }
+
+    step "option_name" {
+      description = "A name apt would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--purge" }
     }
   }
 
