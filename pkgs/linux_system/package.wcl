@@ -2,11 +2,19 @@ package "linux_system" {
   description = "Manage core Linux system configuration"
 
   resource "sysctl" {
-    description = "Ensure a sysctl value at runtime and persisted via a sysctl.d drop-in"
+    description = "Ensure a sysctl value at runtime and persisted in its own drop-in, /etc/sysctl.d/99-config-weave-<key>.conf, or that the drop-in is absent. Multi-value keys compare field by field, so whitespace between values does not matter. Another sysctl.d file sorting after 99-config-weave-* can still override the value at boot"
     script = "resources/sysctl.ws"
     concurrency = "global"
-    param "key" { description = "Sysctl key" type = "string" required = true }
-    param "value" { description = "Desired value" type = "string" required = true }
+    param "key" { description = "Sysctl key, dotted (net.ipv4.ip_forward) or with slashes (net/ipv4/conf/eth0.100/forwarding, the only spelling for an interface name with a dot)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the value now and persist it in the drop-in" }
+      symbol "absent"  { description = "Delete the drop-in. The running value is left as it is until the next boot or sysctl --system" }
+    }
+    param "value" { description = "Desired value (required when :present); space-separate the fields of a multi-value key" type = "string" default = "" }
   }
 
   resource "hostname" {
@@ -99,8 +107,6 @@ package "linux_system" {
     }
   }
 
-  // sysctl stays untested here: /proc/sys is read-only in unprivileged
-  // containers, so its runtime write cannot converge honestly in docker.
   test "singletons_converge" {
     description = "hostname, timezone and locale converge"
     image = "debian:12"
@@ -199,6 +205,33 @@ SH
       resource = "fstab_mount"
       expect = "error"
       properties { spec = "tmpfs" mountpoint = "/mnt/cw-bad" fstype = "tmpfs" options = "size=1m, mode=0755" }
+    }
+  }
+
+  // vmlab containers have their own kernel, so /proc/sys is writable.
+  test "sysctl_converge" {
+    description = "sysctl sets multi-value and slash-separated keys and removes a drop-in"
+    image = "debian:12"
+    group = "system"
+    setup = "mkdir -p /etc/sysctl.d && printf 'net.ipv4.tcp_syncookies = 1\\n' > /etc/sysctl.d/99-config-weave-net-ipv4-tcp_syncookies.conf"
+    verify = "tests/sysctl_verify.ws"
+
+    step "range" {
+      description = "A multi-value key, which sysctl reports tab-separated"
+      resource = "sysctl"
+      properties { key = "net.ipv4.ip_local_port_range" value = "32000  61000" }
+    }
+
+    step "slash" {
+      description = "A key written with slashes"
+      resource = "sysctl"
+      properties { key = "net/ipv4/ip_forward" value = "1" }
+    }
+
+    step "rm" {
+      description = "Remove a drop-in"
+      resource = "sysctl"
+      properties { key = "net.ipv4.tcp_syncookies" ensure = :absent }
     }
   }
 }
