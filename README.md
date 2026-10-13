@@ -196,6 +196,70 @@ its arguments in one unquoted string. Split it:
 `path = "C:\\svc\\app.exe"` and `arguments = "-k foo"`. A `path` that does
 not exist and contains ` -` or ` /` is rejected with that hint.
 
+### `windows_features`
+
+Three resources, one per Windows mechanism for optional components:
+
+- `windows_optional_feature`: DISM optional features. Enabling also enables
+  the features it depends on (`-All`). Disabling leaves those dependencies
+  enabled and keeps the payload on disk.
+- `windows_capability`: Features on Demand. Adding one usually pulls its
+  payload from Windows Update, which can take many minutes. Windows reports
+  an unknown capability name as `NotPresent`, so a typo with
+  `ensure = :absent` reads as converged.
+- `windows_server_feature`: ServerManager roles and features. It needs
+  Windows Server; on client Windows, use `windows_optional_feature`.
+  `include_management_tools` works in both directions: it installs any
+  missing tools, and it removes them with the feature. The tool list is
+  whatever ServerManager's `-IncludeManagementTools` adds.
+
+Every name must match exactly one component. Wildcards are rejected, and a
+name that matches nothing is an error. The DISM resources take `source` and
+`limit_access` for payloads that are not in the component store, such as
+`NetFx3` on an offline Server. `windows_server_feature` takes `source`.
+
+A change that needs a reboot to finish reports `reboot_required`. The apply
+that made the change reports it, and so does every later check until the
+reboot. A pending change is therefore never mistaken for converged, and it
+is not redone on every run.
+
+### `windows_installers`
+
+- `msi_package` installs, upgrades or removes an MSI identified by its
+  ProductCode. Before msiexec runs, the package's own ProductCode and
+  ProductVersion are checked against `product_id` and `version`.
+  - When the same ProductCode is installed at another version, the package
+    is applied as a minor upgrade (`REINSTALL=ALL REINSTALLMODE=vomus`).
+  - A major upgrade changes the ProductCode, so a new major version needs a
+    new `product_id`.
+  - `alt_product_id` (formerly `package_code`) is a second GUID to look for
+    under the Uninstall key. `ensure = :absent` removes whichever GUID it
+    finds.
+  - Failures quote the error lines from msiexec's verbose log, which is
+    kept under `C:\ProgramData\config-weave\installers\logs`.
+- `exe_installer` runs an EXE installer. It detects the installation by
+  `install_path`, `install_reg` or both. `version` compares `DisplayVersion`
+  under `install_reg`, so `version` requires `install_reg`. Removal runs the
+  first of these that is set:
+  1. `uninstall_path` with `uninstall_args`.
+  2. The `QuietUninstallString` or `UninstallString` under the
+     `install_reg` key. An `MsiExec /I{…}` entry is made a silent `/X`.
+  3. The installer itself, with `uninstall_args`.
+
+  After the installer exits, the resource waits up to two minutes for the
+  install markers to appear or disappear, because many uninstallers return
+  before they finish.
+
+Both resources take a local path or an `http://` or `https://` URL, plus an
+optional `sha256` that is checked before anything runs. Downloaded files
+are kept under `C:\ProgramData\config-weave\installers`, one directory per
+URL. Windows Installer needs an MSI's original file again for repair and
+minor upgrades, so it must not stay in a temp directory.
+
+**Migrating:** rename `package_code` to `alt_product_id`. `exe_installer`
+no longer runs `path` with `args` to uninstall. It now uses `uninstall_path`
+or the registered uninstall command, or `path` with `uninstall_args`.
+
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)
