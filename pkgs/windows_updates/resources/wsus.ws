@@ -1,33 +1,14 @@
 use value
 use registry
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
+use common
 
 // WSUS settings straddle two keys: the server URLs and target group live on
 // the WindowsUpdate key, while the switch that makes the client actually use
 // them (UseWUServer) lives on the AU subkey.
-fn wu_key() -> string { "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate" }
-fn au_key() -> string { "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU" }
-
-fn reg_str(key: string, name: string) -> Result[string, string] {
-    if let Some(v) = registry::read(key, name)? {
-        return Ok(v.as_string().unwrap_or(""))
-    }
-    Ok("")
-}
-
-fn reg_int(key: string, name: string, fallback: int) -> Result[int, string] {
-    if let Some(v) = registry::read(key, name)? {
-        return Ok(v.as_int().unwrap_or(fallback))
-    }
-    Ok(fallback)
-}
+fn wu_names() -> List[string] { ["WUServer", "WUStatusServer", "TargetGroup", "TargetGroupEnabled"] }
 
 fn want_use_wsus(params: Value) -> Result[int, string] {
-    let u = param_str(params, "use_wsus", "unmanaged")
+    let u = common::param_str(params, "use_wsus", "unmanaged")
     if u == "enabled" { return Ok(1) }
     if u == "disabled" { return Ok(0) }
     if u == "unmanaged" { return Ok(-1) }
@@ -35,48 +16,83 @@ fn want_use_wsus(params: Value) -> Result[int, string] {
 }
 
 // An empty string means unmanaged; the status server defaults to the update
-// server, which is what the GP UI does when the field is left blank.
+// server, which is what the GP UI does when the field is left blank. A status
+// server without an update server, or switching the client to WSUS without
+// naming one, would leave the policy half-configured, so both are rejected.
+fn validate(params: Value) -> Result[unit, string] {
+    let server = common::param_str(params, "server", "")
+    if server == "" && common::param_str(params, "status_server", "") != "" {
+        return Err("'status_server' requires 'server'")
+    }
+    if server == "" && want_use_wsus(params)? == 1 {
+        return Err("use_wsus = :enabled requires 'server'")
+    }
+    Ok(())
+}
+
 fn status_server(params: Value) -> string {
-    let s = param_str(params, "status_server", "")
+    let s = common::param_str(params, "status_server", "")
     if s != "" { return s }
-    param_str(params, "server", "")
+    common::param_str(params, "server", "")
+}
+
+fn absent(params: Value) -> Result[bool, string] {
+    if common::want_present(params)? { return Ok(false) }
+    if common::param_str(params, "server", "") != "" || common::param_str(params, "status_server", "") != "" ||
+        common::param_str(params, "target_group", "") != "" || want_use_wsus(params)? != -1 {
+        return Err("ensure = :absent removes the whole WSUS configuration; leave the other params unmanaged")
+    }
+    Ok(true)
+}
+
+fn str_matches(name: string, want: string) -> Result[bool, string] {
+    if let Some(have) = common::reg_str(common::wu_key(), name)? { return Ok(have == want) }
+    Ok(false)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let server = param_str(params, "server", "")
+    if absent(params)? {
+        if common::any_value(common::wu_key(), wu_names())? || common::has_value(common::au_key(), "UseWUServer")? {
+            return Ok(CheckResult::NotConfigured)
+        }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
+    validate(params)?
+    let server = common::param_str(params, "server", "")
     if server != "" {
-        if reg_str(wu_key(), "WUServer")? != server { return Ok(CheckResult::NotConfigured) }
-        if reg_str(wu_key(), "WUStatusServer")? != status_server(params) { return Ok(CheckResult::NotConfigured) }
+        if !str_matches("WUServer", server)? { return Ok(CheckResult::NotConfigured) }
+        if !str_matches("WUStatusServer", status_server(params))? { return Ok(CheckResult::NotConfigured) }
     }
-    let group = param_str(params, "target_group", "")
+    let group = common::param_str(params, "target_group", "")
     if group != "" {
-        if reg_str(wu_key(), "TargetGroup")? != group { return Ok(CheckResult::NotConfigured) }
-        if reg_int(wu_key(), "TargetGroupEnabled", 0)? != 1 { return Ok(CheckResult::NotConfigured) }
+        if !str_matches("TargetGroup", group)? { return Ok(CheckResult::NotConfigured) }
+        if !common::int_matches(common::wu_key(), "TargetGroupEnabled", 1)? { return Ok(CheckResult::NotConfigured) }
     }
-    let use_wsus = want_use_wsus(params)?
-    if use_wsus != -1 && reg_int(au_key(), "UseWUServer", 0)? != use_wsus {
+    if !common::int_matches(common::au_key(), "UseWUServer", want_use_wsus(params)?)? {
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let server = param_str(params, "server", "")
+    if absent(params)? {
+        common::delete_values(common::wu_key(), wu_names())?
+        common::delete_value(common::au_key(), "UseWUServer")?
+        return Ok(ApplyResult::Success)
+    }
+    validate(params)?
+    let server = common::param_str(params, "server", "")
     if server != "" {
-        registry::create_key(wu_key())?
-        registry::write(wu_key(), "WUServer", Value::String(server), "sz")?
-        registry::write(wu_key(), "WUStatusServer", Value::String(status_server(params)), "sz")?
+        registry::create_key(common::wu_key())?
+        registry::write(common::wu_key(), "WUServer", Value::String(server), "sz")?
+        registry::write(common::wu_key(), "WUStatusServer", Value::String(status_server(params)), "sz")?
     }
-    let group = param_str(params, "target_group", "")
+    let group = common::param_str(params, "target_group", "")
     if group != "" {
-        registry::create_key(wu_key())?
-        registry::write(wu_key(), "TargetGroup", Value::String(group), "sz")?
-        registry::write(wu_key(), "TargetGroupEnabled", Value::Int(1), "dword")?
+        registry::create_key(common::wu_key())?
+        registry::write(common::wu_key(), "TargetGroup", Value::String(group), "sz")?
+        registry::write(common::wu_key(), "TargetGroupEnabled", Value::Int(1), "dword")?
     }
-    let use_wsus = want_use_wsus(params)?
-    if use_wsus != -1 {
-        registry::create_key(au_key())?
-        registry::write(au_key(), "UseWUServer", Value::Int(use_wsus), "dword")?
-    }
+    common::put_int(common::au_key(), "UseWUServer", want_use_wsus(params)?)?
     Ok(ApplyResult::Success)
 }

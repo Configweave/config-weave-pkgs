@@ -10,28 +10,71 @@ package "windows_updates" {
   // only becomes applicable afterwards. That is what lets a playbook loop —
   // apply, reboot, apply — until a pass finds nothing pending.
   //
-  // Untested by design: a WUA search/install is network-bound, very slow and
-  // needs the update service running — scenario territory.
+  // Searches the Windows Update Agent for applicable updates and installs
+  // them. `check` reports `reboot_required` while an installed update waits
+  // for a restart, `already_configured` while the last fully drained run is
+  // younger than `max_age` (no search at all), and otherwise searches.
+  //
+  // `apply` downloads and installs through a one-shot scheduled task that
+  // runs as SYSTEM, because the Windows Update Agent refuses downloads and
+  // installs to network logon sessions such as SSH and WinRM. It loops
+  // search, download and install, up to five passes, because later updates
+  // often only become applicable once earlier ones are in. EULAs are
+  // accepted; updates that would ask a user for input are skipped, and are
+  // not counted as pending. Every update's title, result code and HRESULT
+  // is logged.
+  //
+  // `apply` returns `reboot_required` when an install needs a restart, and
+  // fails when updates are still pending after a pass that installed
+  // nothing, naming each failed update. It has **no timeout**: a large
+  // update wave can run for hours, and the step waits for it.
   resource "updated" {
     description = "Install outstanding Windows Updates when the last full run is older than max_age"
     script = "resources/updated.ws"
     concurrency = "global"
     param "max_age" {
-      description = "Search for updates when the last fully-drained run is older than this span"
+      description = "Search for updates when the last fully drained run for this query and source is older than this span"
       type = "duration"
       default = 24h
     }
-    param "query" { description = "Windows Update Agent search criteria" type = "string" default = "IsInstalled=0 and IsHidden=0" }
+    param "query" {
+      description = "Windows Update Agent search criteria; the default excludes drivers"
+      type = "string"
+      default = "IsInstalled=0 and IsHidden=0 and Type='Software'"
+    }
+    param "source" {
+      description = "The update service searched"
+      type = "symbol"
+      default = :default
+
+      symbol "default"          { description = "The machine's configured default: WSUS when policy points at one, otherwise Windows Update" }
+      symbol "windows_update"   { description = "Windows Update directly, bypassing a configured WSUS server" }
+      symbol "microsoft_update" { description = "Microsoft Update (Windows plus other Microsoft products); apply registers the service when it is missing" }
+    }
   }
 
   // Maps onto the "Configure Automatic Updates" Group Policy setting under
   // HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU. Every
   // enumerated param has an :unmanaged member and every numeric one takes
   // -1, so a playbook sets only the aspects it cares about.
+  //
+  // A managed value that is missing from the registry counts as drift, so a
+  // wanted `0` is written rather than taken for "not configured".
+  // `ensure = :absent` deletes every value this resource manages, returning
+  // the policy to "Not configured"; the other params must then be left
+  // unmanaged.
   resource "policy" {
     description = "Configure the Automatic Updates policy (the AU Group Policy key)"
     script = "resources/policy.ws"
     concurrency = "global"
+    param "ensure" {
+      description = "Desired state: :present writes the managed values, :absent deletes them all"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the managed values" }
+      symbol "absent"  { description = "Delete every value this resource manages" }
+    }
     param "enabled" {
       description = "Whether automatic updates are allowed (the NoAutoUpdate policy)"
       type = "symbol"
@@ -46,11 +89,12 @@ package "windows_updates" {
       type = "symbol"
       default = :unmanaged
 
-      symbol "notify_download"                { description = "Notify before download and before install (2)" }
-      symbol "auto_download_notify_install"   { description = "Download automatically, notify before install (3)" }
-      symbol "auto_download_schedule_install" { description = "Download automatically and install on the schedule below (4)" }
-      symbol "allow_local_admin"              { description = "Let a local administrator choose the setting (5)" }
-      symbol "unmanaged"                      { description = "Leave the policy alone" }
+      symbol "notify_download"                             { description = "Notify before download and before install (2)" }
+      symbol "auto_download_notify_install"                { description = "Download automatically, notify before install (3)" }
+      symbol "auto_download_schedule_install"              { description = "Download automatically and install on the schedule below (4)" }
+      symbol "allow_local_admin"                           { description = "Let a local administrator choose the setting (5)" }
+      symbol "auto_download_notify_install_notify_restart" { description = "Download automatically, notify before install and before restart (7, Windows Server 2016 and later)" }
+      symbol "unmanaged"                                   { description = "Leave the policy alone" }
     }
     param "scheduled_day" {
       description = "Day the scheduled install runs, when au_option is :auto_download_schedule_install"
@@ -82,76 +126,240 @@ package "windows_updates" {
 
   // WSUS: the server URLs and target group on the WindowsUpdate key, plus
   // the UseWUServer switch on its AU subkey that makes the client use them.
+  //
+  // `status_server` and `use_wsus = :enabled` both need `server`; either
+  // one without it is rejected rather than leaving the policy half
+  // configured. `ensure = :absent` deletes `WUServer`, `WUStatusServer`,
+  // `TargetGroup`, `TargetGroupEnabled` and `UseWUServer`, so the client
+  // goes back to Windows Update; the other params must then be left
+  // unmanaged.
   resource "wsus" {
     description = "Point the client at a WSUS server (the Specify intranet update service location policy)"
     script = "resources/wsus.ws"
     concurrency = "global"
+    param "ensure" {
+      description = "Desired state: :present writes the managed values, :absent deletes them all"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the managed values" }
+      symbol "absent"  { description = "Delete every value this resource manages" }
+    }
     param "server" { description = "WSUS server URL, e.g. http://wsus.example.com:8530; empty leaves it unmanaged" type = "string" default = "" }
-    param "status_server" { description = "Statistics server URL; empty defaults to `server`" type = "string" default = "" }
+    param "status_server" { description = "Statistics server URL; empty defaults to `server`. Requires `server`" type = "string" default = "" }
     param "target_group" { description = "Client-side targeting group; empty leaves it unmanaged" type = "string" default = "" }
     param "use_wsus" {
       description = "Whether the client actually uses the configured server"
       type = "symbol"
       default = :unmanaged
 
-      symbol "enabled"   { description = "Use the WSUS server instead of Windows Update" }
+      symbol "enabled"   { description = "Use the WSUS server instead of Windows Update (requires `server`)" }
       symbol "disabled"  { description = "Use Windows Update even though a server is configured" }
       symbol "unmanaged" { description = "Leave the switch alone" }
     }
   }
 
   // Windows Update for Business deferrals and active hours.
+  //
+  // These are Windows Update for Business policies, which Microsoft
+  // documents for Windows 10 and 11 client editions. Windows Server accepts
+  // the values, but Server receives no feature updates through Windows
+  // Update, so `feature_update_days` and `branch_readiness` have no effect
+  // there.
+  //
+  // Active hours may span at most 18 hours (end before start wraps past
+  // midnight). `ensure = :absent` deletes every deferral, channel and
+  // active-hours value; the other params must then be left unmanaged.
   resource "deferral" {
-    description = "Defer feature and quality updates, and set active hours"
+    description = "Defer feature and quality updates, set the servicing channel, and set active hours"
     script = "resources/deferral.ws"
     concurrency = "global"
+    param "ensure" {
+      description = "Desired state: :present writes the managed values, :absent deletes them all"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Write the managed values" }
+      symbol "absent"  { description = "Delete every value this resource manages" }
+    }
     param "feature_update_days" { description = "Days to defer feature updates (0-365); -1 leaves it unmanaged" type = "int" default = -1 }
     param "quality_update_days" { description = "Days to defer quality updates (0-30); -1 leaves it unmanaged" type = "int" default = -1 }
     param "branch_readiness" {
-      description = "Which servicing channel the device follows"
+      description = "Which release channel feature updates come from (BranchReadinessLevel)"
       type = "symbol"
       default = :unmanaged
 
-      symbol "targeted"  { description = "Targeted release — features arrive as soon as they ship (16)" }
-      symbol "broad"     { description = "Broad release — features arrive once declared broadly available (32)" }
-      symbol "unmanaged" { description = "Leave the policy alone" }
+      symbol "general_availability" { description = "General Availability Channel (16); since Windows 10 1903 the only non-Insider channel" }
+      symbol "release_preview"      { description = "Windows Insider Release Preview (8)" }
+      symbol "beta"                 { description = "Windows Insider Beta, formerly Slow (4)" }
+      symbol "dev"                  { description = "Windows Insider Dev, formerly Fast (2)" }
+      symbol "unmanaged"            { description = "Leave the policy alone" }
     }
     param "active_hours_start" { description = "Hour (0-23) active hours begin; -1 leaves them unmanaged, and must be set with active_hours_end" type = "int" default = -1 }
-    param "active_hours_end" { description = "Hour (0-23) active hours end; -1 leaves them unmanaged, and must be set with active_hours_start" type = "int" default = -1 }
+    param "active_hours_end" { description = "Hour (0-23) active hours end, at most 18 hours after the start; -1 leaves them unmanaged, and must be set with active_hours_start" type = "int" default = -1 }
   }
 
   // The policy resources manage pure local state (registry values), so they
-  // converge fully offline. `updated` is untested here for the reasons noted
-  // on the resource itself.
+  // converge fully offline. Windows test setups run as `cmd.exe /C`, and
+  // double quotes would reach PowerShell escaped, so none of them use any.
+  //
+  // The setup deletes the values the steps want at 0 or at an hour the image
+  // never sets: a missing value used to read as 0, so a wanted 0 was never
+  // written. The Server 2025 image ships NoAutoUpdate = 1, so enabling is the
+  // direction that proves the resource writes the policy.
   test "update_policy_converges" {
-    description = "The Windows Update policy resources converge"
+    description = "The Windows Update policy resources converge, writing wanted zeros"
     template = "x86_64/windows-server-2025"
     group = "win2025"
+    setup = "reg delete HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v ScheduledInstallTime /f >nul 2>&1 & reg delete HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v UseWUServer /f >nul 2>&1 & exit 0"
     verify = "tests/updates_verify.ws"
 
-    // The Server 2025 image already ships NoAutoUpdate = 1, so enabling is
-    // the direction that proves the resource actually writes the policy.
     step "au_policy" {
-      description = "Allow automatic updates on a Wednesday 03:00 schedule"
+      description = "Allow automatic updates on a Wednesday midnight schedule, checking every 22 hours"
       resource = "policy"
       properties {
         enabled = :enabled
         au_option = :auto_download_schedule_install
         scheduled_day = :wednesday
-        scheduled_hour = 3
+        scheduled_hour = 0
         reboot_with_logged_on_users = :blocked
+        detection_frequency_hours = 22
       }
     }
 
     step "deferrals" {
-      description = "Defer quality updates and set active hours"
+      description = "Defer feature and quality updates, follow General Availability, set active hours"
       resource = "deferral"
       requires = ["au_policy"]
       properties {
+        feature_update_days = 30
         quality_update_days = 7
-        branch_readiness = :broad
-        active_hours_start = 8
-        active_hours_end = 18
+        branch_readiness = :general_availability
+        active_hours_start = 20
+        active_hours_end = 6
+      }
+    }
+
+    step "wsus_server" {
+      description = "Configure a WSUS server and target group"
+      resource = "wsus"
+      properties {
+        server = "http://wsus.example.test:8530"
+        target_group = "cw-lab"
+      }
+    }
+
+    // The only drift in this step is UseWUServer, which the setup deleted and
+    // which is wanted at 0: before the fix a missing value read as 0, so this
+    // step was already_configured and the value was never written. :disabled
+    // also keeps the VM on Windows Update for the `updated` tests below.
+    step "use_wsus_zero" {
+      description = "A wanted UseWUServer = 0 is written where the value is missing"
+      resource = "wsus"
+      requires = ["wsus_server"]
+      properties { use_wsus = :disabled }
+    }
+
+    step "status_server_alone" {
+      description = "A status server without an update server is rejected"
+      resource = "wsus"
+      expect = "error"
+      properties { status_server = "http://wsus.example.test:8530" }
+    }
+
+    step "use_wsus_without_server" {
+      description = "Switching the client to WSUS without naming a server is rejected"
+      resource = "wsus"
+      expect = "error"
+      properties { use_wsus = :enabled }
+    }
+
+    step "active_hours_too_long" {
+      description = "Active hours longer than 18 hours are rejected"
+      resource = "deferral"
+      expect = "error"
+      properties { active_hours_start = 2 active_hours_end = 22 }
+    }
+
+    step "absent_with_values" {
+      description = "ensure = :absent with a managed param set is rejected"
+      resource = "policy"
+      expect = "error"
+      properties { ensure = :absent scheduled_hour = 3 }
+    }
+  }
+
+  // Every :absent path starts from values the setup writes, so removal is
+  // real, and verify asserts each one is gone.
+  test "update_policy_removed" {
+    description = "ensure = :absent returns policy, wsus and deferral to Not configured"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v AUOptions /t REG_DWORD /d 3 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v DetectionFrequency /t REG_DWORD /d 5 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU /v UseWUServer /t REG_DWORD /d 0 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate /v WUServer /t REG_SZ /d http://seeded.example.test /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate /v TargetGroup /t REG_SZ /d seeded /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate /v DeferQualityUpdates /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate /v BranchReadinessLevel /t REG_DWORD /d 32 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate /v ActiveHoursStart /t REG_DWORD /d 8 /f"
+    verify = "tests/updates_removed_verify.ws"
+
+    step "policy_absent" {
+      description = "Delete the Automatic Updates policy values"
+      resource = "policy"
+      properties { ensure = :absent }
+    }
+
+    step "wsus_absent" {
+      description = "Delete the WSUS server, target group and UseWUServer"
+      resource = "wsus"
+      properties { ensure = :absent }
+    }
+
+    step "deferral_absent" {
+      description = "Delete the deferral, channel and active-hours values"
+      resource = "deferral"
+      properties { ensure = :absent }
+    }
+  }
+
+  // The window: a fresh stamp for a query means check never searches. The
+  // query here is not valid search criteria, so any search would fail the
+  // step; the stale-stamp step proves the search does run once the stamp is
+  // older than max_age. Stamps are named for sha256("<source>\n<query>"),
+  // so the setup writes the two this test's queries use.
+  test "updated_window" {
+    description = "updated skips the search inside max_age and searches once the stamp is stale"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "mkdir C:\\ProgramData\\config-weave >nul 2>&1 & echo stamp> C:\\ProgramData\\config-weave\\windows-updated-b4dfe3d25d64f1a4 & echo stamp> C:\\ProgramData\\config-weave\\windows-updated-a6d4210808d36802 & powershell -NoProfile -Command (Get-Item C:\\ProgramData\\config-weave\\windows-updated-a6d4210808d36802).LastWriteTime = (Get-Date).AddDays(-2)"
+
+    step "fresh_stamp" {
+      description = "A stamp younger than max_age is already configured without a search"
+      resource = "updated"
+      expect = "already_configured"
+      properties { query = "UpdateID='cw-window-test'" }
+    }
+
+    step "stale_stamp" {
+      description = "A stamp older than max_age searches, and the invalid query fails"
+      resource = "updated"
+      expect = "error"
+      properties { query = "UpdateID='cw-stale-test'" }
+    }
+  }
+
+  // A real install through the SYSTEM scheduled task, kept small: Microsoft
+  // Defender definition updates are published several times a day, so a
+  // template image is always behind, they install without a reboot, and the
+  // guests have NAT internet. Converging proves the task path, the stamp,
+  // and that the re-check agrees.
+  test "updated_installs" {
+    description = "updated installs pending Defender definition updates through the SYSTEM task"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/updated_verify.ws"
+
+    step "definitions" {
+      description = "Install the pending definition updates"
+      resource = "updated"
+      properties {
+        query = "IsInstalled=0 and IsHidden=0 and Type='Software' and CategoryIDs contains 'e0789628-ce08-4437-be74-2495b842f43b'"
+        source = :windows_update
       }
     }
   }
