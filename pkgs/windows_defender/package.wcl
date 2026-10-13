@@ -1,21 +1,34 @@
 package "windows_defender" {
-  description = "Manage Microsoft Defender antivirus settings"
+  description = "Manage Microsoft Defender Antivirus settings"
 
+  // Every resource needs Microsoft Defender Antivirus installed and its
+  // WinDefend service running. When it is missing, or another antivirus
+  // product has stopped it, check and apply fail with an error saying so.
+  //
   // All three resources rewrite the machine-wide MpPreference store, so they
   // run as global singletons.
   resource "realtime_protection" {
-    description = "Enable or disable Defender real-time monitoring. Note that Tamper Protection, when active, can silently override a disable"
+    description = "Ensure Defender real-time protection is on or off, read from the engine's effective state (Get-MpComputerStatus). Passive mode, a Group Policy value and Tamper Protection all override it, and each is reported as an error naming the cause"
     script = "resources/realtime_protection.ws"
     concurrency = "global"
-    param "enabled" { description = "Whether real-time monitoring should be on" type = "bool" required = true }
+    param "enabled" { description = "Whether real-time protection should be on" type = "bool" required = true }
   }
 
   resource "exclusion" {
     description = "Ensure a Defender scan exclusion exists, or is absent"
     script = "resources/exclusion.ws"
     concurrency = "global"
-    param "kind" { description = "Exclusion kind: path, extension or process" type = "string" required = true }
-    param "value" { description = "The excluded path, extension or process name" type = "string" required = true }
+    param "kind" {
+      description = "Which exclusion list the value belongs to"
+      type = "symbol"
+      required = true
+
+      symbol "path"       { description = "A file or folder path (ExclusionPath)" }
+      symbol "extension"  { description = "A file extension (ExclusionExtension)" }
+      symbol "process"    { description = "A process image name or path (ExclusionProcess)" }
+      symbol "ip_address" { description = "An IP address network protection ignores (ExclusionIpAddress)" }
+    }
+    param "value" { description = "The excluded path, extension, process or address; compared case-insensitively, as Defender does. Fails when HideExclusionsFromLocalAdmins hides the list from the running account" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -26,18 +39,21 @@ package "windows_defender" {
     }
   }
 
+  // The value is converted to the Set-MpPreference parameter's own type and
+  // compared in that type's terms, since Get-MpPreference reports many
+  // preferences differently from how Set-MpPreference takes them (enums as
+  // numbers, times of day as TimeSpans).
   resource "preference" {
-    description = "Ensure a single Set-MpPreference setting holds the given value (compared string-wise against Get-MpPreference)"
+    description = "Ensure a single Set-MpPreference setting holds the given value, compared in the setting's own type"
     script = "resources/preference.ws"
     concurrency = "global"
-    param "name" { description = "Set-MpPreference parameter name, e.g. ScanScheduleDay" type = "string" required = true }
-    param "value" { description = "Desired value as a string; $true, $false and numbers pass through unquoted, everything else is single-quoted" type = "string" required = true }
+    param "name" { description = "Set-MpPreference parameter name, e.g. ScanScheduleDay (letters, digits and _ only). It must also be reported by Get-MpPreference. The paired *_Ids/*_Actions settings are refused" type = "string" required = true }
+    param "value" { description = "Desired value as text, converted to the setting's type: booleans as true/false (any case, $ optional, or 1/0); enums by name or number (Saturday or 7); times of day as hh:mm[:ss]; numbers in invariant culture; lists comma-separated and compared as sets (empty clears the list). Strings compare case-insensitively" type = "string" required = true }
   }
 
   // Adding and removing an exclusion is harmless fleet hygiene, so it gets
   // real converge coverage; realtime_protection asserts the detection path
-  // against the Server 2025 default (real-time monitoring on) instead of
-  // toggling AV off on a shared instance.
+  // against the Server 2025 default (real-time protection on).
   test "defender_exclusion_converges" {
     description = "A path exclusion converges; real-time protection detection works"
     template = "x86_64/windows-server-2025"
@@ -47,21 +63,22 @@ package "windows_defender" {
     step "exclude_test_dir" {
       description = "Exclude C:\\weave-defender-test from scans"
       resource = "exclusion"
-      properties { kind = "path" value = "C:\\weave-defender-test" }
+      properties { kind = :path value = "C:\\weave-defender-test" }
     }
 
     step "ghost_exclusion_absent" {
       description = "A never-added extension exclusion with ensure = absent is already configured"
       resource = "exclusion"
       expect = "already_configured"
-      properties { kind = "extension" value = ".weaveghost" ensure = :absent }
+      properties { kind = :extension value = ".weaveghost" ensure = :absent }
     }
 
     step "realtime_on" {
-      description = "Real-time monitoring ships enabled on Server 2025"
+      description = "Real-time protection ships enabled on Server 2025"
       resource = "realtime_protection"
       expect = "already_configured"
       properties { enabled = true }
     }
   }
+
 }
