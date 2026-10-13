@@ -52,23 +52,35 @@ fn bindings_of(site: Value) -> Value {
     Value::List(out)
 }
 
+// Read through Microsoft.Web.Administration's ServerManager rather than
+// Get-Website plus an XPath per site: no site name is ever spliced into a
+// filter, and each site is read inside its own try, so one site that cannot
+// be read (a name IIS's XPath cannot express, a W3SVC that is not running)
+// costs its state, not the whole gather.
+//
+// ssl_flags is spelled the way windows_iis.binding's ssl_flags symbol is —
+// none, sni, central_cert_store or sni_central_cert_store — so a gathered
+// binding can be fed straight back into a binding step.
 fn gather(params: Value) -> Result[Value, string] {
     let raw = ps_out(
         "$sites = @(); " +
-        "try {{ Import-Module WebAdministration; $sites = @(Get-Website) }} catch {{ }}; " +
+        "try {{ Add-Type -Path (Join-Path $env:windir 'system32\\inetsrv\\Microsoft.Web.Administration.dll'); " +
+        "$sites = @((New-Object Microsoft.Web.Administration.ServerManager).Sites) }} catch {{ }}; " +
+        "$names = @('none', 'sni', 'central_cert_store', 'sni_central_cert_store'); " +
         "$out = @($sites | ForEach-Object {{ $s = $_; " +
-        "$app = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' " +
-        "-Filter \"system.applicationHost/sites/site[@name='$($s.name)']/application[@path='/']\"; " +
-        "[pscustomobject]@{{ name = [string]$s.name; id = [int]$s.id; " +
-        "state = [string]$s.state; physical_path = [string]$s.physicalPath; " +
-        "app_pool = [string]$app.applicationPool; " +
-        "bindings = @($s.bindings.Collection | ForEach-Object {{ " +
-        "$h = $_.certificateHash; $hex = ''; " +
+        "$state = ''; try {{ $state = [string]$s.State }} catch {{ }}; " +
+        "$pool = ''; $phys = ''; try {{ $app = $s.Applications['/']; $pool = [string]$app.ApplicationPoolName; " +
+        "$phys = [string]$app.VirtualDirectories['/'].PhysicalPath }} catch {{ }}; " +
+        "[pscustomobject]@{{ name = [string]$s.Name; id = [int64]$s.Id; " +
+        "state = $state; physical_path = $phys; app_pool = $pool; " +
+        "bindings = @($s.Bindings | ForEach-Object {{ " +
+        "$h = $_.CertificateHash; $hex = ''; " +
         "if ($h -is [byte[]]) {{ $hex = (($h | ForEach-Object {{ $_.ToString('X2') }}) -join '') }} " +
         "elseif ($null -ne $h) {{ $hex = [string]$h }}; " +
-        "[pscustomobject]@{{ protocol = [string]$_.protocol; " +
-        "binding_information = [string]$_.bindingInformation; " +
-        "ssl_flags = [string]$_.sslFlags; certificate_hash = $hex }} }}) }} }}); " +
+        "$fl = 0; try {{ $fl = ([int]$_.SslFlags) -band 3 }} catch {{ }}; " +
+        "[pscustomobject]@{{ protocol = [string]$_.Protocol; " +
+        "binding_information = [string]$_.BindingInformation; " +
+        "ssl_flags = $names[$fl]; certificate_hash = $hex }} }}) }} }}); " +
         "ConvertTo-Json -InputObject @($out) -Compress -Depth 5")?
     let sites: List[Value] = []
     if raw != "" && raw != "null" {

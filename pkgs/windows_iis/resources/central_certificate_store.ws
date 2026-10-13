@@ -1,224 +1,57 @@
 use value
-use shell
-use json
 use log
-use fs
-use http
 use registry
-
-// ---------------------------------------------------------------------------
-// Shared IIS helpers — byte-identical in every script in this package.
-//
-// wscript has no script-to-script imports yet (config-weave compiles `lib/`
-// but cannot resolve it), so this block is duplicated rather than shared.
-// Keep the copies identical; moving to lib/ is then a mechanical delete.
-//
-// Everything goes through PowerShell's WebAdministration module rather than
-// editing applicationHost.config directly. IIS owns the schema validation,
-// the collection merge semantics and the config file locking, none of which a
-// hand-rolled XML writer gets right. The cost is that the target needs the
-// IIS management scripting tools (the :scripting_tools role service).
-// ---------------------------------------------------------------------------
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(i) = v.as_int() { return i } }
-    fallback
-}
-
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
-fn param_list(params: Value, key: string) -> List[string] {
-    let items: List[string] = []
-    if let Some(v) = params.get(key) {
-        if let Some(xs) = v.as_list() {
-            for x in xs { if let Some(s) = x.as_string() { items.push(s) } }
-        }
-    }
-    items
-}
-
-// A param the step omitted is absent from the map, and that absence means
-// "leave this setting alone" — the only way a bool or int param can say so,
-// since a declared default would instead mean "set it to false" / "set it to
-// 0".
-fn has(params: Value, key: string) -> bool {
-    if let Some(v) = params.get(key) { return !v.is_null() }
-    false
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn itoa(n: int) -> string { json::to_string(Value::Int(n)) }
-
-fn pad2(n: int) -> string {
-    let s = itoa(n)
-    if s.len() < 2 { return "0" + s }
-    s
-}
-
-// A duration param arrives as base nanoseconds. IIS stores a TimeSpan and
-// hands it back through .NET's default format, which is "[d.]hh:mm:ss" — a day
-// or more gets a leading "1." and the hours restart. Emitting a bare
-// "29:00:00" therefore never compares equal to the "1.05:00:00" that comes
-// back, and the attribute re-applies for ever. IIS's own default pool
-// recycling interval is 29 hours, so this is a real case, not a corner one.
-fn hms(ns: int) -> string {
-    let secs = ns / 1000000000
-    let days = secs / 86400
-    let rest = secs % 86400
-    let clock = pad2(rest / 3600) + ":" + pad2((rest % 3600) / 60) + ":" + pad2(rest % 60)
-    if days > 0 { return itoa(days) + "." + clock }
-    clock
-}
-
-// Import-Module is explicit so a machine without the scripting tools fails
-// with "the specified module was not loaded" rather than "the term
-// Get-WebConfigurationProperty is not recognized". CwV flattens whatever a
-// configuration read hands back — a ConfigurationAttribute, a raw value, a
-// TimeSpan or a flags enum — into the text this package compares against.
-fn ps_head() -> string {
-    "$ErrorActionPreference='Stop'; Import-Module WebAdministration; " +
-    "function CwV($x) {{ " +
-    "if ($null -eq $x) {{ return '' }}; " +
-    "if ($x.PSObject.Properties.Name -contains 'Value') {{ $x = $x.Value }}; " +
-    "if ($null -eq $x) {{ return '' }}; " +
-    "if ($x -is [bool]) {{ if ($x) {{ return 'true' }} else {{ return 'false' }} }}; " +
-    "if ($x -is [timespan]) {{ return $x.ToString() }}; " +
-    "return ([string]$x) }}; " +
-    "function CwEnum($el, $name, $fallback) {{ try {{ " +
-    "$v = $el.GetAttributeValue($name); " +
-    "$sch = $el.Schema.AttributeSchemas[$name]; " +
-    "if ($null -ne $sch) {{ foreach ($ev in $sch.EnumValues) {{ " +
-    "if ([int]$ev.Value -eq [int]$v) {{ return [string]$ev.Name }} }} }} " +
-    "}} catch {{ }}; return $fallback }}; "
-}
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell(ps_head() + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
-}
-
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell(ps_head() + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
-}
-
-// -PSPath and -Location for a delegated section. Writing to
-// MACHINE/WEBROOT/APPHOST under a -Location is the PowerShell spelling of
-// appcmd's /commit:apphost: it reaches a section that is locked against
-// web.config, which every system.webServer/security/* section is by default.
-fn scope_delegated(params: Value) -> Result[string, string] {
-    let site = param_str(params, "site", "")
-    let path = param_str(params, "path", "")
-    let store = param_str(params, "store", "apphost")
-    if store == "apphost" {
-        let base = " -PSPath 'MACHINE/WEBROOT/APPHOST'"
-        if site == "" { return Ok(base) }
-        return Ok(base + " -Location " + ps_q(site + path))
-    }
-    if store == "web_config" {
-        if site == "" { return Err("store = :web_config needs a 'site'") }
-        // The IIS provider documents backslashes throughout an IIS:\ path, so
-        // the virtual path's forward slashes are converted and its leading and
-        // trailing separators dropped: "/api/v2" under site "web" becomes
-        // IIS:\Sites\web\api\v2, and "/" becomes IIS:\Sites\web.
-        let rel = path.replace("/", "\\")
-        if rel.starts_with("\\") { rel = rel.slice(1, rel.len()) }
-        if rel.ends_with("\\") { rel = rel.slice(0, rel.len() - 1) }
-        let full = if rel == "" { "IIS:\\Sites\\" + site } else { "IIS:\\Sites\\" + site + "\\" + rel }
-        return Ok(" -PSPath " + ps_q(full))
-    }
-    Err("invalid 'store' value '" + store + "' (expected :apphost or :web_config)")
-}
-
-// Sections under system.applicationHost are never delegated: the site or
-// pool is named in the filter's XPath instead of in a -Location.
-fn scope_apphost(params: Value) -> Result[string, string] {
-    Ok(" -PSPath 'MACHINE/WEBROOT/APPHOST'")
-}
-
-// The URL Rewrite section only exists once the separate module is installed,
-// and a raw "filter is not a known section" from PowerShell tells nobody what
-// to do about it. The rewrite resources call this before mutating anything.
-fn require_rewrite() -> Result[unit, string] {
-    let out = shell::powershell(
-        "if (Test-Path (Join-Path $env:windir 'system32\\inetsrv\\rewrite.dll')) {{ 'YES' }} else {{ 'NO' }}",
-        Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    if out.stdout.trim() == "YES" { return Ok(()) }
-    Err("the URL Rewrite module is not installed; add a windows_iis.rewrite_module step first")
-}
-
-// An XPath predicate value. IIS's own escaping stops at the apostrophe, so
-// so does this: a site or path holding one is rejected rather than silently
-// matching the wrong element.
-fn xp(s: string) -> Result[string, string] {
-    if s.contains("'") { return Err("'" + s + "' contains an apostrophe, which IIS configuration XPath cannot express") }
-    Ok(s)
-}
+use hash
+use time
+use env
+use common
 
 // ---------------------------------------------------------------------------
 // The IIS central certificate store.
 //
 // State is read from the registry rather than through
-// Get-WebCentralCertProvider: the cmdlet exists, but it does not return the
-// credentials, and the registry answer for the two things that ARE readable —
-// whether the provider is enabled and where its store is — is the same one the
-// provider itself reads.
+// Get-WebCentralCertProvider, which masks what it returns; the registry
+// answer for what IS readable — whether the provider is enabled, where its
+// store is and the account that reads it — is the one the provider itself
+// reads.
 //
-// The credentials really are write-only: IIS stores them encrypted and will not
-// hand them back. So they are applied when the provider is enabled and cannot
-// be converged afterwards. To rotate them, disable and re-enable, or call
-// Set-WebCentralCertProvider out of band.
+// The two passwords are stored encrypted and cannot be read back. So that a
+// changed password is still noticed, this resource records a salted SHA-256
+// of the passwords it last wrote under HKLM\SOFTWARE\ConfigWeave\windows_iis
+// and compares against that. A password changed outside config-weave is not
+// detected; the next change made here overwrites it.
 //
-// Caveat: the registry key this reads is not documented on learn.microsoft.com.
-// It is what the provider uses today, but it is not a promised contract.
+// Caveat: the provider's registry key is not documented on
+// learn.microsoft.com. It is what the provider uses today, but it is not a
+// promised contract.
 // ---------------------------------------------------------------------------
 
 fn provider_key() -> string { "HKLM\\SOFTWARE\\Microsoft\\IIS\\CentralCertProvider" }
 
-// { enabled, cert_store_location }; enabled is false when the key is absent.
+fn state_key() -> string { "HKLM\\SOFTWARE\\ConfigWeave\\windows_iis" }
+
+fn read_str(key: string, name: string) -> Result[string, string] {
+    if !registry::key_exists(key)? { return Ok("") }
+    if let Some(v) = registry::read(key, name)? {
+        if let Some(s) = v.as_string() { return Ok(s) }
+    }
+    Ok("")
+}
+
+// { enabled, cert_store_location, username }; enabled is false when the key
+// is absent.
 fn probe() -> Result[Value, string] {
-    if !registry::key_exists(provider_key())? {
-        return Ok(Value::Map(#{
-            "enabled": Value::Bool(false),
-            "cert_store_location": Value::String(""),
-        }))
-    }
     let on = false
-    if let Some(v) = registry::read(provider_key(), "Enabled")? {
-        if let Some(i) = v.as_int() { on = i != 0 }
-        if let Some(b) = v.as_bool() { on = b }
-    }
-    let loc = ""
-    if let Some(v) = registry::read(provider_key(), "CertStoreLocation")? {
-        if let Some(s) = v.as_string() { loc = s }
+    if registry::key_exists(provider_key())? {
+        if let Some(v) = registry::read(provider_key(), "Enabled")? {
+            if let Some(i) = v.as_int() { on = i != 0 }
+            if let Some(b) = v.as_bool() { on = b }
+        }
     }
     Ok(Value::Map(#{
         "enabled": Value::Bool(on),
-        "cert_store_location": Value::String(loc),
+        "cert_store_location": Value::String(read_str(provider_key(), "CertStoreLocation")?),
+        "username": Value::String(read_str(provider_key(), "UserName")?),
     }))
 }
 
@@ -233,52 +66,89 @@ fn norm_path(p: string) -> string {
     s
 }
 
+fn secret_hash(salt: string, params: Value) -> string {
+    hash::sha256(salt + "\n" + common::param_str(params, "password", "") + "\n" +
+        common::param_str(params, "private_key_password", ""))
+}
+
+fn secrets_match(params: Value) -> Result[bool, string] {
+    let salt = read_str(state_key(), "CcsSalt")?
+    if salt == "" { return Ok(false) }
+    Ok(read_str(state_key(), "CcsSecretHash")? == secret_hash(salt, params))
+}
+
+// Whether the step asks for the provider on. A location implies it, so a step
+// naming one while the provider is off converges by enabling it rather than
+// reporting drift for ever; enabled = false with a location is refused.
+fn want_on(params: Value) -> Result[Option[bool], string] {
+    let loc = common::param_str(params, "cert_store_location", "")
+    if common::has(params, "enabled") {
+        let on = common::param_bool(params, "enabled", false)
+        if !on && loc != "" { return Err("'cert_store_location' cannot be set with enabled = false") }
+        return Ok(Some(on))
+    }
+    if loc != "" { return Ok(Some(true)) }
+    Ok(None)
+}
+
+fn validate_on(params: Value) -> Result[unit, string] {
+    if common::param_str(params, "cert_store_location", "") == "" {
+        return Err("'cert_store_location' is required to enable the central certificate store")
+    }
+    // Enable-WebCentralCertProvider marks CertStoreLocation, UserName and
+    // Password all Mandatory. Omitting one makes PowerShell prompt, which in a
+    // non-interactive host is a terminating error rather than a default.
+    if common::param_str(params, "username", "") == "" || common::param_str(params, "password", "") == "" {
+        return Err("'username' and 'password' are both required to enable the central certificate store")
+    }
+    Ok(())
+}
+
+fn converged(params: Value, now: Value) -> Result[bool, string] {
+    let on = want_on(params)?
+    if on.is_none() { return Ok(true) }
+    let on = on.unwrap_or(false)
+    if get_bool(now, "enabled") != on { return Ok(false) }
+    if !on { return Ok(true) }
+    validate_on(params)?
+    if norm_path(common::get_str(now, "cert_store_location")) != norm_path(common::param_str(params, "cert_store_location", "")) {
+        return Ok(false)
+    }
+    if common::get_str(now, "username").to_lower() != common::param_str(params, "username", "").to_lower() { return Ok(false) }
+    secrets_match(params)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
-    let now = probe()?
-    if has(params, "enabled") {
-        if get_bool(now, "enabled") != param_bool(params, "enabled", false) {
-            return Ok(CheckResult::NotConfigured)
-        }
-    }
-    let loc = param_str(params, "cert_store_location", "")
-    if loc != "" && norm_path(get_str(now, "cert_store_location")) != norm_path(loc) {
-        return Ok(CheckResult::NotConfigured)
-    }
-    Ok(CheckResult::AlreadyConfigured)
+    if converged(params, probe()?)? { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let now = probe()?
-    let want_on = if has(params, "enabled") {
-        param_bool(params, "enabled", false)
-    } else {
-        get_bool(now, "enabled")
-    }
-    if !want_on {
-        if !get_bool(now, "enabled") { return Ok(ApplyResult::Success) }
+    if converged(params, now)? { return Ok(ApplyResult::Success) }
+    if !want_on(params)?.unwrap_or(false) {
         log::info("disabling the central certificate store")
-        ps_run("Disable-WebCentralCertProvider")?
+        common::ps_run("Disable-WebCentralCertProvider")?
         return Ok(ApplyResult::Success)
     }
-    let loc = param_str(params, "cert_store_location", "")
-    if loc == "" { return Err("'cert_store_location' is required to enable the central certificate store") }
-    let user = param_str(params, "username", "")
-    let password = param_str(params, "password", "")
-    // Enable-WebCentralCertProvider marks CertStoreLocation, UserName and
-    // Password all Mandatory. Omitting one makes PowerShell prompt, which in a
-    // non-interactive host is a terminating error rather than a default.
-    if user == "" || password == "" {
-        return Err("'username' and 'password' are both required to enable the central certificate store")
-    }
-    let user_arg = " -UserName " + ps_q(user)
+    let loc = common::param_str(params, "cert_store_location", "")
     // Plain strings: Enable-WebCentralCertProvider declares -Password and
     // -PrivateKeyPassword as [String], not [SecureString]. Handing it a
     // SecureString stores the literal text "System.Security.SecureString".
-    let pw_arg = " -Password " + ps_q(password)
-    let pk = param_str(params, "private_key_password", "")
-    let pk_arg = if pk == "" { "" } else { " -PrivateKeyPassword " + ps_q(pk) }
+    // Both travel in the environment, never in the script text.
+    let pk = common::param_str(params, "private_key_password", "")
+    let pk_arg = if pk == "" { "" } else { " -PrivateKeyPassword $env:CW_SECRET_PK" }
     log::info("enabling the central certificate store at " + loc)
-    ps_run("Enable-WebCentralCertProvider -CertStoreLocation " + ps_q(loc) +
-        user_arg + pw_arg + pk_arg)?
+    common::ps_run_env("Enable-WebCentralCertProvider -CertStoreLocation " + common::ps_q(loc) +
+        " -UserName " + common::ps_q(common::param_str(params, "username", "")) +
+        " -Password $env:CW_SECRET" + pk_arg,
+        Value::Map(#{
+            "CW_SECRET": Value::String(common::param_str(params, "password", "")),
+            "CW_SECRET_PK": Value::String(pk),
+        }))?
+    let salt = hash::sha256(env::hostname() + common::itoa(time::now_millis()))
+    registry::create_key(state_key())?
+    registry::write(state_key(), "CcsSalt", Value::String(salt), "sz")?
+    registry::write(state_key(), "CcsSecretHash", Value::String(secret_hash(salt, params)), "sz")?
     Ok(ApplyResult::Success)
 }
