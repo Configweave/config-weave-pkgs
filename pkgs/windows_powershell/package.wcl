@@ -41,7 +41,7 @@ package "windows_powershell" {
       default = :stable
 
       symbol "stable"  { description = "The current stable release" }
-      symbol "lts"      { description = "The current long-term-servicing release" }
+      symbol "lts"      { description = "The current long-term-servicing release. On Linux :repo installs the powershell-lts package, reached as pwsh-lts; on Windows an LTS release is the same MSI, zip and winget package as any other, so set `version` to the LTS release" }
       symbol "preview"  { description = "The current preview release, which installs alongside stable as pwsh-preview" }
     }
     param "method" {
@@ -2324,6 +2324,28 @@ package "windows_powershell" {
         ensure = :absent
         method = :tarball
         version = "7.3.12"
+      }
+    }
+  }
+
+  // powershell-lts is its own package (/opt/microsoft/powershell/7-lts,
+  // pwsh-lts). Unpinned, so the test follows the repository's LTS line;
+  // verify checks that the binary and the package agree. Its xz-compressed
+  // deb needs more memory to unpack than the container default.
+  test "pwsh_installs_lts_from_repo" {
+    description = "channel = :lts installs the powershell-lts package and is checked through pwsh-lts"
+    image = "debian:12"
+    group = "pwshlts"
+    memory = "2GiB"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg apt-transport-https >/dev/null"
+    verify = "tests/lts_install_verify.ws"
+
+    step "install" {
+      description = "Install the LTS distro package"
+      resource = "pwsh_installed"
+      properties {
+        method = :repo
+        channel = :lts
       }
     }
   }

@@ -16,6 +16,13 @@ fn opts(seconds: int) -> Value { Value::Map(#{ "timeout": Value::Int(seconds) })
 
 fn preview(params: Value) -> bool { common::param_str(params, "channel", "stable") == "preview" }
 
+// On Linux the LTS release is its own distro package, powershell-lts, which
+// installs into /opt/microsoft/powershell/7-lts and is reached as pwsh-lts.
+// On Windows an LTS release is the same MSI, zip and winget package as any
+// other release — the same product, the same root — so `version` alone
+// selects it there.
+fn lts(params: Value) -> bool { common::param_str(params, "channel", "stable") == "lts" }
+
 // Validated once: the version reaches download URLs, package specs and
 // command lines.
 fn version(params: Value) -> Result[string, string] {
@@ -77,6 +84,7 @@ fn target_binary(params: Value, how: string) -> Result[string, string] {
     if how == "zip" || how == "tarball" { return Ok(path::join(install_root(params)?, binary_name())) }
     if sys::family() == "windows" { return Ok(path::join(msi_root(params)?, "pwsh.exe")) }
     if preview(params) { return Ok("pwsh-preview") }
+    if lts(params) { return Ok("pwsh-lts") }
     Ok("pwsh")
 }
 
@@ -268,6 +276,7 @@ fn uninstall_archive(params: Value) -> Result[ApplyResult, string] {
 
 fn package_name(params: Value) -> string {
     if preview(params) { return "powershell-preview" }
+    if lts(params) { return "powershell-lts" }
     "powershell"
 }
 
