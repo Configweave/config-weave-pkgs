@@ -263,8 +263,8 @@ fn apply(params: Value, spec: CollectionSpec) -> Result[ApplyResult, string] {
         let kind = r.get(1).unwrap_or("")
         let want = r.get(2).unwrap_or("")
         if same(kind, common::get_str(have, a), want) { continue }
-        script = script + "Set-WebConfigurationProperty" + spec.scope + " -Filter " + common::ps_q(elem) +
-            " -Name " + common::ps_q(a) + " -Value " + ps_literal(kind, want) + "; "
+        script = script + common::set_prop(spec.scope, common::ps_q(elem), a, ps_literal(kind, want),
+            common::get_str(have, a), want)
     }
     if script == "" { return Ok(ApplyResult::Success) }
     log::info("updating element in " + coll_filter(spec))

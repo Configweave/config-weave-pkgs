@@ -1829,8 +1829,13 @@ package "windows_iis" {
   }
 
   // A rule's conditions are written as "input|pattern" strings — a list of
-  // records is not expressible as a param type. Append "|negate" to invert
-  // one: ["{HTTPS}|^OFF$", "{REQUEST_FILENAME}|-f|negate"].
+  // records is not expressible as a param type. A last field of flags
+  // (negate, isFile, isDirectory, pattern) changes how one is tested:
+  // ["{HTTPS}|^OFF$", "{REQUEST_FILENAME}||isFile,negate"]. The pattern runs
+  // from the first "|" to the flags field, so a regex alternation such as
+  // "{HTTP_HOST}|^(www|api)\.example\.com$" keeps its "|". An existing rule
+  // is patched where it stands, in one configuration commit, so it keeps its
+  // place in the evaluation order.
   resource "rewrite_rule" {
     description = "Ensure an inbound URL Rewrite rule for a site or path, or that it is absent"
     script = "resources/rewrite_rule.ws"
@@ -1867,7 +1872,7 @@ package "windows_iis" {
     param "match_url" { description = "match.url: the pattern tried against the request path, without the leading slash; required when present" type = "string" default = "" }
     param "ignore_case" { description = "match.ignoreCase: match case-insensitively" type = "bool" }
     param "negate" { description = "match.negate: run the action when the URL does NOT match" type = "bool" }
-    param "conditions" { description = "conditions: entries as \"input|pattern\" strings, with an optional third field of negate or a matchType of isFile, isDirectory or pattern — e.g. \"{HTTPS}|^OFF$\" or \"{REQUEST_FILENAME}||isFile,negate\"" type = "list" }
+    param "conditions" { description = "conditions: entries as \"input|pattern\" strings, with an optional last field of comma-separated flags — negate, or a matchType of isFile, isDirectory or pattern — e.g. \"{HTTPS}|^OFF$\" or \"{REQUEST_FILENAME}||isFile,negate\". The last field is only read as flags when every token in it is one; otherwise it is part of the pattern" type = "list" }
     param "conditions_logical_grouping" {
       description = "conditions.logicalGrouping: whether every condition must hold"
       type = "symbol"
@@ -1902,6 +1907,7 @@ package "windows_iis" {
     param "sub_status_code" { description = "action.subStatusCode: the IIS substatus for a custom response" type = "int" }
     param "status_reason" { description = "action.statusReason: the reason phrase on the status line" type = "string" default = "" }
     param "status_description" { description = "action.statusDescription: the response body for a custom response" type = "string" default = "" }
+    param "server_variables" { description = "serverVariables: variables set when the rule matches, in order, as \"NAME|value\" strings with an optional last field of true or false for replace (default true) — e.g. \"HTTP_X_ORIGINAL_HOST|{HTTP_HOST}\". Each name must first be allowed with windows_iis.rewrite_allowed_server_variable. Omitted or empty means the rule sets none, and any it had are removed" type = "list" }
   }
 
   resource "rewrite_outbound_rule" {

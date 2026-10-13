@@ -65,12 +65,13 @@ fn probe(params: Value) -> Result[string, string] {
         "ConvertTo-Json -Compress }}")
 }
 
-// [IIS attribute, desired text, kind] for every attribute that differs.
+// [IIS attribute, desired text, kind, probe key] for every attribute that
+// differs.
 fn drift(params: Value, v: Value) -> Result[List[List[string]], string] {
     let out: List[List[string]] = []
     let physical = common::param_str(params, "physical_path", "")
     if physical != "" && norm_path(common::get_str(v, "physical_path")) != norm_path(physical) {
-        out.push(["physicalPath", physical, "str"])
+        out.push(["physicalPath", physical, "str", "physical_path"])
     }
     let user = common::param_str(params, "username", "")
     let pw = common::param_str(params, "password", "")
@@ -78,20 +79,20 @@ fn drift(params: Value, v: Value) -> Result[List[List[string]], string] {
         if user != "" || pw != "" {
             return Err("pass_through = true cannot be combined with 'username' or 'password'")
         }
-        if common::get_str(v, "username") != "" { out.push(["userName", "", "str"]) }
-        if common::get_str(v, "password") != "" { out.push(["password", "", "secret"]) }
+        if common::get_str(v, "username") != "" { out.push(["userName", "", "str", "username"]) }
+        if common::get_str(v, "password") != "" { out.push(["password", "", "secret", "password"]) }
     } else if user != "" {
-        if common::get_str(v, "username") != user { out.push(["userName", user, "str"]) }
-        if common::get_str(v, "password") != pw { out.push(["password", pw, "secret"]) }
+        if common::get_str(v, "username") != user { out.push(["userName", user, "str", "username"]) }
+        if common::get_str(v, "password") != pw { out.push(["password", pw, "secret", "password"]) }
     }
     let lm = logon_method(params)?
     if lm != "" && common::get_str(v, "logon_method").to_lower() != lm.to_lower() {
-        out.push(["logonMethod", lm, "str"])
+        out.push(["logonMethod", lm, "str", "logon_method"])
     }
     if common::has(params, "allow_sub_dir_config") {
         let want = if common::param_bool(params, "allow_sub_dir_config", true) { "true" } else { "false" }
         if common::get_str(v, "allow_sub_dir_config").to_lower() != want {
-            out.push(["allowSubDirConfig", want, "bool"])
+            out.push(["allowSubDirConfig", want, "bool", "allow_sub_dir_config"])
         }
     }
     Ok(out)
@@ -150,8 +151,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         let lit = if kind == "secret" { "$env:CW_SECRET" }
             else if kind == "bool" { if d.get(1).unwrap_or("") == "true" { "$true" } else { "$false" } }
             else { common::ps_q(d.get(1).unwrap_or("")) }
-        script = script + "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
-            elem + " -Name " + common::ps_q(attr) + " -Value " + lit + "; "
+        script = script + common::set_prop(" -PSPath 'MACHINE/WEBROOT/APPHOST'", elem, attr, lit,
+            common::get_str(v, d.get(3).unwrap_or("")), d.get(1).unwrap_or(""))
     }
     if script != "" {
         log::info("updating virtual directory " + path)

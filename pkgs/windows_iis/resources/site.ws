@@ -92,7 +92,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let path = common::param_str(params, "physical_path", "")
     if path != "" && !same_path(common::get_str(s, "physical_path"), path) { return Ok(CheckResult::NotConfigured) }
     let pool = common::param_str(params, "app_pool", "")
-    if pool != "" && common::get_str(s, "app_pool") != pool { return Ok(CheckResult::NotConfigured) }
+    // Pool names are case-insensitive to IIS, and a case-only change is one
+    // Set-WebConfigurationProperty would not write.
+    if pool != "" && common::get_str(s, "app_pool").to_lower() != pool.to_lower() { return Ok(CheckResult::NotConfigured) }
     if common::has(params, "server_auto_start") {
         let want = if common::param_bool(params, "server_auto_start", true) { "true" } else { "false" }
         if common::get_str(s, "auto_start").to_lower() != want { return Ok(CheckResult::NotConfigured) }
@@ -158,7 +160,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
             common::ps_q(root_vdir(params)?) + " -Name 'physicalPath' -Value " + common::ps_q(path) + "; "
     }
     let pool = common::param_str(params, "app_pool", "")
-    if pool != "" && common::get_str(s, "app_pool") != pool {
+    if pool != "" && common::get_str(s, "app_pool").to_lower() != pool.to_lower() {
         script = script +
             "Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter " +
             common::ps_q(root_app(params)?) + " -Name 'applicationPool' -Value " + common::ps_q(pool) + "; "

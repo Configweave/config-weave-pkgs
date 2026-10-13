@@ -8,8 +8,8 @@ use rewrite
 // An outbound rewrite pre-condition: the gate that keeps an outbound rule off
 // responses it has no business rewriting.
 //
-// Written whole, like the rules, because the conditions are a child
-// collection rather than an attribute.
+// Patched in place like the rules (see lib/rewrite.ws); the pre-condition
+// element is itself the collection of its conditions.
 // ---------------------------------------------------------------------------
 
 fn pre_filter() -> string { "system.webServer/rewrite/outboundRules/preConditions" }
@@ -20,58 +20,44 @@ fn pre_name(params: Value) -> Result[string, string] {
     Ok(n)
 }
 
-fn element_filter(params: Value) -> Result[string, string] {
-    Ok(pre_filter() + "/preCondition[@name='" + common::xp(pre_name(params)?)? + "']")
-}
-
 fn probe(params: Value) -> Result[string, string] {
     common::ps_out(
         "$r = @(); try {{ $r = @(Get-WebConfiguration" + common::scope_delegated(params)? + " -Filter " +
         common::ps_q(pre_filter() + "/preCondition") + " | Where-Object {{ [string]$_.name -eq " +
         common::ps_q(pre_name(params)?) + " }}) }} catch {{ }}; " +
         "if ($r.Count -eq 0) {{ 'ABSENT' }} else {{ $x = $r[0]; " +
-        "$conds = @($x.Collection | ForEach-Object {{ " +
-        "([string]$_.input + '|' + [string]$_.pattern + '|' + " +
-        "([string]$_.matchType).ToLower() + '|' + ([string]$_.negate).ToLower()) }}); " +
-        "[pscustomobject]@{{ logical_grouping = CwV($x.logicalGrouping); " +
+        "[pscustomobject]@{{ name = [string]$x.name; logical_grouping = CwV($x.logicalGrouping); " +
         "pattern_syntax = CwV($x.patternSyntax); " +
-        "conditions = ($conds -join ';;') }} | ConvertTo-Json -Compress }}")
+        "conditions = " + rewrite::read_conditions("$x.Collection") +
+        " }} | ConvertTo-Json -Compress -Depth 5 }}")
 }
 
-fn same(have: string, want: string) -> bool {
-    have.replace(" ", "").to_lower() == want.replace(" ", "").to_lower()
+fn wanted(params: Value) -> Result[List[List[string]], string] {
+    let out: List[List[string]] = []
+    let grouping = rewrite::logical_grouping(common::param_str(params, "logical_grouping", ""))?
+    if grouping != "" { out.push(["logical_grouping", grouping, "", "logicalGrouping", "sym"]) }
+    let syntax = rewrite::pattern_syntax(common::param_str(params, "pattern_syntax", ""))?
+    if syntax != "" { out.push(["pattern_syntax", syntax, "", "patternSyntax", "sym"]) }
+    Ok(out)
 }
 
 // Whether the live pre-condition already matches what this step asks for.
-fn converged(params: Value) -> Result[bool, string] {
-    let st = probe(params)?
+fn converged(params: Value, st: string) -> Result[bool, string] {
     if st == "ABSENT" { return Ok(false) }
     let r = json::parse(st)?
-    let grouping = rewrite::logical_grouping(common::param_str(params, "logical_grouping", ""))?
-    if grouping != "" && !same(common::get_str(r, "logical_grouping"), grouping) { return Ok(false) }
-    let syntax = rewrite::pattern_syntax(common::param_str(params, "pattern_syntax", ""))?
-    if syntax != "" && !same(common::get_str(r, "pattern_syntax"), syntax) { return Ok(false) }
-    Ok(common::get_str(r, "conditions") == rewrite::conditions_text(params)?)
+    if !rewrite::rows_same(wanted(params)?, r) { return Ok(false) }
+    Ok(rewrite::conditions_same(r, rewrite::conditions(params)?))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
+    rewrite::conditions(params)?
     let st = probe(params)?
     if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    let r = json::parse(st)?
-    let grouping = rewrite::logical_grouping(common::param_str(params, "logical_grouping", ""))?
-    if grouping != "" && !same(common::get_str(r, "logical_grouping"), grouping) {
-        return Ok(CheckResult::NotConfigured)
-    }
-    let syntax = rewrite::pattern_syntax(common::param_str(params, "pattern_syntax", ""))?
-    if syntax != "" && !same(common::get_str(r, "pattern_syntax"), syntax) {
-        return Ok(CheckResult::NotConfigured)
-    }
-    if common::get_str(r, "conditions") != rewrite::conditions_text(params)? { return Ok(CheckResult::NotConfigured) }
-    Ok(CheckResult::AlreadyConfigured)
+    if converged(params, st)? { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
@@ -83,36 +69,27 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing rewrite pre-condition " + name)
         common::ps_run("Remove-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(pre_filter()) +
-            " -Name '.' -AtElement @{{name=" + common::ps_q(name) + "}}")?
+            " -Name '.' -AtElement @{{name=" + common::ps_q(common::get_str(json::parse(st)?, "name")) + "}}")?
         return Ok(ApplyResult::Success)
     }
-    if converged(params)? { return Ok(ApplyResult::Success) }
+    if converged(params, st)? { return Ok(ApplyResult::Success) }
     let script = ""
-    if st != "ABSENT" {
-        script = script + "Remove-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(pre_filter()) + " -Name '.' -AtElement @{{name=" + common::ps_q(name) + "}}; "
+    let have = Value::Map(#{})
+    let live = name
+    if st == "ABSENT" {
+        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(pre_filter()) +
+            " -Name '.' -Value @{{name=" + common::ps_q(name) + "}}; "
+    } else {
+        have = json::parse(st)?
+        live = common::get_str(have, "name")
     }
-    script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(pre_filter()) +
-        " -Name '.' -Value @{{name=" + common::ps_q(name) + "}}; "
-    let elem = element_filter(params)?
-    let grouping = rewrite::logical_grouping(common::param_str(params, "logical_grouping", ""))?
-    if grouping != "" {
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(elem) +
-            " -Name 'logicalGrouping' -Value " + common::ps_q(grouping) + "; "
-    }
-    let syntax = rewrite::pattern_syntax(common::param_str(params, "pattern_syntax", ""))?
-    if syntax != "" {
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(elem) +
-            " -Name 'patternSyntax' -Value " + common::ps_q(syntax) + "; "
-    }
-    for spec in common::param_list(params, "conditions") {
-        let c = rewrite::parse_condition(spec)?
-        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(elem) +
-            " -Name '.' -Value @{{input=" + common::ps_q(c.get(0).unwrap_or("")) + "; pattern=" +
-            common::ps_q(c.get(1).unwrap_or("")) + "; matchType=" + common::ps_q(c.get(2).unwrap_or("")) +
-            "; negate=" + (if c.get(3).unwrap_or("") == "true" { "$true" } else { "$false" }) + "}}; "
+    let elem = pre_filter() + "/preCondition[@name='" + common::xp(live)? + "']"
+    script = script + rewrite::rows_script(scope, elem, wanted(params)?, have)
+    let conds = rewrite::conditions(params)?
+    if !rewrite::conditions_same(have, conds) {
+        script = script + rewrite::conditions_script(scope, elem, conds, st != "ABSENT")
     }
     log::info("writing rewrite pre-condition " + name)
-    common::ps_run(script)?
+    rewrite::commit(script)?
     Ok(ApplyResult::Success)
 }

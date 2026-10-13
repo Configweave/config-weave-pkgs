@@ -7,16 +7,16 @@ use rewrite
 // ---------------------------------------------------------------------------
 // An inbound URL Rewrite rule.
 //
-// A rule is not one element but four — the rule, its match, its conditions
-// and its action — so it is written whole rather than attribute by
-// attribute: the rule with this name is removed and rebuilt. That keeps the
-// resource honest about what it owns (everything under the rule) and makes
-// the ordering explicit, since a rebuilt rule lands at the end of the rule
-// set and rules are evaluated in order.
+// A rule is the rule element plus its match, conditions, serverVariables and
+// action children. An existing rule is patched where it stands (see
+// lib/rewrite.ws), so it keeps its place in the rule set — rules are
+// evaluated in order — and a new rule is added at the end.
 //
-// Conditions are "input|pattern" strings with an optional third field of
+// Conditions are "input|pattern" strings with an optional last field of
 // comma-separated flags, because a list of records is not expressible as a
-// param type: "{HTTPS}|^OFF$" or "{REQUEST_FILENAME}||isFile,negate".
+// param type: "{HTTPS}|^OFF$" or "{REQUEST_FILENAME}||isFile,negate". Server
+// variables are "NAME|value" with an optional last field of true or false
+// for replace: "HTTP_X_ORIGINAL_HOST|{HTTP_HOST}".
 // ---------------------------------------------------------------------------
 
 fn rules_filter() -> string { "system.webServer/rewrite/rules" }
@@ -25,10 +25,6 @@ fn rule_name(params: Value) -> Result[string, string] {
     let n = common::param_str(params, "name", "")
     if n == "" { return Err("missing 'name' parameter") }
     Ok(n)
-}
-
-fn rule_filter(params: Value) -> Result[string, string] {
-    Ok(rules_filter() + "/rule[@name='" + common::xp(rule_name(params)?)? + "']")
 }
 
 fn action_type(v: string) -> Result[string, string] {
@@ -50,19 +46,59 @@ fn redirect_type(v: string) -> Result[string, string] {
     Err("invalid 'redirect_type' value '" + v + "'")
 }
 
-// 'ABSENT', or the rule flattened to the shape conditions_text and the param
-// accessors compare against. A missing rewrite section reads as ABSENT so a
-// check on a machine without the module reports drift rather than erroring.
+// [name, value, replace] from "NAME|value" or "NAME|value|true|false". The
+// last field is replace only when there are at least three fields and it is
+// exactly true or false, so a value holding "|" survives.
+fn parse_server_variable(spec: string) -> Result[List[string], string] {
+    let parts = spec.split("|")
+    if parts.len() < 2 || parts.get(0).unwrap_or("") == "" {
+        return Err("server variable '" + spec + "' must be written \"NAME|value\" or \"NAME|value|false\"")
+    }
+    let end = parts.len()
+    let replace = "true"
+    let last = parts.get(parts.len() - 1).unwrap_or("").to_lower()
+    if parts.len() >= 3 && (last == "true" || last == "false") {
+        replace = last
+        end = parts.len() - 1
+    }
+    let value: List[string] = []
+    let i = 1
+    while i < end { value.push(parts.get(i).unwrap_or("")); i = i + 1 }
+    Ok([parts.get(0).unwrap_or(""), value.join("|"), replace])
+}
+
+fn server_variables(params: Value) -> Result[List[List[string]], string] {
+    let out: List[List[string]] = []
+    for spec in common::param_list(params, "server_variables") { out.push(parse_server_variable(spec)?) }
+    Ok(out)
+}
+
+fn server_variables_same(have: Value, want: List[List[string]]) -> bool {
+    let h = rewrite::items(have.get("server_variables"))
+    if h.len() != want.len() { return false }
+    let i = 0
+    while i < want.len() {
+        let c = h.get(i).unwrap_or(Value::Null)
+        let w = want.get(i).unwrap_or([])
+        if common::get_str(c, "name").to_lower() != w.get(0).unwrap_or("").to_lower() { return false }
+        if common::get_str(c, "value") != w.get(1).unwrap_or("") { return false }
+        if common::get_str(c, "replace").to_lower() != w.get(2).unwrap_or("") { return false }
+        i = i + 1
+    }
+    true
+}
+
+// 'ABSENT', or the rule flattened to the shape wanted() compares against;
+// "name" is the rule's name as IIS stores it. A missing rewrite section
+// reads as ABSENT so a check on a machine without the module reports drift
+// rather than erroring.
 fn probe(params: Value) -> Result[string, string] {
     common::ps_out(
         "$r = @(); try {{ $r = @(Get-WebConfiguration" + common::scope_delegated(params)? + " -Filter " +
         common::ps_q(rules_filter() + "/rule") + " | Where-Object {{ [string]$_.name -eq " +
         common::ps_q(rule_name(params)?) + " }}) }} catch {{ }}; " +
         "if ($r.Count -eq 0) {{ 'ABSENT' }} else {{ $x = $r[0]; " +
-        "$conds = @($x.conditions.Collection | ForEach-Object {{ " +
-        "([string]$_.input + '|' + [string]$_.pattern + '|' + " +
-        "([string]$_.matchType).ToLower() + '|' + ([string]$_.negate).ToLower()) }}); " +
-        "[pscustomobject]@{{ " +
+        "[pscustomobject]@{{ name = [string]$x.name; " +
         "enabled = CwV($x.enabled); stop_processing = CwV($x.stopProcessing); " +
         "pattern_syntax = CwV($x.patternSyntax); match_url = CwV($x.match.url); " +
         "ignore_case = CwV($x.match.ignoreCase); negate = CwV($x.match.negate); " +
@@ -75,64 +111,37 @@ fn probe(params: Value) -> Result[string, string] {
         "status_code = CwV($x.action.statusCode); sub_status_code = CwV($x.action.subStatusCode); " +
         "status_reason = CwV($x.action.statusReason); " +
         "status_description = CwV($x.action.statusDescription); " +
-        "conditions = ($conds -join ';;') }} | ConvertTo-Json -Compress }}")
+        "conditions = " + rewrite::read_conditions("$x.conditions.Collection") + "; " +
+        "server_variables = @($x.serverVariables.Collection | ForEach-Object {{ [pscustomobject]@{{ " +
+        "name = [string]$_.name; value = [string]$_.value; replace = CwV($_.replace) }} }}) " +
+        "}} | ConvertTo-Json -Compress -Depth 5 }}")
 }
 
-fn same(have: string, want: string) -> bool {
-    have.replace(" ", "").to_lower() == want.replace(" ", "").to_lower()
-}
-
-// [key in the probe, desired text] for everything the step named. `element`
-// says which of the four elements the attribute belongs to and `attribute`
-// its IIS name; both are only needed by apply.
+// [probe key, desired text, element suffix, IIS attribute, kind] for
+// everything the step named.
 fn wanted(params: Value) -> Result[List[List[string]], string] {
     let out: List[List[string]] = []
-    if common::has(params, "enabled") {
-        out.push(["enabled", if common::param_bool(params, "enabled", true) { "true" } else { "false" },
-            "", "enabled", "bool"])
-    }
-    if common::has(params, "stop_processing") {
-        out.push(["stop_processing",
-            if common::param_bool(params, "stop_processing", false) { "true" } else { "false" },
-            "", "stopProcessing", "bool"])
-    }
+    if let Some(r) = rewrite::bool_row(params, "enabled", true, "", "enabled") { out.push(r) }
+    if let Some(r) = rewrite::bool_row(params, "stop_processing", false, "", "stopProcessing") { out.push(r) }
     let syntax = rewrite::pattern_syntax(common::param_str(params, "pattern_syntax", ""))?
-    if syntax != "" { out.push(["pattern_syntax", syntax, "", "patternSyntax", "str"]) }
+    if syntax != "" { out.push(["pattern_syntax", syntax, "", "patternSyntax", "sym"]) }
     let url = common::param_str(params, "match_url", "")
     if url != "" { out.push(["match_url", url, "/match", "url", "str"]) }
-    if common::has(params, "ignore_case") {
-        out.push(["ignore_case", if common::param_bool(params, "ignore_case", true) { "true" } else { "false" },
-            "/match", "ignoreCase", "bool"])
-    }
-    if common::has(params, "negate") {
-        out.push(["negate", if common::param_bool(params, "negate", false) { "true" } else { "false" },
-            "/match", "negate", "bool"])
-    }
+    if let Some(r) = rewrite::bool_row(params, "ignore_case", true, "/match", "ignoreCase") { out.push(r) }
+    if let Some(r) = rewrite::bool_row(params, "negate", false, "/match", "negate") { out.push(r) }
     let grouping = rewrite::logical_grouping(common::param_str(params, "conditions_logical_grouping", ""))?
     if grouping != "" {
-        out.push(["conditions_logical_grouping", grouping, "/conditions", "logicalGrouping", "str"])
+        out.push(["conditions_logical_grouping", grouping, "/conditions", "logicalGrouping", "sym"])
     }
-    if common::has(params, "conditions_track_all_captures") {
-        out.push(["conditions_track_all_captures",
-            if common::param_bool(params, "conditions_track_all_captures", false) { "true" } else { "false" },
-            "/conditions", "trackAllCaptures", "bool"])
-    }
+    if let Some(r) = rewrite::bool_row(params, "conditions_track_all_captures", false, "/conditions", "trackAllCaptures") { out.push(r) }
     let atype = action_type(common::param_str(params, "action_type", ""))?
-    if atype != "" { out.push(["action_type", atype, "/action", "type", "str"]) }
+    if atype != "" { out.push(["action_type", atype, "/action", "type", "sym"]) }
     let aurl = common::param_str(params, "action_url", "")
     if aurl != "" { out.push(["action_url", aurl, "/action", "url", "str"]) }
-    if common::has(params, "append_query_string") {
-        out.push(["append_query_string",
-            if common::param_bool(params, "append_query_string", true) { "true" } else { "false" },
-            "/action", "appendQueryString", "bool"])
-    }
-    if common::has(params, "log_rewritten_url") {
-        out.push(["log_rewritten_url",
-            if common::param_bool(params, "log_rewritten_url", true) { "true" } else { "false" },
-            "/action", "logRewrittenUrl", "bool"])
-    }
+    if let Some(r) = rewrite::bool_row(params, "append_query_string", true, "/action", "appendQueryString") { out.push(r) }
+    if let Some(r) = rewrite::bool_row(params, "log_rewritten_url", true, "/action", "logRewrittenUrl") { out.push(r) }
     let rtype = redirect_type(common::param_str(params, "redirect_type", ""))?
-    if rtype != "" { out.push(["redirect_type", rtype, "/action", "redirectType", "str"]) }
+    if rtype != "" { out.push(["redirect_type", rtype, "/action", "redirectType", "sym"]) }
     if common::has(params, "status_code") {
         out.push(["status_code", common::itoa(common::param_int(params, "status_code", 0)),
             "/action", "statusCode", "int"])
@@ -148,48 +157,38 @@ fn wanted(params: Value) -> Result[List[List[string]], string] {
     Ok(out)
 }
 
-// Whether the live rule already matches everything this step asks for. apply
-// uses it to avoid rebuilding — and so reordering — a converged rule.
-fn converged(params: Value) -> Result[bool, string] {
-    let st = probe(params)?
+fn validate(params: Value) -> Result[unit, string] {
+    if common::want_present(params)? && common::param_str(params, "match_url", "") == "" {
+        return Err("'match_url' is required when ensure is :present")
+    }
+    rewrite::conditions(params)?
+    server_variables(params)?
+    Ok(())
+}
+
+// Whether the live rule already matches everything this step asks for.
+fn converged(params: Value, st: string) -> Result[bool, string] {
     if st == "ABSENT" { return Ok(false) }
     let r = json::parse(st)?
-    for row in wanted(params)? {
-        if !same(common::get_str(r, row.get(0).unwrap_or("")), row.get(1).unwrap_or("")) {
-            return Ok(false)
-        }
-    }
-    Ok(common::get_str(r, "conditions") == rewrite::conditions_text(params)?)
+    if !rewrite::rows_same(wanted(params)?, r) { return Ok(false) }
+    if !rewrite::conditions_same(r, rewrite::conditions(params)?) { return Ok(false) }
+    Ok(server_variables_same(r, server_variables(params)?))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
+    validate(params)?
     let st = probe(params)?
     if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    let r = json::parse(st)?
-    for row in wanted(params)? {
-        if !same(common::get_str(r, row.get(0).unwrap_or("")), row.get(1).unwrap_or("")) {
-            return Ok(CheckResult::NotConfigured)
-        }
-    }
-    if common::get_str(r, "conditions") != rewrite::conditions_text(params)? { return Ok(CheckResult::NotConfigured) }
-    Ok(CheckResult::AlreadyConfigured)
-}
-
-fn ps_value(kind: string, want: string) -> string {
-    if kind == "bool" {
-        if want == "true" { return "$true" }
-        return "$false"
-    }
-    if kind == "int" { return want }
-    common::ps_q(want)
+    if converged(params, st)? { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     common::require_rewrite()?
+    validate(params)?
     let name = rule_name(params)?
     let scope = common::scope_delegated(params)?
     let st = probe(params)?
@@ -197,39 +196,40 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing rewrite rule " + name)
         common::ps_run("Remove-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
-            " -Name '.' -AtElement @{{name=" + common::ps_q(name) + "}}")?
+            " -Name '.' -AtElement @{{name=" + common::ps_q(common::get_str(json::parse(st)?, "name")) + "}}")?
         return Ok(ApplyResult::Success)
     }
-    if common::param_str(params, "match_url", "") == "" {
-        return Err("'match_url' is required when ensure is :present")
-    }
-    // Nothing differs: return without touching anything. These resources
-    // rebuild the element rather than patching it, and rebuilding moves it to
-    // the end of its collection — rewrite rules are evaluated in order, so a converged
-    // re-run must not touch them at all.
-    if converged(params)? { return Ok(ApplyResult::Success) }
+    if converged(params, st)? { return Ok(ApplyResult::Success) }
     let script = ""
-    if st != "ABSENT" {
-        script = script + "Remove-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rules_filter()) + " -Name '.' -AtElement @{{name=" + common::ps_q(name) + "}}; "
+    let have = Value::Map(#{})
+    let live = name
+    if st == "ABSENT" {
+        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
+            " -Name '.' -Value @{{name=" + common::ps_q(name) + "}}; "
+    } else {
+        have = json::parse(st)?
+        live = common::get_str(have, "name")
     }
-    script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
-        " -Name '.' -Value @{{name=" + common::ps_q(name) + "}}; "
-    let rule = rule_filter(params)?
-    for row in wanted(params)? {
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + row.get(2).unwrap_or("")) + " -Name " + common::ps_q(row.get(3).unwrap_or("")) +
-            " -Value " + ps_value(row.get(4).unwrap_or(""), row.get(1).unwrap_or("")) + "; "
+    let rule = rules_filter() + "/rule[@name='" + common::xp(live)? + "']"
+    script = script + rewrite::rows_script(scope, rule, wanted(params)?, have)
+    let conds = rewrite::conditions(params)?
+    if !rewrite::conditions_same(have, conds) {
+        script = script + rewrite::conditions_script(scope, rule + "/conditions", conds, st != "ABSENT")
     }
-    for spec in common::param_list(params, "conditions") {
-        let c = rewrite::parse_condition(spec)?
-        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + "/conditions") + " -Name '.' -Value @{{input=" +
-            common::ps_q(c.get(0).unwrap_or("")) + "; pattern=" + common::ps_q(c.get(1).unwrap_or("")) +
-            "; matchType=" + common::ps_q(c.get(2).unwrap_or("")) + "; negate=" +
-            (if c.get(3).unwrap_or("") == "true" { "$true" } else { "$false" }) + "}}; "
+    let vars = server_variables(params)?
+    if !server_variables_same(have, vars) {
+        if st != "ABSENT" {
+            script = script + "Remove-WebConfigurationProperty" + scope + " -Filter " +
+                common::ps_q(rule + "/serverVariables") + " -Name '.'; "
+        }
+        for v in vars {
+            script = script + "Add-WebConfigurationProperty" + scope + " -Filter " +
+                common::ps_q(rule + "/serverVariables") + " -Name '.' -Value @{{name=" +
+                common::ps_q(v.get(0).unwrap_or("")) + "; value=" + common::ps_q(v.get(1).unwrap_or("")) +
+                "; replace=" + (if v.get(2).unwrap_or("") == "true" { "$true" } else { "$false" }) + "}}; "
+        }
     }
     log::info("writing rewrite rule " + name)
-    common::ps_run(script)?
+    rewrite::commit(script)?
     Ok(ApplyResult::Success)
 }

@@ -181,6 +181,19 @@ fn ps_run_env(script: string, env: Value) -> Result[unit, string] {
     Ok(())
 }
 
+// Set-WebConfigurationProperty with a filter that is already PowerShell
+// quoted. It treats a value differing from the stored one only in case as
+// unchanged and writes nothing, so a case-only change goes through a
+// temporary value first; otherwise a resource comparing case-sensitively
+// would report the same drift after every apply.
+fn set_prop(scope: string, qfilter: string, attr: string, lit: string, have: string, want: string) -> string {
+    let set = "Set-WebConfigurationProperty" + scope + " -Filter " + qfilter + " -Name " + ps_q(attr) + " -Value "
+    if have != want && have.to_lower() == want.to_lower() {
+        return set + "(" + lit + " + '#cw'); " + set + lit + "; "
+    }
+    set + lit + "; "
+}
+
 fn secret_env(value: string) -> Value {
     Value::Map(#{ "CW_SECRET": Value::String(value) })
 }

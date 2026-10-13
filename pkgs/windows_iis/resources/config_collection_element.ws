@@ -190,8 +190,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     for p in map_pairs(params, "attributes")? {
         let a = p.get(0).unwrap_or("")
         if attrs_match(params, have, a, p.get(2).unwrap_or("")) { continue }
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(elem) +
-            " -Name " + common::ps_q(a) + " -Value " + p.get(1).unwrap_or("") + "; "
+        script = script + common::set_prop(scope, common::ps_q(elem), a, p.get(1).unwrap_or(""),
+            common::get_str(have, a), p.get(2).unwrap_or(""))
     }
     if script == "" { return Ok(ApplyResult::Success) }
     log::info("updating element in " + coll_filter(params)?)

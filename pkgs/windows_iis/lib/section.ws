@@ -163,11 +163,12 @@ fn apply(params: Value, spec: SectionSpec) -> Result[bool, string] {
         let want = r.get(3).unwrap_or("")
         if same(kind, common::get_str(have, name), want) { continue }
         let set = "Set-WebConfigurationProperty" + spec.scope + " -Filter " + filter + " -Name " + common::ps_q(attr)
+        let have_text = common::get_str(have, name)
         if kind == "secret" {
             log::info("setting " + attr + " = ********")
             let var = "CW_SECRET_" + common::itoa(env.len())
             env.insert(var, Value::String(want))
-            script = script + set + " -Value $env:" + var + "; "
+            script = script + common::set_prop(spec.scope, filter, attr, "$env:" + var, have_text, want)
         } else if kind == "vlist" {
             log::info("setting " + attr + " = [" + want + "]")
             let parts: List[string] = []
@@ -187,7 +188,7 @@ fn apply(params: Value, spec: SectionSpec) -> Result[bool, string] {
             }
         } else {
             log::info("setting " + attr + " = " + want)
-            script = script + set + " -Value " + ps_value(kind, want) + "; "
+            script = script + common::set_prop(spec.scope, filter, attr, ps_value(kind, want), have_text, want)
         }
     }
     if script == "" { return Ok(false) }
