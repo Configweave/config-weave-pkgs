@@ -88,7 +88,7 @@ fn installed(name: string) -> Result[bool, string] {
     let out = shell::powershell(
         "$ErrorActionPreference='Stop'; if ((Get-WindowsFeature -Name " + common::ps_q(name) +
         ").Installed) {{ 'YES' }} else {{ 'NO' }}", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    if !out.success { return Err(common::failure(out)) }
     Ok(out.stdout.trim() == "YES")
 }
 
@@ -112,10 +112,15 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     log::info("role service " + name)
     // 3010 is the MSI convention for "done, but reboot"; using it as the exit
     // code keeps the reboot signal out of stdout parsing.
+    // Install-/Uninstall-WindowsFeature can fail without throwing — missing
+    // source files, a pending reboot — and report it only as Success = False
+    // on the result, so that is checked before the reboot flag.
     let out = shell::powershell(
-        "$ErrorActionPreference='Stop'; $r = " + cmdlet +
-        "; if ($r.RestartNeeded -ne 'No') {{ exit 3010 }} else {{ exit 0 }}", Value::Null)?
+        "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; " +
+        "if (-not $r.Success) {{ [Console]::Error.WriteLine('" + name + " failed: exit code ' + [string]$r.ExitCode + " +
+        "'; ' + (($r.FeatureResult | ForEach-Object {{ [string]$_.DisplayName + ': ' + [string]$_.Message }}) -join '; ')); exit 1 }}; " +
+        "if ($r.RestartNeeded -ne 'No') {{ exit 3010 }} else {{ exit 0 }}", Value::Null)?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err(out.stderr.trim()) }
+    if !out.success { return Err(common::failure(out)) }
     Ok(ApplyResult::Success)
 }

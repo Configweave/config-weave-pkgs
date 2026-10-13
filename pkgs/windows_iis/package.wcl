@@ -1236,7 +1236,7 @@ package "windows_iis" {
       symbol "absent"  { description = "Unregister it" }
     }
     param "name" { description = "Content-Encoding the scheme implements, such as gzip or br. Identity is the name alone" type = "string" required = true }
-    param "dll" { description = "Full path to the compression DLL, such as %Windir%\\system32\\inetsrv\\gzip.dll" type = "string" default = "" }
+    param "dll" { description = "Full path to the compression DLL, such as %Windir%\\system32\\inetsrv\\gzip.dll. Required to register a scheme that is not there yet; empty leaves an existing scheme's DLL alone" type = "string" default = "" }
     param "static_compression_level" { description = "staticCompressionLevel: 0-10. Static files are compressed once and cached, so a high level is nearly free" type = "int" }
     param "dynamic_compression_level" { description = "dynamicCompressionLevel: 0-10. Every response is compressed afresh, so this trades CPU for bandwidth on each request" type = "int" }
   }
@@ -1344,6 +1344,11 @@ package "windows_iis" {
   // Handlers, modules and the request pipeline
   // ---------------------------------------------------------------------
 
+  // IIS uses the first handler in collection order whose path and verb
+  // match; nothing ranks by specificity. A new handler is appended, behind
+  // inherited catch-alls such as StaticFile (path="*"), and an existing one
+  // is updated where it stands. To put a handler ahead of another, own the
+  // ordering with config_collection_element.
   resource "handler" {
     description = "Ensure a handler mapping for a site or path, or that it is absent"
     script = "resources/handler.ws"
@@ -1433,7 +1438,7 @@ package "windows_iis" {
       default = :present
 
       symbol "present" { description = "Add the module to the pipeline" }
-      symbol "absent"  { description = "Remove it, which is how an inherited module is switched off for one application" }
+      symbol "absent"  { description = "Remove it. A module added at this level is deleted; an inherited one is switched off below the server with a <remove>, which IIS refuses for the built-in native modules applicationHost.config marks lockItem" }
     }
     param "name" { description = "name: the module name. Entry identity is the name alone; for a native module this must match a global_module" type = "string" required = true }
     param "type" { description = "type: the managed module's .NET type name; leave empty for a native module registered with global_module" type = "string" default = "" }
@@ -1450,7 +1455,7 @@ package "windows_iis" {
       default = :present
 
       symbol "present" { description = "Register the module DLL with the server" }
-      symbol "absent"  { description = "Unregister it" }
+      symbol "absent"  { description = "Unregister it. Refused while a modules entry in applicationHost.config still names it, since worker processes then fail to start; remove those with windows_iis.module first. Entries in a site's web.config are not seen" }
     }
     param "name" { description = "name: the module name the `module` resource refers to. Identity is the name alone" type = "string" required = true }
     param "image" { description = "image: full path to the module DLL; required when present" type = "string" default = "" }
@@ -1819,7 +1824,8 @@ package "windows_iis" {
       symbol "winget"     { description = "winget install -e --id Microsoft.IIS.URLRewrite. Needs App Installer, which is absent on Server SKUs and unavailable to the SYSTEM account" }
       symbol "chocolatey" { description = "choco install urlrewrite. Needs Chocolatey on PATH" }
     }
-    param "source" { description = "MSI to install when method is :msi — a local path or an HTTP(S) URL. Defaults to Microsoft's x64 English download; point it at an internal mirror for an air-gapped build" type = "string" default = "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" }
+    param "source" { description = "MSI to install when method is :msi — a local path or an HTTP(S) URL. Defaults to Microsoft's x64 English download; point it at an internal mirror for an air-gapped build. Plain http is refused unless sha256 is given. A downloaded copy is deleted after the install" type = "string" default = "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi" }
+    param "sha256" { description = "Expected SHA-256 of the MSI, hex. When given the file must match it; when empty the MSI must carry a valid Authenticode signature from Microsoft Corporation" type = "string" default = "" }
   }
 
   // A rule's conditions are written as "input|pattern" strings — a list of

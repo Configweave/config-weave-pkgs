@@ -3,11 +3,14 @@ use common
 use collection
 
 // ---------------------------------------------------------------------------
-// One handler mapping. A re-added handler lands at the end of the
-// collection; that is safe in practice because IIS prefers the most
-// specific path match (*.php beats *) before it considers order, but a
-// handler that competes with another on the same path pattern should be
-// placed with config_collection_element instead.
+// One handler mapping. IIS picks a handler by walking the collection in
+// order and taking the FIRST entry whose path and verb match — there is no
+// "most specific wins" — so position matters. A new handler is added at the
+// end of the collection, behind the inherited catch-alls such as
+// StaticFile (path="*"), and an existing one is updated in place. A handler
+// that must sit ahead of another needs the collection ordered explicitly,
+// which this resource does not do: write it with config_collection_element
+// on a collection this level clears and owns.
 // ---------------------------------------------------------------------------
 
 fn section(params: Value) -> Result[string, string] {
@@ -70,6 +73,7 @@ fn spec(params: Value) -> Result[CollectionSpec, string] {
         syms: sym_map(),
         always_write: always_write(),
         required: ["path_pattern"],
+        create_required: [],
     })
 }
 

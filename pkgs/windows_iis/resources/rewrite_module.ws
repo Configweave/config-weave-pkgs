@@ -3,6 +3,7 @@ use shell
 use log
 use fs
 use http
+use hash
 use common
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ fn installed() -> Result[bool, string] {
     let out = shell::powershell(
         "$p = Join-Path $env:windir 'system32\\inetsrv\\rewrite.dll'; " +
         "if (Test-Path $p) {{ 'YES' }} else {{ 'NO' }}", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    if !out.success { return Err(common::failure(out)) }
     Ok(out.stdout.trim() == "YES")
 }
 
@@ -45,29 +46,68 @@ fn check(params: Value) -> Result[CheckResult, string] {
 fn run_installer(script: string) -> Result[ApplyResult, string] {
     let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
     if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success {
-        let detail = if out.stderr.trim() == "" { out.stdout.trim() } else { out.stderr.trim() }
-        return Err(detail)
-    }
+    if !out.success { return Err(common::failure(out)) }
     Ok(ApplyResult::Success)
+}
+
+// An MSI runs as SYSTEM, so where it came from matters. Plain http is refused
+// unless the step pins the file with sha256. With sha256 the file must match
+// it; without, it must carry a valid Authenticode signature from Microsoft,
+// which the published package and any byte-for-byte mirror of it do.
+fn verify_msi(params: Value, local: string) -> Result[unit, string] {
+    let want = common::param_str(params, "sha256", "").to_lower()
+    if want != "" {
+        let got = hash::sha256_file(local)?.to_lower()
+        if got != want { return Err("sha256 of the MSI is " + got + ", expected " + want) }
+        return Ok(())
+    }
+    let sig = common::ps_out("$s = Get-AuthenticodeSignature -LiteralPath " + common::ps_q(local) + "; " +
+        "[string]$s.Status + '|' + [string]$s.SignerCertificate.Subject")?
+    let parts = sig.split("|")
+    if parts.get(0).unwrap_or("") != "Valid" {
+        return Err("the MSI's Authenticode signature is " + parts.get(0).unwrap_or("") + "; give 'sha256' to install an unsigned package")
+    }
+    if !parts.get(1).unwrap_or("").contains("O=Microsoft Corporation") {
+        return Err("the MSI is signed by " + parts.get(1).unwrap_or("") + ", not Microsoft; give 'sha256' to install it anyway")
+    }
+    Ok(())
 }
 
 fn install_msi(params: Value) -> Result[ApplyResult, string] {
     let source = common::param_str(params, "source", "")
     if source == "" { return Err("'source' is required when method is :msi") }
-    let local = if source.starts_with("http://") || source.starts_with("https://") {
-        let tmp = fs::temp_file()? + ".msi"
-        log::info("downloading " + source)
-        http::download(source, tmp, Value::Null)?
-        tmp
-    } else {
-        if !fs::exists(source) { return Err("'source' does not exist: " + source) }
-        source
+    let remote = source.starts_with("http://") || source.starts_with("https://")
+    if source.starts_with("http://") && common::param_str(params, "sha256", "") == "" {
+        return Err("'source' is plain http; use https or give 'sha256' to pin the file")
     }
+    if !remote {
+        if !fs::exists(source) { return Err("'source' does not exist: " + source) }
+        verify_msi(params, source)?
+        return run_msi(source)
+    }
+    // msiexec wants the .msi extension, so the download goes beside the
+    // temp file rather than into it; both are deleted however the install
+    // ends.
+    let tmp = fs::temp_file()?
+    let local = tmp + ".msi"
+    log::info("downloading " + source)
+    let result = download_and_run(params, source, local)
+    fs::delete(local).unwrap_or(())
+    fs::delete(tmp).unwrap_or(())
+    result
+}
+
+fn download_and_run(params: Value, source: string, local: string) -> Result[ApplyResult, string] {
+    http::download(source, local, Value::Null)?
+    verify_msi(params, local)?
+    run_msi(local)
+}
+
+fn run_msi(local: string) -> Result[ApplyResult, string] {
     log::info("installing the URL Rewrite module from " + local)
     run_installer(
-        "$p = Start-Process msiexec.exe -ArgumentList @('/i', " + common::ps_q(local) +
-        ", '/qn', '/norestart') -Wait -PassThru; exit $p.ExitCode")
+        "$p = Start-Process msiexec.exe -ArgumentList @('/i', ('\"' + " + common::ps_q(local) +
+        " + '\"'), '/qn', '/norestart') -Wait -PassThru; exit $p.ExitCode")
 }
 
 fn uninstall_msi() -> Result[ApplyResult, string] {

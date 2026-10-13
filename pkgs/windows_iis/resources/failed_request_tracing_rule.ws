@@ -8,8 +8,10 @@ use common
 // providers are asked to contribute to it.
 //
 // The rule is an element with a failureDefinitions child and a traceAreas
-// collection, so — as with the rewrite rules — it is written whole rather
-// than patched.
+// collection. Drift is patched in place — the failureDefinitions attributes
+// that differ are set, and a changed provider list replaces the traceAreas
+// collection — so the rule keeps its position: failed-request tracing rules
+// are evaluated in order.
 //
 // Providers are "Provider:areas:verbosity" strings because a list of records
 // is not expressible as a param type:
@@ -24,9 +26,6 @@ fn content_path(params: Value) -> Result[string, string] {
     Ok(p)
 }
 
-fn rule_filter(params: Value) -> Result[string, string] {
-    Ok(rules_filter() + "/add[@path='" + common::xp(content_path(params)?)? + "']")
-}
 
 fn verbosity(v: string) -> Result[string, string] {
     if v == "" { return Ok("") }
@@ -61,19 +60,39 @@ fn parse_provider(spec: string) -> Result[List[string], string] {
     Ok([parts.get(0).unwrap_or(""), parts.get(1).unwrap_or(""), level])
 }
 
+// One "provider|areas|verbosity" entry per provider, lowercased, with the
+// areas as a sorted set — `areas` is a flags attribute, which IIS renders in
+// its own order and spacing — and the entries themselves sorted, since
+// traceAreas is keyed by provider and its order carries no meaning.
+fn provider_entry(provider: string, areas: string, level: string) -> string {
+    let set = common::flag_set(areas)
+    set.sort()
+    provider.to_lower() + "|" + set.join(",") + "|" + level.to_lower()
+}
+
 fn providers_text(params: Value) -> Result[string, string] {
     let out: List[string] = []
     for spec in common::param_list(params, "providers") {
         let p = parse_provider(spec)?
-        // Spaces stripped from the area list on both sides: `areas` is a flags
-        // attribute and IIS renders it "Authentication, Security".
-        out.push(p.get(0).unwrap_or("").to_lower() + "|" +
-            p.get(1).unwrap_or("").to_lower().replace(" ", "") +
-            "|" + p.get(2).unwrap_or("").to_lower())
+        out.push(provider_entry(p.get(0).unwrap_or(""), p.get(1).unwrap_or(""), p.get(2).unwrap_or("")))
     }
+    out.sort()
     Ok(out.join(";;"))
 }
 
+fn live_providers(r: Value) -> string {
+    let out: List[string] = []
+    for e in common::get_str(r, "providers").split(";;") {
+        if e == "" { continue }
+        let p = e.split("|")
+        out.push(provider_entry(p.get(0).unwrap_or(""), p.get(1).unwrap_or(""), p.get(2).unwrap_or("")))
+    }
+    out.sort()
+    out.join(";;")
+}
+
+// 'ABSENT', or the rule flattened for comparison; "path" is the content path
+// as IIS stores it, matched case-insensitively as IIS matches it.
 fn probe(params: Value) -> Result[string, string] {
     common::ps_out(
         "$r = @(); try {{ $r = @(Get-WebConfiguration" + common::scope_delegated(params)? + " -Filter " +
@@ -81,10 +100,8 @@ fn probe(params: Value) -> Result[string, string] {
         common::ps_q(content_path(params)?) + " }}) }} catch {{ }}; " +
         "if ($r.Count -eq 0) {{ 'ABSENT' }} else {{ $x = $r[0]; " +
         "$areas = @($x.traceAreas.Collection | ForEach-Object {{ " +
-        "(([string]$_.provider).ToLower() + '|' + " +
-        "(([string]$_.areas).ToLower() -replace ' ', '') + '|' + " +
-        "([string]$_.verbosity).ToLower()) }}); " +
-        "[pscustomobject]@{{ status_codes = CwV($x.failureDefinitions.statusCodes); " +
+        "([string]$_.provider + '|' + [string]$_.areas + '|' + [string]$_.verbosity) }}); " +
+        "[pscustomobject]@{{ path = [string]$x.path; status_codes = CwV($x.failureDefinitions.statusCodes); " +
         "time_taken = CwV($x.failureDefinitions.timeTaken); " +
         "verbosity = CwV($x.failureDefinitions.verbosity); " +
         "providers = ($areas -join ';;') }} | ConvertTo-Json -Compress }}")
@@ -94,19 +111,27 @@ fn same(have: string, want: string) -> bool {
     have.replace(" ", "").to_lower() == want.replace(" ", "").to_lower()
 }
 
-// Whether the live rule already matches what this step asks for.
-fn converged(params: Value) -> Result[bool, string] {
-    let st = probe(params)?
-    if st == "ABSENT" { return Ok(false) }
-    let r = json::parse(st)?
+// [attribute, PowerShell literal] for each failureDefinitions attribute that
+// differs from the step.
+fn definition_drift(params: Value, r: Value) -> Result[List[List[string]], string] {
+    let out: List[List[string]] = []
     let codes = common::param_str(params, "status_codes", "")
-    if codes != "" && !same(common::get_str(r, "status_codes"), codes) { return Ok(false) }
-    if common::has(params, "time_taken") && common::get_str(r, "time_taken") != common::hms(common::param_int(params, "time_taken", 0)) {
-        return Ok(false)
+    if codes != "" && !same(common::get_str(r, "status_codes"), codes) { out.push(["statusCodes", common::ps_q(codes)]) }
+    if common::has(params, "time_taken") {
+        let t = common::hms(common::param_int(params, "time_taken", 0))
+        if common::get_str(r, "time_taken") != t { out.push(["timeTaken", common::ps_q(t)]) }
     }
     let level = verbosity(common::param_str(params, "verbosity", ""))?
-    if level != "" && !same(common::get_str(r, "verbosity"), level) { return Ok(false) }
-    Ok(common::get_str(r, "providers") == providers_text(params)?)
+    if level != "" && !same(common::get_str(r, "verbosity"), level) { out.push(["verbosity", common::ps_q(level)]) }
+    Ok(out)
+}
+
+// Whether the live rule already matches what this step asks for.
+fn converged(params: Value, st: string) -> Result[bool, string] {
+    if st == "ABSENT" { return Ok(false) }
+    let r = json::parse(st)?
+    if !definition_drift(params, r)?.is_empty() { return Ok(false) }
+    Ok(live_providers(r) == providers_text(params)?)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -115,19 +140,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    let r = json::parse(st)?
-    let codes = common::param_str(params, "status_codes", "")
-    if codes != "" && !same(common::get_str(r, "status_codes"), codes) { return Ok(CheckResult::NotConfigured) }
-    if common::has(params, "time_taken") {
-        if common::get_str(r, "time_taken") != common::hms(common::param_int(params, "time_taken", 0)) {
-            return Ok(CheckResult::NotConfigured)
-        }
-    }
-    let level = verbosity(common::param_str(params, "verbosity", ""))?
-    if level != "" && !same(common::get_str(r, "verbosity"), level) { return Ok(CheckResult::NotConfigured) }
-    if common::get_str(r, "providers") != providers_text(params)? { return Ok(CheckResult::NotConfigured) }
-    Ok(CheckResult::AlreadyConfigured)
+    if converged(params, st)? { return Ok(CheckResult::AlreadyConfigured) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
@@ -138,42 +152,42 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if st == "ABSENT" { return Ok(ApplyResult::Success) }
         log::info("removing failed request tracing rule for " + path)
         common::ps_run("Remove-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
-            " -Name '.' -AtElement @{{path=" + common::ps_q(path) + "}}")?
+            " -Name '.' -AtElement @{{path=" + common::ps_q(common::get_str(json::parse(st)?, "path")) + "}}")?
         return Ok(ApplyResult::Success)
     }
-    // A converged rule is left strictly alone: rebuilding it would move it to
-    // the end of the collection, and failed-request tracing rules are
-    // evaluated in order.
-    if converged(params)? { return Ok(ApplyResult::Success) }
+    if converged(params, st)? { return Ok(ApplyResult::Success) }
     let script = ""
-    if st != "ABSENT" {
-        script = script + "Remove-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rules_filter()) + " -Name '.' -AtElement @{{path=" + common::ps_q(path) + "}}; "
+    let live = path
+    let r = Value::Map(#{})
+    let have_providers = ""
+    if st == "ABSENT" {
+        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
+            " -Name '.' -Value @{{path=" + common::ps_q(path) + "}}; "
+    } else {
+        r = json::parse(st)?
+        live = common::get_str(r, "path")
+        have_providers = live_providers(r)
     }
-    script = script + "Add-WebConfigurationProperty" + scope + " -Filter " + common::ps_q(rules_filter()) +
-        " -Name '.' -Value @{{path=" + common::ps_q(path) + "}}; "
-    let rule = rule_filter(params)?
-    let codes = common::param_str(params, "status_codes", "")
-    if codes != "" {
+    let rule = rules_filter() + "/add[@path='" + common::xp(live)? + "']"
+    for d in definition_drift(params, r)? {
         script = script + "Set-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + "/failureDefinitions") + " -Name 'statusCodes' -Value " + common::ps_q(codes) + "; "
+            common::ps_q(rule + "/failureDefinitions") + " -Name " + common::ps_q(d.get(0).unwrap_or("")) +
+            " -Value " + d.get(1).unwrap_or("") + "; "
     }
-    if common::has(params, "time_taken") {
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + "/failureDefinitions") + " -Name 'timeTaken' -Value " +
-            common::ps_q(common::hms(common::param_int(params, "time_taken", 0))) + "; "
-    }
-    let level = verbosity(common::param_str(params, "verbosity", ""))?
-    if level != "" {
-        script = script + "Set-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + "/failureDefinitions") + " -Name 'verbosity' -Value " + common::ps_q(level) + "; "
-    }
-    for spec in common::param_list(params, "providers") {
-        let p = parse_provider(spec)?
-        script = script + "Add-WebConfigurationProperty" + scope + " -Filter " +
-            common::ps_q(rule + "/traceAreas") + " -Name '.' -Value @{{provider=" +
-            common::ps_q(p.get(0).unwrap_or("")) + "; areas=" + common::ps_q(p.get(1).unwrap_or("")) +
-            "; verbosity=" + common::ps_q(p.get(2).unwrap_or("")) + "}}; "
+    if have_providers != providers_text(params)? {
+        // Removing every entry writes <clear/>, so no inherited trace area
+        // survives alongside the ones this step names.
+        if st != "ABSENT" {
+            script = script + "Remove-WebConfigurationProperty" + scope + " -Filter " +
+                common::ps_q(rule + "/traceAreas") + " -Name '.'; "
+        }
+        for spec in common::param_list(params, "providers") {
+            let p = parse_provider(spec)?
+            script = script + "Add-WebConfigurationProperty" + scope + " -Filter " +
+                common::ps_q(rule + "/traceAreas") + " -Name '.' -Value @{{provider=" +
+                common::ps_q(p.get(0).unwrap_or("")) + "; areas=" + common::ps_q(p.get(1).unwrap_or("")) +
+                "; verbosity=" + common::ps_q(p.get(2).unwrap_or("")) + "}}; "
+        }
     }
     log::info("writing failed request tracing rule for " + path)
     common::ps_run(script)?

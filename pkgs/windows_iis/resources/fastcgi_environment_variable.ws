@@ -50,6 +50,7 @@ fn spec(params: Value) -> Result[CollectionSpec, string] {
         syms: sym_map(),
         always_write: always_write(),
         required: ["value"],
+        create_required: [],
     })
 }
 

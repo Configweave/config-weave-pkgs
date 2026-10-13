@@ -21,6 +21,8 @@ use common
 //               kept.
 // required:     string params that must be non-empty when ensure is
 //               :present.
+// create_required: string params that must be non-empty to add the element
+//               when it is not there yet.
 struct CollectionSpec {
     section: string,
     collection: string,
@@ -30,6 +32,7 @@ struct CollectionSpec {
     syms: List[List[string]],
     always_write: List[string],
     required: List[string],
+    create_required: List[string],
 }
 
 fn iis_symbol(spec: CollectionSpec, name: string, v: string) -> string {
@@ -201,6 +204,15 @@ fn validate(params: Value, spec: CollectionSpec) -> Result[unit, string] {
     Ok(())
 }
 
+fn can_create(params: Value, spec: CollectionSpec) -> Result[unit, string] {
+    for name in spec.create_required {
+        if common::param_str(params, name, "") == "" {
+            return Err("'" + name + "' is required to add the element, which is not there yet")
+        }
+    }
+    Ok(())
+}
+
 fn check(params: Value, spec: CollectionSpec) -> Result[CheckResult, string] {
     validate(params, spec)?
     let st = probe(params, spec)?
@@ -208,7 +220,10 @@ fn check(params: Value, spec: CollectionSpec) -> Result[CheckResult, string] {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
+    if st == "ABSENT" {
+        can_create(params, spec)?
+        return Ok(CheckResult::NotConfigured)
+    }
     let have = json::parse(st)?
     for r in attr_rows(params, spec) {
         if !same(r.get(1).unwrap_or(""), common::get_str(have, r.get(0).unwrap_or("")), r.get(2).unwrap_or("")) {
@@ -230,6 +245,7 @@ fn apply(params: Value, spec: CollectionSpec) -> Result[ApplyResult, string] {
         return Ok(ApplyResult::Success)
     }
     if st == "ABSENT" {
+        can_create(params, spec)?
         log::info("adding element to " + coll_filter(spec))
         common::ps_run("Add-WebConfigurationProperty" + spec.scope + " -Filter " + filter +
             " -Name '.' -Value " + ps_hash(key_rows(params, spec).concat(attr_rows(params, spec))))?
