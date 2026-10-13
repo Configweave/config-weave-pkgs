@@ -1731,9 +1731,13 @@ package "windows_iis" {
     param "exportable" { description = "Mark the private key exportable, so the certificate can be moved to another node later. Applied at import only: the exportability of a key already in the store cannot be changed" type = "bool" default = false }
   }
 
-  // Converges on "the store holds an unexpired certificate for these
-  // names", not "create a certificate" — otherwise every run would mint a
-  // new one and the binding would chase it.
+  // Converges on "the store holds an unexpired self-signed certificate for
+  // exactly these names", not "create a certificate" — otherwise every run
+  // would mint a new one and the binding would chase it. Only certificates
+  // whose issuer is their subject are matched, so a CA-issued certificate
+  // for the same name is never touched. A replacement (renewal, or changed
+  // dns_names or key_length) is created first, every https binding on the
+  // old thumbprint is moved to it, and only then is the old one deleted.
   resource "self_signed_certificate" {
     description = "Ensure a LocalMachine store holds an unexpired self-signed certificate for the given DNS names, or that it holds none"
     script = "resources/self_signed_certificate.ws"
@@ -1743,21 +1747,21 @@ package "windows_iis" {
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create a certificate only when no unexpired one already covers dns_names" }
-      symbol "absent"  { description = "Remove the certificates covering dns_names" }
+      symbol "present" { description = "Create a certificate only when no unexpired one already covers exactly dns_names" }
+      symbol "absent"  { description = "Remove every self-signed certificate whose subject is the first of dns_names" }
     }
-    param "dns_names" { description = "DNS names the certificate covers; the first becomes the subject. Identity is this list" type = "list" required = true }
+    param "dns_names" { description = "DNS names the certificate covers; the first becomes the subject CN. A certificate whose DNS names differ (compared as a set, case-insensitively) is replaced" type = "list" required = true }
     param "store" {
       description = "The LocalMachine store the certificate is created in"
       type = "symbol"
       default = :my
 
       symbol "my"          { description = "LocalMachine\\My, the Personal store" }
-      symbol "web_hosting" { description = "LocalMachine\\WebHosting" }
+      symbol "web_hosting" { description = "LocalMachine\\WebHosting. The certificate is created in My and moved with an export/import round trip, so its key is exportable" }
     }
-    param "friendly_name" { description = "Friendly name shown in the certificate store and IIS Manager" type = "string" default = "" }
-    param "valid_days" { description = "Days the certificate stays valid from creation" type = "int" default = 365 }
-    param "key_length" { description = "RSA key size in bits" type = "int" default = 2048 }
+    param "friendly_name" { description = "Friendly name shown in the certificate store and IIS Manager; set on the existing certificate when it differs. Empty leaves it alone" type = "string" default = "" }
+    param "valid_days" { description = "Days a newly created certificate stays valid. Must be longer than renew_before. An existing certificate's lifetime is not compared — renew_before decides when it is replaced" type = "int" default = 365 }
+    param "key_length" { description = "RSA key size in bits; a certificate with a different key size is replaced" type = "int" default = 2048 }
     param "renew_before" { description = "Replace the certificate once it expires within this span, so a long-lived host rolls over on its own" type = "duration" default = 30d }
   }
 
