@@ -1,24 +1,7 @@
 use value
-use env
+use common
 use fs
 use path
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn home(params: Value) -> string {
-    let h = param_str(params, "home", "")
-    if h != "" { h } else { env::home_dir() }
-}
 
 fn reject_rel(p: string) -> Result[unit, string] {
     if p == "" { return Err("path must not be empty") }
@@ -27,9 +10,9 @@ fn reject_rel(p: string) -> Result[unit, string] {
 }
 
 fn config_path(params: Value) -> Result[string, string] {
-    let f = param_str(params, "file", "")
+    let f = common::param_str(params, "file", "")
     reject_rel(f)?
-    Ok(home(params) + "/.config/" + f)
+    Ok(common::home(params) + "/.config/" + f)
 }
 
 fn section_name(group: string, subgroup: string) -> string {
@@ -102,27 +85,27 @@ fn remove_entry(text: string, section: string, key: string) -> string {
 }
 
 fn desired(params: Value, current: string) -> Result[string, string] {
-    let group = param_str(params, "group", "")
-    let key = param_str(params, "key", "")
+    let group = common::param_str(params, "group", "")
+    let key = common::param_str(params, "key", "")
     if group == "" { return Err("missing 'group' parameter") }
     if key == "" { return Err("missing 'key' parameter") }
-    let section = section_name(group, param_str(params, "subgroup", ""))
-    if !want_present(params)? {
+    let section = section_name(group, common::param_str(params, "subgroup", ""))
+    if !common::want_present(params)? {
         return Ok(remove_entry(current, section, key))
     }
-    Ok(set_entry(current, section, key, param_str(params, "value", "")))
+    Ok(set_entry(current, section, key, common::param_str(params, "value", "")))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = config_path(params)?
-    if !want_present(params)? && !fs::is_file(p) { return Ok(CheckResult::AlreadyConfigured) }
+    if !common::want_present(params)? && !fs::is_file(p) { return Ok(CheckResult::AlreadyConfigured) }
     let current = if fs::is_file(p) { fs::read(p)? } else { "" }
     if current == desired(params, current)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = config_path(params)?
-    if !want_present(params)? && !fs::is_file(p) { return Ok(ApplyResult::Success) }
+    if !common::want_present(params)? && !fs::is_file(p) { return Ok(ApplyResult::Success) }
     let current = if fs::is_file(p) { fs::read(p)? } else { "" }
     fs::mkdir(path::parent(p))?
     fs::write(p, desired(params, current)?)?
