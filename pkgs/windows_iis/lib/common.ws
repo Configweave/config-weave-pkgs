@@ -100,6 +100,12 @@ fn hms(ns: int) -> string {
 // cmdlets' -Name (Get-Website, Start-WebAppPool, ...) is a wildcard pattern,
 // so a site called "a[1]" would not be found by its own name. CwMkdir
 // creates a directory without New-Item's wildcard-aware -Path.
+//
+// CwEp names the HTTP.sys endpoint an https binding element's certificate
+// lives on — "sni:<host>:<port>" with SNI, "ip:<address>:<port>" without, ""
+// with the central certificate store, which keeps none — and CwHttps lists
+// every https binding element on every site, so a removal can tell whether
+// another binding still uses an endpoint.
 fn ps_head() -> string {
     "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
     "Import-Module WebAdministration; " +
@@ -113,6 +119,13 @@ fn ps_head() -> string {
     "function CwSm {{ Add-Type -Path (Join-Path $env:windir 'system32\\inetsrv\\Microsoft.Web.Administration.dll'); " +
     "New-Object Microsoft.Web.Administration.ServerManager }}; " +
     "function CwMkdir($p) {{ [void][IO.Directory]::CreateDirectory($p) }}; " +
+    "function CwEp($x) {{ $f = [int]$x.GetAttributeValue('sslFlags'); $p = ([string]$x.bindingInformation).Split(':'); " +
+    "$i = $p[0]; if ($i -eq '*' -or $i -eq '') {{ $i = '0.0.0.0' }}; " +
+    "if (($f -band 2) -ne 0) {{ return '' }}; " +
+    "if (($f -band 1) -ne 0) {{ return ('sni:' + ($p[2..($p.Count - 1)] -join ':') + ':' + $p[1]).ToLower() }}; " +
+    "return ('ip:' + $i + ':' + $p[1]) }}; " +
+    "function CwHttps {{ @(Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/site/bindings/binding' | " +
+    "Where-Object {{ [string]$_.protocol -eq 'https' }}) }}; " +
     "function CwKind($el, $name) {{ try {{ $sch = $el.Schema.AttributeSchemas[$name]; " +
     "if ([string]$sch.Type -eq 'flags' -or $sch.IsCombinedFlags -eq $true) {{ return 'flags' }}; " +
     "if ([string]$sch.Type -eq 'enum' -or ($null -ne $sch.EnumValues -and @($sch.EnumValues).Count -gt 0)) {{ return 'enum' }} }} catch {{ }}; return '' }}; " +

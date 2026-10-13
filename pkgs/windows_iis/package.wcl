@@ -2760,6 +2760,11 @@ package "windows_iis" {
     template = "x86_64/windows-server-2025"
     group = "win2025"
     memory = "4GiB"
+    // An HTML page and a text file holding the same link: the outbound rule
+    // must rewrite the first and, held off by its pre-condition, leave the
+    // second alone. cmd /C runs this, so < and > are escaped with ^ and the
+    // attribute quotes are [char]34.
+    setup = "powershell -NoProfile -Command $l = '^<html^>^<body^>^<a href=' + [char]34 + 'http://old.example.com/page' + [char]34 + '^>link^</a^>^</body^>^</html^>'; Set-Content -Path C:\\weave-iis\\www\\links.html -Value $l; Set-Content -Path C:\\weave-iis\\www\\links.txt -Value $l"
     verify = "tests/iis_rewrite_verify.ws"
 
     step "rewrite_module" {
@@ -2787,6 +2792,27 @@ package "windows_iis" {
       resource = "rewrite_map_entry"
       requires = ["map"]
       properties { site = "weave-site" map = "weave-map" key = "alpha" value = "beta" }
+    }
+
+    step "map_entry_page" {
+      description = "A map entry the map rule below resolves"
+      resource = "rewrite_map_entry"
+      requires = ["map"]
+      properties { site = "weave-site" map = "weave-map" key = "page" value = "index.html" }
+    }
+
+    step "map_rule" {
+      description = "Rewrite /mapped/<key> to /new/<value> through the map"
+      resource = "rewrite_rule"
+      requires = ["map_entry_page"]
+      properties {
+        site = "weave-site"
+        name = "weave-map-rule"
+        match_url = "^mapped/(.*)"
+        action_type = :rewrite
+        action_url = "new/{weave-map:{R:1}}"
+        stop_processing = true
+      }
     }
 
     step "rewrite_rule" {
@@ -3770,6 +3796,393 @@ package "windows_iis" {
         subject = "CN=weave-pfx.local"
         exportable = true
       }
+    }
+  }
+
+  // Every step here changes something an earlier test in this group created,
+  // or seeds drift in setup first, so each is a regression test for a fix
+  // that a fresh object would not exercise: a later value on an existing
+  // object, a key IIS stores in another case, a password with the same user.
+  // The tests in group win2025 run in declaration order on one instance.
+  test "iis_update_converges" {
+    description = "Existing IIS objects are updated in place: drifted credentials, case-differing keys, empty lists, renewed certificates and reordered flags converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    memory = "4GiB"
+    // cmd /C runs this: no inner double quotes and no pipes, and & rather
+    // than && so a directory left by an earlier run does not stop the rest.
+    // The PowerShell part seeds the drift the steps below must find: a
+    // stale password for the user the vdir step names, and a self-signed
+    // certificate two days from expiry bound to an SNI binding.
+    setup = "mkdir C:\\weave-iis\\tls & mkdir C:\\weave-iis\\ccs & echo weave-tls-ok>C:\\weave-iis\\tls\\index.html & net user weave-ccs Weave-ccs-1! /add & powershell -NoProfile -Command Import-Module WebAdministration; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name userName -Value weave-unc; Set-ItemProperty IIS:\\Sites\\weave-site\\static -Name password -Value stale-pass; $c = New-SelfSignedCertificate -DnsName weave-renew.local -CertStoreLocation Cert:\\LocalMachine\\My -NotAfter (Get-Date).AddDays(2); New-WebBinding -Name weave-site -Protocol https -Port 8444 -HostHeader weave-renew.local -SslFlags 1; (Get-WebBinding -Name weave-site -Port 8444).AddSslCertificate($c.Thumbprint, 'My')"
+    verify = "tests/iis_update_verify.ws"
+
+    // The username already matches what setup wrote; only the password is
+    // stale. Before the password was compared this step was already
+    // configured and the stale password stayed.
+    step "vdir_password" {
+      description = "A changed virtual directory password is detected and written"
+      resource = "virtual_directory"
+      properties { site = "weave-site" path = "/static" username = "weave-unc" password = "weave-unc-pass" }
+    }
+
+    // logonMethod reads back as a number through GetAttributeValue; compared
+    // with the name it never converged.
+    step "vdir_logon_method" {
+      description = "A virtual directory's logon method converges"
+      resource = "virtual_directory"
+      requires = ["vdir_password"]
+      properties { site = "weave-site" path = "/static" logon_method = :network }
+    }
+
+    step "site_id" {
+      description = "An existing site is renumbered when id names another value"
+      resource = "site"
+      properties { name = "weave-site" id = 42 }
+    }
+
+    // iis_security_converges set Allow at the server level.
+    step "delegation_inherit" {
+      description = "An explicit overrideMode is cleared back to the inherited one"
+      resource = "section_delegation"
+      properties {
+        section_path = "system.webServer/security/authentication/windowsAuthentication"
+        override_mode = :inherit
+      }
+    }
+
+    step "anonymous_pool_identity" {
+      description = "Anonymous requests to /app run as the application pool identity"
+      resource = "anonymous_authentication"
+      properties { site = "weave-site" path = "/app" use_app_pool_identity = true }
+    }
+
+    // iis_security_converges allowed 127.0.0.1/255.255.255.255. Keyed on
+    // the address alone, this step found that entry and rewrote its mask,
+    // so the two flip-flopped; verify asserts both entries exist.
+    step "ip_same_address_other_mask" {
+      description = "The same address with another subnet mask is a separate entry"
+      resource = "ip_restriction"
+      properties { site = "weave-site" path = "/secure" ip_address = "127.0.0.1" subnet_mask = "255.255.255.0" allowed = true }
+    }
+
+    step "app_no_default_documents" {
+      description = "An empty default document list clears the inherited one at /app"
+      resource = "default_document"
+      properties { site = "weave-site" path = "/app" files = [] }
+    }
+
+    step "pool_no_schedule" {
+      description = "The recycle schedule set by iis_site_converges is emptied"
+      resource = "app_pool_recycling"
+      properties { pool = "weave-pool" schedule = [] }
+    }
+
+    step "pipeline_no_access" {
+      description = "An empty access policy converges rather than reading back None for ever"
+      resource = "handler_access"
+      properties { site = "weave-site" path = "/pipeline" access_policy = [] }
+    }
+
+    // The rule from iis_content_converges, addressed in another case, with
+    // its areas spelled in another order than IIS stores them.
+    step "trace_rule_update" {
+      description = "A tracing rule is patched in place and its areas compare as a set"
+      resource = "failed_request_tracing_rule"
+      properties {
+        site = "weave-site"
+        path = "/content"
+        content_path = "*.HTML"
+        status_codes = "404,500"
+        verbosity = :warning
+        providers = ["WWW Server:Security,Authentication:Verbose"]
+      }
+    }
+
+    // The first inbound rule gains a condition whose regex holds a "|", a
+    // server variable, and a match_url differing only in case. Verify
+    // asserts it is still the first rule and still rewrites.
+    step "rewrite_rule_update" {
+      description = "An existing rewrite rule is patched in place, keeping its position"
+      resource = "rewrite_rule"
+      properties {
+        site = "weave-site"
+        name = "weave-rewrite"
+        match_url = "^OLD/(.*)"
+        action_type = :rewrite
+        action_url = "new/{R:1}"
+        conditions = ["{HTTP_HOST}|^(localhost|weave\\.local)(:\\d+)?$"]
+        server_variables = ["HTTP_X_WEAVE|{HTTP_HOST}"]
+        stop_processing = true
+        enabled = true
+      }
+    }
+
+    step "outbound_tags" {
+      description = "filter_by_tags compares as a set, in any order and spacing"
+      resource = "rewrite_outbound_rule"
+      properties {
+        site = "weave-site"
+        name = "weave-outbound"
+        pre_condition = "weave-html"
+        filter_by_tags = "Img, A"
+        pattern = "^http://old\\.example\\.com/(.*)"
+        action_value = "http://new.example.com/{R:1}"
+      }
+    }
+
+    // accessType is an enum key: matched by its number it was never found,
+    // and the element was added again on every run.
+    step "generic_enum_key" {
+      description = "A generic collection element keyed on an enum attribute converges"
+      resource = "config_collection_element"
+      properties {
+        site = "weave-site"
+        path = "/secure"
+        filter = "system.webServer/security/authorization"
+        keys = { accessType: "Deny", users: "weave-generic" }
+        attributes = { verbs: "POST" }
+      }
+    }
+
+    // iis_site_converges added .weave; this names it .WEAVE.
+    step "mime_key_case" {
+      description = "A mime map whose key differs only in case is updated, not missed"
+      resource = "mime_map"
+      properties { site = "weave-site" file_extension = ".WEAVE" mime_type = "text/x-weave" }
+    }
+
+    step "mime_inherited_override" {
+      description = "An entry /content inherits from the server is overridden"
+      resource = "mime_map"
+      properties { site = "weave-site" path = "/content" file_extension = ".txt" mime_type = "text/x-weave-text" }
+    }
+
+    step "config_property_absent" {
+      description = "The attribute iis_site_converges set is removed at the site again"
+      resource = "config_property"
+      properties { site = "weave-site" filter = "system.webServer/asp" name = "enableParentPaths" ensure = :absent }
+    }
+
+    step "renewed_certificate" {
+      description = "A self-signed certificate inside renew_before is replaced and its binding moved"
+      resource = "self_signed_certificate"
+      properties { dns_names = ["weave-renew.local"] valid_days = 30 renew_before = 7d }
+    }
+
+    // Same port as the *:8443 binding from iis_site_converges, another
+    // address and another certificate. Get-WebBinding ignored the address and
+    // attached the certificate to both; verify asserts each endpoint kept
+    // its own.
+    step "loopback_https_binding" {
+      description = "An https binding on 127.0.0.1:8443 gets its own certificate without touching *:8443"
+      resource = "binding"
+      requires = ["renewed_certificate"]
+      properties { site = "weave-site" protocol = :https ip = "127.0.0.1" port = 8443 certificate_subject = "CN=weave-renew.local" }
+    }
+
+    step "web_hosting_certificate" {
+      description = "A self-signed certificate in the WebHosting store"
+      resource = "self_signed_certificate"
+      properties { dns_names = ["weave-wh.local"] store = :web_hosting }
+    }
+
+    step "pipeline_header_web_config" {
+      description = "A response header in the web.config of /pipeline"
+      resource = "response_header"
+      properties { site = "weave-site" path = "/pipeline" store = :web_config name = "X-Weave-Pipeline" value = "yes" }
+    }
+
+    step "tls_app" {
+      description = "An application at /tls to require TLS on"
+      resource = "application"
+      properties { site = "weave-site" path = "/tls" physical_path = "C:\\weave-iis\\tls" app_pool = "weave-pool" }
+    }
+
+    step "tls_required" {
+      description = "Refuse plain HTTP on /tls"
+      resource = "ssl_settings"
+      requires = ["tls_app"]
+      properties { site = "weave-site" path = "/tls" require_ssl = true }
+    }
+
+    step "deflate_scheme" {
+      description = "A second compression scheme, registered from its DLL"
+      resource = "compression_scheme"
+      properties { name = "weave-deflate" dll = "%Windir%\\system32\\inetsrv\\gzip.dll" static_compression_level = 7 }
+    }
+
+    step "cert_provider_feature" {
+      description = "Install the centralized certificate provider"
+      resource = "feature"
+      properties { name = :cert_provider }
+    }
+
+    step "central_certificate_store" {
+      description = "Enable the central certificate store on a local directory as a local account"
+      resource = "central_certificate_store"
+      requires = ["cert_provider_feature"]
+      properties { cert_store_location = "C:\\weave-iis\\ccs" username = "weave-ccs" password = "Weave-ccs-1!" private_key_password = "weave-pk" }
+    }
+
+    // StaticFileModule is enabled in <modules>; unregistering it would stop
+    // every worker process.
+    step "global_module_in_use" {
+      description = "Unregistering a native module still named in <modules> is refused"
+      resource = "global_module"
+      expect = "error"
+      properties { name = "StaticFileModule" ensure = :absent }
+    }
+  }
+
+  // Removes what the earlier tests created, each from a real object, and
+  // verify asserts every one is gone — the HTTP.sys certificate binding of
+  // the removed https binding included.
+  test "iis_removal_converges" {
+    description = "Sites, applications, bindings, certificates, rules and registrations created by the earlier tests are removed"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    memory = "4GiB"
+    verify = "tests/iis_removal_verify.ws"
+
+    step "redirect_rule_absent" {
+      description = "Remove the redirect rule"
+      resource = "rewrite_rule"
+      properties { site = "weave-site" name = "weave-redirect" ensure = :absent }
+    }
+
+    step "outbound_rule_absent" {
+      description = "Remove the outbound rule"
+      resource = "rewrite_outbound_rule"
+      properties { site = "weave-site" name = "weave-outbound" ensure = :absent }
+    }
+
+    step "pre_condition_absent" {
+      description = "Remove the pre-condition once no rule names it"
+      resource = "rewrite_pre_condition"
+      requires = ["outbound_rule_absent"]
+      properties { site = "weave-site" name = "weave-html" ensure = :absent }
+    }
+
+    step "https_binding_absent" {
+      description = "Remove the HTTPS binding on 8443, and its HTTP.sys certificate binding"
+      resource = "binding"
+      properties { site = "weave-site" protocol = :https port = 8443 ensure = :absent }
+    }
+
+    step "virtual_directory_absent" {
+      description = "Remove the /static virtual directory"
+      resource = "virtual_directory"
+      properties { site = "weave-site" path = "/static" ensure = :absent }
+    }
+
+    step "application_absent" {
+      description = "Remove the /app application"
+      resource = "application"
+      properties { site = "weave-site" path = "/app" ensure = :absent }
+    }
+
+    step "pool_env_absent" {
+      description = "Remove the pool's environment variable"
+      resource = "app_pool_environment_variable"
+      properties { pool = "weave-pool" name = "WEAVE_ENV" ensure = :absent }
+    }
+
+    step "authorization_absent" {
+      description = "Remove the rule refusing Guests on /secure"
+      resource = "authorization_rule"
+      properties { site = "weave-site" path = "/secure" roles = "Guests" ensure = :absent }
+    }
+
+    step "pfx_certificate_absent" {
+      description = "Remove the imported certificate"
+      resource = "certificate"
+      properties { subject = "CN=weave-pfx.local" ensure = :absent }
+    }
+
+    step "deflate_scheme_absent" {
+      description = "Unregister the second compression scheme"
+      resource = "compression_scheme"
+      properties { name = "weave-deflate" ensure = :absent }
+    }
+
+    step "generic_element_absent" {
+      description = "Remove the header added through the generic collection resource"
+      resource = "config_collection_element"
+      properties {
+        site = "weave-site"
+        filter = "system.webServer/httpProtocol"
+        collection_name = "customHeaders"
+        keys = { name: "X-Weave-Generic" }
+        ensure = :absent
+      }
+    }
+
+    step "response_header_absent" {
+      description = "Remove the site's custom header"
+      resource = "response_header"
+      properties { site = "weave-site" name = "X-Weave" ensure = :absent }
+    }
+
+    step "web_hosting_certificate_absent" {
+      description = "Remove the WebHosting self-signed certificate"
+      resource = "self_signed_certificate"
+      properties { dns_names = ["weave-wh.local"] store = :web_hosting ensure = :absent }
+    }
+
+    step "module_absent" {
+      description = "Remove the managed module from /pipeline"
+      resource = "module"
+      properties { site = "weave-site" path = "/pipeline" name = "WeaveSessionState" ensure = :absent }
+    }
+
+    step "global_module_absent" {
+      description = "Unregister the native module no <modules> entry names"
+      resource = "global_module"
+      properties { name = "WeaveGlobalModule" ensure = :absent }
+    }
+
+    step "fastcgi_env_absent" {
+      description = "Remove the FastCGI application's environment variable"
+      resource = "fastcgi_environment_variable"
+      properties { full_path = "C:\\weave-iis\\fcgi\\weave-fcgi.exe" arguments = "-weave" name = "WEAVE_FCGI" ensure = :absent }
+    }
+
+    step "fastcgi_absent" {
+      description = "Remove the FastCGI application"
+      resource = "fastcgi_application"
+      requires = ["fastcgi_env_absent"]
+      properties { full_path = "C:\\weave-iis\\fcgi\\weave-fcgi.exe" arguments = "-weave" ensure = :absent }
+    }
+
+    step "central_certificate_store_off" {
+      description = "Disable the central certificate store"
+      resource = "central_certificate_store"
+      properties { enabled = false }
+    }
+
+    // Last: the site takes its remaining applications and bindings with it,
+    // and the module goes once no rule is left that it would have to run.
+    step "site_absent" {
+      description = "Remove weave-site"
+      resource = "site"
+      requires = ["redirect_rule_absent", "pre_condition_absent", "https_binding_absent", "virtual_directory_absent",
+        "application_absent", "authorization_absent", "generic_element_absent", "response_header_absent", "module_absent"]
+      properties { name = "weave-site" ensure = :absent }
+    }
+
+    step "pool_absent" {
+      description = "Remove weave-pool once no application runs in it"
+      resource = "app_pool"
+      requires = ["site_absent", "pool_env_absent"]
+      properties { name = "weave-pool" ensure = :absent }
+    }
+
+    step "rewrite_module_absent" {
+      description = "Uninstall the URL Rewrite module"
+      resource = "rewrite_module"
+      requires = ["site_absent"]
+      properties { ensure = :absent }
     }
   }
 }

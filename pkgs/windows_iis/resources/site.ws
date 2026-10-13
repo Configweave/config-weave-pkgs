@@ -113,7 +113,16 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::want_present(params)? {
         if !exists(name)? { return Ok(ApplyResult::Success) }
         log::info("removing site " + name)
-        common::ps_run("$sm = CwSm; $sm.Sites.Remove($sm.Sites[" + qn + "]); $sm.CommitChanges()")?
+        // The site's https bindings take their HTTP.sys certificate bindings
+        // with them, unless a binding on another site still uses the
+        // endpoint; IIS itself leaves them behind.
+        common::xp(name)?
+        common::ps_run("$all = CwHttps; $tag = (\"site[@name='\" + " + qn + " + \"' and\").ToLower(); " +
+            "foreach ($b in @($all | Where-Object {{ ([string]$_.ItemXPath).ToLower().Contains($tag) }})) {{ " +
+            "$ep = CwEp $b; if ($ep -eq '') {{ continue }}; " +
+            "$others = @($all | Where-Object {{ -not ([string]$_.ItemXPath).ToLower().Contains($tag) -and (CwEp $_) -eq $ep }}); " +
+            "if ($others.Count -eq 0) {{ try {{ $b.RemoveSslCertificate() }} catch {{ }} }} }}; " +
+            "$sm = CwSm; $sm.Sites.Remove($sm.Sites[" + qn + "]); $sm.CommitChanges()")?
         return Ok(ApplyResult::Success)
     }
     let path = common::param_str(params, "physical_path", "")

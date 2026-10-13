@@ -88,12 +88,8 @@ fn endpoint() -> string {
     "$fl = [int]$b.GetAttributeValue('sslFlags'); $sni = ($fl -band 1) -ne 0; $ccs = ($fl -band 2) -ne 0; " +
     "$bi = ([string]$b.bindingInformation).Split(':'); $ip = $bi[0]; if ($ip -eq '*' -or $ip -eq '') {{ $ip = '0.0.0.0' }}; " +
     "$port = $bi[1]; $hh = ($bi[2..($bi.Count - 1)] -join ':'); " +
-    "function CwEp($x) {{ $f = [int]$x.GetAttributeValue('sslFlags'); $p = ([string]$x.bindingInformation).Split(':'); " +
-    "$i = $p[0]; if ($i -eq '*' -or $i -eq '') {{ $i = '0.0.0.0' }}; " +
-    "if (($f -band 1) -ne 0) {{ return ('sni:' + ($p[2..($p.Count - 1)] -join ':') + ':' + $p[1]).ToLower() }}; return ('ip:' + $i + ':' + $p[1]) }}; " +
     "$ep = CwEp $b; " +
-    "$shared = @(Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/site/bindings/binding' | " +
-    "Where-Object {{ [string]$_.protocol -eq 'https' -and -not ([string]$_.bindingInformation -eq [string]$b.bindingInformation -and " +
+    "$shared = @(CwHttps | Where-Object {{ -not ([string]$_.bindingInformation -eq [string]$b.bindingInformation -and " +
     "[string]$_.ItemXPath -eq [string]$b.ItemXPath) -and (CwEp $_) -eq $ep }}).Count; "
 }
 
