@@ -107,10 +107,11 @@ package "windows_domain" {
   }
 
   // Single-VM coverage for the parts that need no domain: the membership
-  // gatherer against a freshly booted workgroup server, and workgroup_member
-  // asserting the machine is already in the workgroup it reports. Promotion,
-  // joining and demotion all need reboots and several machines — that is the
-  // ad_matrix scenario below.
+  // gatherer against a freshly booted workgroup server, workgroup_member
+  // asserting the machine is already in the workgroup it reports (in another
+  // case), and the guards that need no DC. Promotion, joining and demotion
+  // all need reboots and several machines — that is the ad_matrix scenario
+  // below.
   test "workgroup_membership" {
     description = "Membership facts read back on a workgroup server and re-joining its own workgroup is a no-op"
     template = "x86_64/windows-server-2025"
@@ -123,16 +124,75 @@ package "windows_domain" {
         part_of_domain = false
         workgroup = "WORKGROUP"
         domain = ""
+        netbios_name = ""
         is_dc = false
         role = "standalone_server"
+        fsmo_known = true
       }
     }
 
     step "already_in_workgroup" {
-      description = "The machine is already in WORKGROUP"
+      description = "The machine is already in WORKGROUP, however it is spelled"
       resource = "workgroup_member"
       expect = "already_configured"
-      properties { workgroup_name = "WORKGROUP" }
+      properties { workgroup_name = "workgroup" }
+    }
+
+    step "half_a_credential" {
+      description = "credential_user without credential_password is an error, not a silent fall-back"
+      resource = "workgroup_member"
+      expect = "error"
+      properties { workgroup_name = "WORKGROUP" credential_user = "CORP\\Administrator" }
+    }
+
+    step "not_a_dc_of_it" {
+      description = "A server that is no DC is already demoted"
+      resource = "domain_controller"
+      expect = "already_configured"
+      properties { domain_name = "corp.example.com" ensure = :absent }
+    }
+
+    step "not_a_member_of_it" {
+      description = "A workgroup server is already out of the domain"
+      resource = "domain_member"
+      expect = "already_configured"
+      properties { domain_name = "corp.example.com" ensure = :absent }
+    }
+
+    step "join_needs_credentials" {
+      description = "Joining without a credential is an error"
+      resource = "domain_member"
+      expect = "error"
+      properties { domain_name = "corp.example.com" }
+    }
+
+    step "additional_needs_a_dc" {
+      description = "mode = :additional with no DC to find fails instead of creating a forest"
+      resource = "domain_controller"
+      expect = "error"
+      properties {
+        domain_name = "nosuch.example.com"
+        mode = :additional
+        safe_mode_password = "P@ssw0rd-DSRM!"
+        credential_user = "NOSUCH\\Administrator"
+        credential_password = "vmlab123!"
+      }
+    }
+  }
+
+  // A workgroup change asks for a reboot, and until it happens the step
+  // keeps reporting reboot_required rather than the half-applied state. Its
+  // own group, since the instance is left mid-change.
+  test "workgroup_change_reboots" {
+    description = "Moving to another workgroup reports reboot_required"
+    template = "x86_64/windows-server-2025"
+    verify = "tests/workgroup_change_verify.ws"
+
+    step "to_testwg" {
+      description = "Move from WORKGROUP to TESTWG"
+      resource = "workgroup_member"
+      expect = "reboot_required"
+      properties { workgroup_name = "TESTWG" }
     }
   }
 
@@ -142,7 +202,7 @@ package "windows_domain" {
   // its resource across the reboot it requires. Needs vmlab + the
   // windows-server-2025 template.
   scenario "ad_matrix" {
-    description = "Forest, additional DC, member join and a second forest converge over real reboots"
+    description = "Forest, additional DC, member join, rename and OU move, demotions and leaving the domain converge over real reboots"
     lab = "tests/ad-lab"
     script = "tests/ad_matrix.ws"
   }
