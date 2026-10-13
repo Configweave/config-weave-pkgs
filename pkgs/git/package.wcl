@@ -57,7 +57,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "core" {
@@ -131,7 +131,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "init" {
@@ -162,7 +162,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -195,7 +195,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "push" {
@@ -242,7 +242,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "pull" {
@@ -277,7 +277,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "fetch" {
@@ -324,7 +324,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "merge" {
@@ -381,7 +381,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "rebase" {
@@ -428,7 +428,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -512,7 +512,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "status" {
@@ -551,7 +551,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "log" {
@@ -595,7 +595,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "color" {
@@ -723,7 +723,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -752,7 +752,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "safe_directory" {
@@ -778,7 +778,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "config_entry" {
@@ -805,7 +805,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -1340,12 +1340,13 @@ package "git" {
   }
 
   // The other scope. The container runs as root, so /etc/gitconfig is
-  // writable; `home` is irrelevant here and deliberately omitted.
+  // writable; `home` is irrelevant here, and one step passes it anyway to
+  // prove it is ignored.
   test "system_scope_converges" {
     description = "System scope writes /etc/gitconfig rather than a home directory"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); printf '[user]\\n\\tname = Seeded System\\n' > /etc/gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); rm -rf /root/not-a-home; printf '[user]\\n\\tname = Seeded System\\n[safe]\\n\\tdirectory = /srv/sys-stale\\n' > /etc/gitconfig"
     verify = "tests/system_verify.ws"
 
     step "system_identity" {
@@ -1358,6 +1359,20 @@ package "git" {
       description = "A raw entry in the system scope"
       resource = "config_entry"
       properties { key = "init.defaultBranch" value = "trunk" scope = :system }
+    }
+
+    // `home` is ignored under :system. It used to be created anyway, and
+    // GIT_CONFIG_GLOBAL pointed into it.
+    step "system_safe_dir" {
+      description = "Trust a path system-wide; the stray home must not be created"
+      resource = "safe_directory"
+      properties { path = "/srv/sys-repo" scope = :system home = "/root/not-a-home" }
+    }
+
+    step "system_rm_safe_dir" {
+      description = "Untrust the seeded system-wide path"
+      resource = "safe_directory"
+      properties { path = "/srv/sys-stale" ensure = :absent scope = :system }
     }
   }
 }

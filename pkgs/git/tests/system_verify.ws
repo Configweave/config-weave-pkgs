@@ -15,10 +15,19 @@ fn verify(facts: Value) -> Result[bool, string] {
         want("user.email", "sys@example.invalid")? &&
         want("init.defaultBranch", "trunk")?
 
-    // The steps passed no `home`, so nothing may have leaked into a
-    // per-user config in root's actual home directory.
+    // Add one entry, remove the seeded one.
+    let safe = shell::bash("git config --system --get-all safe.directory", Value::Null)?.stdout.trim()
+    if safe != "/srv/sys-repo" {
+        return Err("safe.directory = [" + safe.replace("\n", ", ") + "], expected [/srv/sys-repo]")
+    }
+
+    // Nothing may have leaked into a per-user config: not root's actual
+    // home, and not the `home` one system-scope step passed.
     if fs::exists("/root/.gitconfig") {
         return Err("system-scope steps wrote /root/.gitconfig")
+    }
+    if fs::exists("/root/not-a-home") {
+        return Err("a system-scope step created its ignored home, /root/not-a-home")
     }
 
     Ok(written)

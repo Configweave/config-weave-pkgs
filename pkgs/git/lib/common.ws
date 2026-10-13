@@ -18,6 +18,8 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
 
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
+fn is_system(params: Value) -> bool { param_str(params, "scope", "global") == "system" }
+
 fn want_present(params: Value) -> Result[bool, string] {
     let e = param_str(params, "ensure", "present")
     if e == "present" { return Ok(true) }
@@ -37,9 +39,10 @@ fn scope_flag(params: Value) -> Result[string, string] {
 // `home` pins --global at an explicit file through GIT_CONFIG_GLOBAL (git
 // >= 2.30) instead of mutating HOME: no shell needed, and it works
 // unchanged on Windows, where the global config is %USERPROFILE%\.gitconfig.
+// System scope never reads it.
 fn git_opts(params: Value) -> Value {
     let h = param_str(params, "home", "")
-    if h == "" { return Value::Null }
+    if h == "" || is_system(params) { return Value::Null }
     Value::Map(#{ "env": Value::Map(#{ "GIT_CONFIG_GLOBAL": Value::String(h + "/.gitconfig") }) })
 }
 
@@ -107,9 +110,10 @@ fn cfg_get(params: Value, key: string) -> Result[Option[string], string] {
 }
 
 // git creates the config file itself, but not the directory holding it.
+// System scope writes git's own system path and ignores `home`.
 fn ensure_parent(params: Value) -> Result[unit, string] {
     let h = param_str(params, "home", "")
-    if h != "" { fs::mkdir(h)? }
+    if h != "" && !is_system(params) { fs::mkdir(h)? }
     Ok(())
 }
 
