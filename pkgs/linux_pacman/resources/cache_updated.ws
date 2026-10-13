@@ -3,11 +3,7 @@ use fs
 use path
 use shell
 use time
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
-}
+use common
 
 // The stamp file's mtime records the last refresh this resource performed.
 // It is per manager: one machine may run more than one, and a refresh of
@@ -16,7 +12,7 @@ fn stamp_path() -> string { "/var/lib/config-weave/pacman-cache-updated" }
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
-    param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
+    common::param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
 }
 
 fn last_refresh() -> Result[int, string] {
