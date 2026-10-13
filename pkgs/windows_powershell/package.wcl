@@ -11,9 +11,17 @@ package "windows_powershell" {
   // rather than a separate upgrade resource.
   //
   // :zip and :tarball are the only side-by-side-capable methods: they
-  // extract into a versioned root of their own, which is what Microsoft
-  // documents for running 7.4 next to 7.5. :winget, :msi and :repo all
-  // replace the installed stable build in place.
+  // extract into a versioned root of their own (by default named for the
+  // full version, e.g. /opt/microsoft/powershell/7.5.4), which is what
+  // Microsoft documents for running 7.4 next to 7.5. They mark the root they
+  // extract, and refuse to overwrite or delete a root a package manager owns
+  // (the MSI's C:\Program Files\PowerShell\7, a dpkg or rpm tree).
+  // :winget, :msi and :repo all replace the installed build in place; :repo
+  // pins the package version when `version` is set.
+  //
+  // :msi with ensure = :absent uninstalls by product code found under the
+  // Uninstall registry key, and only the requested channel: removing the
+  // stable build leaves a preview build alone, and the other way round.
   resource "pwsh_installed" {
     description = "Ensure a PowerShell 7 build is installed, at a given version, by MSI, winget, zip, the distro repository or the release tarball"
     script = "resources/pwsh_installed.ws"
@@ -26,7 +34,7 @@ package "windows_powershell" {
       symbol "present" { description = "Install PowerShell" }
       symbol "absent"  { description = "Uninstall PowerShell" }
     }
-    param "version" { description = "Exact version to install, e.g. 7.5.4; empty resolves the latest release of the channel" type = "string" default = "" }
+    param "version" { description = "Exact version to install, e.g. 7.5.4; empty accepts any installed build of the channel and installs the latest. :repo pins the distro package to it" type = "string" default = "" }
     param "channel" {
       description = "Release channel the version is resolved from when `version` is empty"
       type = "symbol"
@@ -48,7 +56,7 @@ package "windows_powershell" {
       symbol "repo"    { description = "Linux: register packages.microsoft.com and install the distro package" }
       symbol "tarball" { description = "Linux: download the release tar.gz and extract it — the side-by-side method" }
     }
-    param "install_root" { description = "Directory the :zip / :tarball methods extract into; empty uses the platform default ($PSHOME for the major version)" type = "string" default = "" }
+    param "install_root" { description = "Directory the :zip / :tarball methods extract into; empty uses a root named for the full version (C:\\Program Files\\PowerShell\\<version>, /opt/microsoft/powershell/<version>). A root a package manager owns is refused" type = "string" default = "" }
     param "url" { description = "Explicit download URL for :msi / :zip / :tarball; empty derives it from the version and platform" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of the downloaded artefact; empty skips the check" type = "string" default = "" }
     param "add_path" { description = "MSI ADD_PATH: put the install directory on the machine PATH" type = "bool" default = true }
@@ -57,7 +65,7 @@ package "windows_powershell" {
     param "explorer_context_menu" { description = "MSI ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL: add the Open PowerShell here shell item" type = "bool" default = false }
     param "file_context_menu" { description = "MSI ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL: add the Run with PowerShell shell item" type = "bool" default = false }
     param "microsoft_update" { description = "MSI USE_MU and ENABLE_MU: receive PowerShell updates through Microsoft Update" type = "bool" default = false }
-    param "symlink" { description = "Linux :tarball only — path symlinked at the extracted pwsh so it lands on PATH; empty skips the symlink" type = "string" default = "" }
+    param "symlink" { description = "Linux :tarball only — path symlinked at the extracted pwsh so it lands on PATH; empty skips the symlink. :absent removes it only when it points into the root" type = "string" default = "" }
   }
 
   // Enable-PSRemoting configures the endpoint of whichever edition runs it,
@@ -2279,7 +2287,9 @@ package "windows_powershell" {
     description = "Installing PowerShell from the release tarball into its own root, and removing it, converge"
     image = "debian:12"
     group = "pwshtar"
-    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null"
+    // Seeds an unmarked tarball-style root from an older release — a pwsh
+    // that answers with its version — for the :absent step to remove.
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-7.4.6 && printf '#!/bin/sh\\necho 7.4.6\\n' > /opt/pwsh-7.4.6/pwsh && chmod +x /opt/pwsh-7.4.6/pwsh"
     verify = "tests/install_verify.ws"
 
     step "install" {
@@ -2293,10 +2303,9 @@ package "windows_powershell" {
       }
     }
 
-    step "remove_other" {
-      description = "A root that was never populated is already absent"
+    step "remove_seeded" {
+      description = "Remove the tarball root setup seeded"
       resource = "pwsh_installed"
-      expect = "already_configured"
       properties {
         ensure = :absent
         method = :tarball
@@ -2304,18 +2313,47 @@ package "windows_powershell" {
         install_root = "/opt/pwsh-7.4.6"
       }
     }
+
+    step "remove_never_installed" {
+      description = "A root that was never populated is already absent"
+      resource = "pwsh_installed"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        method = :tarball
+        version = "7.3.12"
+      }
+    }
   }
 
   test "pwsh_installs_from_repo" {
-    description = "Installing PowerShell from the Microsoft package repository converges"
+    description = "Installing a pinned PowerShell from the Microsoft package repository converges, and the archive method will not touch the package's tree"
     image = "debian:12"
     group = "pwshrepo"
     setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg apt-transport-https >/dev/null"
+    verify = "tests/repo_install_verify.ws"
 
+    // Pinned to an older release than the repository's newest, so only a
+    // pinned package spec converges.
     step "install" {
-      description = "Register packages.microsoft.com and install the distro package"
+      description = "Register packages.microsoft.com and install the pinned distro package"
       resource = "pwsh_installed"
-      properties { method = :repo }
+      properties {
+        method = :repo
+        version = "7.4.6"
+      }
+    }
+
+    step "package_root_refused" {
+      description = "A tarball install pointed at the package's own root is refused"
+      resource = "pwsh_installed"
+      expect = "error"
+      requires = ["install"]
+      properties {
+        method = :tarball
+        version = "7.5.4"
+        install_root = "/opt/microsoft/powershell/7"
+      }
     }
   }
 
@@ -2556,6 +2594,30 @@ package "windows_powershell" {
       }
     }
 
+    // Side by side with the MSI: the default root is named for the full
+    // version, never the MSI's own C:\Program Files\PowerShell\7.
+    step "zip_side_by_side" {
+      description = "Extract an older release zip into its own versioned root beside the MSI install"
+      resource = "pwsh_installed"
+      requires = ["install_pwsh"]
+      properties {
+        method = :zip
+        version = "7.4.6"
+      }
+    }
+
+    step "msi_root_refused" {
+      description = "A zip install pointed at the MSI's own root is refused rather than overwriting it"
+      resource = "pwsh_installed"
+      expect = "error"
+      requires = ["install_pwsh"]
+      properties {
+        method = :zip
+        version = "7.4.6"
+        install_root = "C:\\Program Files\\PowerShell\\7"
+      }
+    }
+
     step "remoting" {
       description = "Register the PowerShell 7 WinRM endpoints"
       resource = "psremoting"
@@ -2685,6 +2747,49 @@ package "windows_powershell" {
         ensure = :absent
         edition = :windows_powershell
         configuration_name = "microsoft.powershell"
+      }
+    }
+  }
+
+  // Last in the group: removes what the two tests above installed. Its
+  // setup installs the MSI and the zip itself when they are missing, so it
+  // also runs on its own.
+  test "pwsh7_removed" {
+    description = "Removing the MSI install (only its channel, through the Uninstall key) and a zip root converge"
+    template = "x86_64/windows-server-2025"
+    group = "win2025ps7"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -NonInteractive -Command \"$ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile C:\\cw-pwsh.zip; Expand-Archive C:\\cw-pwsh.zip -DestinationPath 'C:\\Program Files\\PowerShell\\7.4.6' -Force }\""
+    verify = "tests/pwsh7_removed_verify.ws"
+
+    step "preview_absent" {
+      description = "The preview channel was never installed, so removing it leaves the stable MSI alone"
+      resource = "pwsh_installed"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        method = :msi
+        channel = :preview
+      }
+    }
+
+    step "zip_absent" {
+      description = "Remove the zip root"
+      resource = "pwsh_installed"
+      properties {
+        ensure = :absent
+        method = :zip
+        version = "7.4.6"
+      }
+    }
+
+    step "msi_absent" {
+      description = "Uninstall the stable MSI by its product code"
+      resource = "pwsh_installed"
+      requires = ["preview_absent", "zip_absent"]
+      properties {
+        ensure = :absent
+        method = :msi
       }
     }
   }

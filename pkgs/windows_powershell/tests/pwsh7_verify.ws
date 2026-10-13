@@ -24,6 +24,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     if lines[0].trim().parse_int().unwrap_or(0) < 1 { return Err("no PowerShell.7 remoting endpoint was registered") }
     if !lines[1].contains("1.0.1") { return Err("the AllUsers module install is not visible, found: " + lines[1].trim()) }
 
+    // The zip landed side by side in its own versioned root, and the
+    // refused install left the MSI's root at the MSI's version.
+    let zip = shell::run("\"C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe\" -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()", Value::Null)?
+    if !zip.success || zip.stdout.trim() != "7.4.6" { return Err("the side-by-side zip install does not report 7.4.6: " + zip.stdout.trim() + " " + zip.stderr.trim()) }
+
     let profile = "C:\\Program Files\\PowerShell\\7\\profile.ps1"
     if !fs::is_file(profile) { return Err("the machine-wide profile was not written") }
 
