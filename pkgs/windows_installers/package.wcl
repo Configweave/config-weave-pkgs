@@ -1,76 +1,135 @@
 package "windows_installers" {
   description = "Install Windows software from MSI and EXE installers"
 
+  // Both resources take a local path or an http:// or https:// URL.
+  // Downloads are kept under C:\ProgramData\config-weave\installers, one
+  // directory per URL: Windows Installer records an MSI's location as its
+  // source and needs it again for repair and minor upgrades. With sha256
+  // set, the file is checked before anything runs it, and a cached copy
+  // that still matches is not downloaded again.
   resource "msi_package" {
-    description = "Install or uninstall an MSI, identified for idempotence by its ProductCode"
+    description = "Install, upgrade or uninstall an MSI, identified by its ProductCode"
     script = "resources/msi_package.ws"
     concurrency = "exclusive"
-    param "product_id" { description = "MSI ProductCode GUID used to detect installation" type = "string" required = true }
+    param "product_id" { description = "The MSI's ProductCode as a braced GUID, e.g. {23170F69-40C1-2702-2409-000001000000}. The package at path must have this ProductCode (or alt_product_id); a major upgrade changes it, so a new major version means a new product_id" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the MSI" }
-      symbol "absent"  { description = "Uninstall the MSI" }
+      symbol "present" { description = "Install the MSI (or minor-upgrade it to version)" }
+      symbol "absent"  { description = "Uninstall whichever of product_id and alt_product_id is registered (msiexec /x). Exit codes 1605 and 1614, product unknown or already removed, count as success" }
     }
-    param "path" { description = "Local path or HTTP(S) URL of the .msi (required when present)" type = "string" default = "" }
-    param "transforms" { description = "MST transform paths or HTTP(S) URLs applied via TRANSFORMS=" type = "list" }
-    param "properties" { description = "KEY=VALUE property assignments appended to the msiexec line" type = "list" }
-    param "version" { description = "Expected DisplayVersion; a mismatch re-runs /i with the msi (upgrade)" type = "string" default = "" }
-    param "package_code" { description = "Alternate GUID some installers register their uninstall key under" type = "string" default = "" }
+    param "path" { description = "Local path or http(s) URL of the .msi; required when :present" type = "string" default = "" }
+    param "sha256" { description = "Expected SHA-256 of the .msi (64 hex digits). Checked before msiexec runs; a mismatch is an error" type = "string" default = "" }
+    param "transforms" { description = "MST transform paths or http(s) URLs, applied in order via TRANSFORMS= at first install. Windows Installer caches them, so a minor upgrade reuses them and they cannot be changed later" type = "list" }
+    param "properties" {
+      description = "Public property assignments appended to the msiexec command line, one NAME=value per entry. Values are passed verbatim, so a value with spaces carries its own double quotes: INSTALLDIR=\"C:\\Program Files\\App\". They are visible on the msiexec command line, so do not put secrets here"
+      type = "list"
+    }
+    param "version" {
+      description = "Expected DisplayVersion. When the same ProductCode is installed at another version, the MSI at path is applied as a minor upgrade (REINSTALL=ALL REINSTALLMODE=vomus). The package's own ProductVersion must equal this, or apply stops before running msiexec"
+      type = "string"
+      default = ""
+    }
+    param "alt_product_id" { description = "A second GUID to look for under the Uninstall key, for packages that register under a code other than their ProductCode; :absent removes whichever is found" type = "string" default = "" }
   }
 
   resource "exe_installer" {
     description = "Install or uninstall software via an EXE installer, detected by a path or uninstall key"
     script = "resources/exe_installer.ws"
     concurrency = "exclusive"
-    param "path" { description = "Local path or HTTP(S) URL of the .exe to run, for both install and uninstall" type = "string" required = true }
-    param "args" { description = "Arguments passed to the .exe: silent-install switches when :present, uninstall switches when :absent" type = "string" default = "" }
+    param "path" { description = "Local path or http(s) URL of the installer .exe; required when :present" type = "string" default = "" }
+    param "args" { description = "Arguments for the installer (its silent-install switches), passed verbatim" type = "string" default = "" }
+    param "sha256" { description = "Expected SHA-256 of the installer (64 hex digits). Checked before it runs; a mismatch is an error" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Run the .exe with args to install" }
-      symbol "absent"  { description = "Run the .exe with args to uninstall" }
+      symbol "present" { description = "Run path with args to install" }
+      symbol "absent"  { description = "Run the uninstaller: uninstall_path if set, else install_reg's QuietUninstallString or UninstallString (plus uninstall_args), else path with uninstall_args" }
     }
-    param "install_path" { description = "Path whose existence means the install is done (one of install_path/install_reg required)" type = "string" default = "" }
-    param "install_reg" { description = "Hive-prefixed registry key (e.g. the uninstall key) whose existence means the install is done" type = "string" default = "" }
-    param "version" { description = "Expected DisplayVersion under install_reg; a mismatch re-runs the installer (upgrade)" type = "string" default = "" }
+    param "install_path" { description = "Path whose existence means the software is installed (set install_path, install_reg or both)" type = "string" default = "" }
+    param "install_reg" { description = "Hive-prefixed registry key whose existence means the software is installed, usually its Uninstall key (HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\<id>)" type = "string" default = "" }
+    param "version" { description = "Expected DisplayVersion under install_reg (so install_reg is required); a mismatch re-runs the installer, which must then leave this version" type = "string" default = "" }
+    param "uninstall_path" { description = "Uninstaller to run for :absent, local path or http(s) URL. Empty falls back to the install_reg key's uninstall command" type = "string" default = "" }
+    param "uninstall_args" { description = "Arguments for the uninstaller; appended to a registered UninstallString. An MsiExec /I entry is turned into a silent /X automatically" type = "string" default = "" }
   }
 
-  // The msi_package step downloads the small (~2 MB) 7-Zip MSI guest-side —
-  // the vmlab guests have NAT internet (the mssql win_install scenario
-  // installs sqlcmd the same way); 7-Zip MSI ProductCodes follow the stable
-  // {23170F69-40C1-2702-VVVV-000001000000} pattern (VVVV = version). The
-  // exe_installer step is fully offline: cmd.exe stands in as the
-  // "installer", exercising the install_path marker, download-less path and
-  // the Start-Process argument handling. The ensure = :absent step asserts the
-  // detection path against a ProductCode that was never installed (a real
-  // uninstall would first need an MSI installed just to remove it).
+  // Setup builds four tiny MSIs with the Windows Installer COM API (no
+  // files, two registry values each), so every msi_package path runs
+  // offline and deterministically:
+  //   cw-a 1.0 and 1.1   same ProductCode, so 1.0 -> 1.1 is a minor upgrade
+  //   cw-b + cw-b.mst    the transform sets CWEXTRA=from-transform
+  //   cw-c               installed, then removed through alt_product_id
+  // It installs cw-a 1.0 and cw-c, writes the exe fixtures (a .cmd with
+  // known content for sha256, an install_path marker), and seeds two
+  // Uninstall keys: cw-exe at DisplayVersion 1.0, and cw-exe2 whose
+  // UninstallString fails but whose QuietUninstallString deletes the key.
+  // Windows setups run under cmd /C, so the PowerShell holds no double
+  // quotes, pipes or redirections.
+  //
+  // The 7-Zip step downloads the real 2 MB MSI guest-side, which covers the
+  // URL, cache and sha256 path; the vmlab guests have NAT internet.
   test "installers_converge" {
-    description = "MSI install, guarded EXE install and MSI-absent detection converge"
+    description = "MSI install, minor upgrade, transforms and properties, removal; EXE install, version upgrade and removal"
     template = "x86_64/windows-server-2025"
     group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave-msi'; $null = New-Item -ItemType Directory -Force -Path $d; function Ex($db,$q) { $v = $db.OpenView($q); $v.Execute(); $v.Close(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($v) }; function Mk($path,$code,$comp,$ver,$name) { if (Test-Path $path) { return }; $i = New-Object -ComObject WindowsInstaller.Installer; $db = $i.OpenDatabase($path, 3); Ex $db 'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL LOCALIZABLE PRIMARY KEY `Property`)'; Ex $db 'CREATE TABLE `Media` (`DiskId` SHORT NOT NULL, `LastSequence` SHORT NOT NULL, `DiskPrompt` CHAR(64) LOCALIZABLE, `Cabinet` CHAR(255), `VolumeLabel` CHAR(32), `Source` CHAR(72) PRIMARY KEY `DiskId`)'; Ex $db 'CREATE TABLE `Directory` (`Directory` CHAR(72) NOT NULL, `Directory_Parent` CHAR(72), `DefaultDir` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Directory`)'; Ex $db 'CREATE TABLE `Feature` (`Feature` CHAR(38) NOT NULL, `Feature_Parent` CHAR(38), `Title` CHAR(64) LOCALIZABLE, `Description` CHAR(255) LOCALIZABLE, `Display` SHORT, `Level` SHORT NOT NULL, `Directory_` CHAR(72), `Attributes` SHORT NOT NULL PRIMARY KEY `Feature`)'; Ex $db 'CREATE TABLE `Component` (`Component` CHAR(72) NOT NULL, `ComponentId` CHAR(38), `Directory_` CHAR(72) NOT NULL, `Attributes` SHORT NOT NULL, `Condition` CHAR(255), `KeyPath` CHAR(72) PRIMARY KEY `Component`)'; Ex $db 'CREATE TABLE `FeatureComponents` (`Feature_` CHAR(38) NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Feature_`, `Component_`)'; Ex $db 'CREATE TABLE `Registry` (`Registry` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL LOCALIZABLE, `Name` CHAR(255) LOCALIZABLE, `Value` CHAR(0) LOCALIZABLE, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Registry`)'; Ex $db 'CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)'; foreach ($p in @(@('ProductCode',$code),@('ProductName',$name),@('ProductVersion',$ver),@('ProductLanguage','1033'),@('Manufacturer','config-weave'),@('ALLUSERS','1'),@('CWVALUE','default'),@('CWEXTRA','none'))) { Ex $db ('INSERT INTO `Property` (`Property`,`Value`) VALUES (''' + $p[0] + ''',''' + $p[1] + ''')') }; Ex $db 'INSERT INTO `Media` (`DiskId`,`LastSequence`) VALUES (1,0)'; Ex $db 'INSERT INTO `Directory` (`Directory`,`DefaultDir`) VALUES (''TARGETDIR'',''SourceDir'')'; Ex $db 'INSERT INTO `Feature` (`Feature`,`Level`,`Attributes`) VALUES (''Main'',1,0)'; Ex $db ('INSERT INTO `Component` (`Component`,`ComponentId`,`Directory_`,`Attributes`,`KeyPath`) VALUES (''Reg'',''' + $comp + ''',''TARGETDIR'',260,''RegValue'')'); Ex $db 'INSERT INTO `FeatureComponents` (`Feature_`,`Component_`) VALUES (''Main'',''Reg'')'; foreach ($r in @(@('RegValue','Value','[CWVALUE]'),@('RegExtra','Extra','[CWEXTRA]'))) { Ex $db ('INSERT INTO `Registry` (`Registry`,`Root`,`Key`,`Name`,`Value`,`Component_`) VALUES (''' + $r[0] + ''',2,''SOFTWARE\\ConfigWeaveTest\\' + $name + ''',''' + $r[1] + ''',''' + $r[2] + ''',''Reg'')') }; $n = 0; foreach ($a in 'CostInitialize','FileCost','CostFinalize','InstallValidate','InstallInitialize','ProcessComponents','UnpublishFeatures','RemoveRegistryValues','WriteRegistryValues','RegisterUser','RegisterProduct','PublishFeatures','PublishProduct','InstallFinalize') { $n += 100; Ex $db ('INSERT INTO `InstallExecuteSequence` (`Action`,`Sequence`) VALUES (''' + $a + ''',' + $n + ')') }; $si = $db.SummaryInformation(20); $si.Property(2) = $name; $si.Property(7) = 'x64;1033'; $si.Property(9) = [guid]::NewGuid().ToString('B').ToUpper(); $si.Property(14) = 200; $si.Property(15) = 2; $si.Persist(); $db.Commit(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($si); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($db); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; Mk ($d + '\\cw-a-1.0.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-a'; Mk ($d + '\\cw-a-1.1.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.1.0' 'cw-a'; Mk ($d + '\\cw-b.msi') '{C0DE000B-0000-4000-8000-00000000C0DE}' '{C0DE100B-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-b'; Mk ($d + '\\cw-c.msi') '{C0DE000C-0000-4000-8000-00000000C0DE}' '{C0DE100C-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-c'; if (-not (Test-Path ($d + '\\cw-b.mst'))) { Copy-Item ($d + '\\cw-b.msi') ($d + '\\cw-b-t.msi'); $i = New-Object -ComObject WindowsInstaller.Installer; $base = $i.OpenDatabase($d + '\\cw-b.msi', 0); $new = $i.OpenDatabase($d + '\\cw-b-t.msi', 1); Ex $new 'UPDATE `Property` SET `Value` = ''from-transform'' WHERE `Property` = ''CWEXTRA'''; $new.Commit(); $null = $new.GenerateTransform($base, $d + '\\cw-b.mst'); $null = $new.CreateTransformSummaryInfo($base, $d + '\\cw-b.mst', 0, 0); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($new); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($base); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-a-1.0.msi /qn /norestart') -Wait; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-c.msi /qn /norestart') -Wait; $e='C:\\weave-exe'; $null = New-Item -ItemType Directory -Force -Path $e; [IO.File]::WriteAllText($e + '\\install.cmd', '@reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-sha /v Installed /d 1 /f'); [IO.File]::WriteAllText($e + '\\marker.txt', 'installed'); $u='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'; $null = New-Item -Force -Path ($u + 'cw-exe'); Set-ItemProperty -Path ($u + 'cw-exe') -Name DisplayVersion -Value '1.0'; $null = New-Item -Force -Path ($u + 'cw-exe2'); Set-ItemProperty -Path ($u + 'cw-exe2') -Name UninstallString -Value 'cmd.exe /c exit 7'; Set-ItemProperty -Path ($u + 'cw-exe2') -Name QuietUninstallString -Value 'C:\\Windows\\System32\\reg.exe delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe2 /f'"
     verify = "tests/installers_verify.ws"
 
     step "seven_zip_msi" {
-      description = "Install 7-Zip from its MSI, detected by ProductCode"
+      description = "Download and install 7-Zip from its MSI, checked against its SHA-256"
       resource = "msi_package"
       properties {
         path = "https://www.7-zip.org/a/7z2409-x64.msi"
+        sha256 = "ec6af1ea0367d16dde6639a89a080a524cebc4d4bedfe00ed0cac4b865a918d8"
         product_id = "{23170F69-40C1-2702-2409-000001000000}"
+        version = "24.09.00.0"
       }
     }
 
-    step "exe_marker" {
-      description = "Run an EXE installer once, detected by its install_path marker"
-      resource = "exe_installer"
+    step "minor_upgrade" {
+      description = "cw-a 1.0 is installed; version 1.1.0 applies the 1.1 package as a minor upgrade"
+      resource = "msi_package"
       properties {
-        path = "C:\\Windows\\System32\\cmd.exe"
-        args = "/C echo done > C:\\weave-exe-marker.txt"
-        install_path = "C:\\weave-exe-marker.txt"
+        path = "C:\\weave-msi\\cw-a-1.1.msi"
+        product_id = "{C0DE000A-0000-4000-8000-00000000C0DE}"
+        version = "1.1.0"
+      }
+    }
+
+    step "transforms_and_properties" {
+      description = "Install cw-b with a transform and a property"
+      resource = "msi_package"
+      properties {
+        path = "C:\\weave-msi\\cw-b.msi"
+        product_id = "{C0DE000B-0000-4000-8000-00000000C0DE}"
+        transforms = ["C:\\weave-msi\\cw-b.mst"]
+        properties = ["CWVALUE=from-property"]
+      }
+    }
+
+    // product_id is not installed; the registered alt_product_id is what
+    // has to be removed.
+    step "remove_by_alt_id" {
+      description = "Uninstall cw-c, matched through alt_product_id"
+      resource = "msi_package"
+      properties {
+        product_id = "{C0DE00FF-0000-4000-8000-00000000C0DE}"
+        alt_product_id = "{C0DE000C-0000-4000-8000-00000000C0DE}"
+        ensure = :absent
+      }
+    }
+
+    step "wrong_product_code" {
+      description = "A package whose ProductCode is not product_id is refused before msiexec runs"
+      resource = "msi_package"
+      expect = "error"
+      properties {
+        path = "C:\\weave-msi\\cw-b.msi"
+        product_id = "{C0DE00EE-0000-4000-8000-00000000C0DE}"
       }
     }
 
@@ -79,6 +138,79 @@ package "windows_installers" {
       resource = "msi_package"
       expect = "already_configured"
       properties { product_id = "{00000000-0000-0000-0000-000000000000}" ensure = :absent }
+    }
+
+    step "exe_marker" {
+      description = "Run an EXE installer once, detected by its install_path marker"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\cmd-marker.txt"
+        install_path = "C:\\weave-exe\\cmd-marker.txt"
+      }
+    }
+
+    step "exe_sha256" {
+      description = "An installer whose SHA-256 matches runs"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\weave-exe\\install.cmd"
+        sha256 = "6f409cec469e67a5fab593e05680d98ae86a0779c51723d85ff36b90bff174b8"
+        install_reg = "HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-sha"
+      }
+    }
+
+    step "exe_sha256_mismatch" {
+      description = "An installer whose SHA-256 does not match is refused"
+      resource = "exe_installer"
+      expect = "error"
+      properties {
+        path = "C:\\weave-exe\\install.cmd"
+        sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+        install_reg = "HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-never"
+      }
+    }
+
+    step "exe_version_upgrade" {
+      description = "DisplayVersion 1.0 is installed; version 2.0 re-runs the installer"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\reg.exe"
+        args = "add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe /v DisplayVersion /d 2.0 /f"
+        install_reg = "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe"
+        version = "2.0"
+      }
+    }
+
+    step "exe_absent_registered_uninstaller" {
+      description = "Remove via the key's QuietUninstallString, preferred over its failing UninstallString"
+      resource = "exe_installer"
+      properties {
+        install_reg = "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe2"
+        ensure = :absent
+      }
+    }
+
+    step "exe_absent_uninstall_path" {
+      description = "Remove via uninstall_path and uninstall_args"
+      resource = "exe_installer"
+      properties {
+        install_path = "C:\\weave-exe\\marker.txt"
+        uninstall_path = "C:\\Windows\\System32\\cmd.exe"
+        uninstall_args = "/C del C:\\weave-exe\\marker.txt"
+        ensure = :absent
+      }
+    }
+
+    step "exe_version_needs_reg" {
+      description = "version without install_reg is an error"
+      resource = "exe_installer"
+      expect = "error"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        install_path = "C:\\weave-exe\\cmd-marker.txt"
+        version = "1.0"
+      }
     }
   }
 }
