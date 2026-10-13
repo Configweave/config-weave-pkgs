@@ -1,46 +1,45 @@
 use value
-use shell
 use common
 
-fn installed(name: string) -> Result[bool, string] {
-    Ok(shell::bash("rpm -q " + common::q(name) + " >/dev/null 2>&1", Value::Null)?.success)
+fn validate(params: Value) -> Result[unit, string] {
+    common::operand("name", common::param_str(params, "name", ""))?
+    let version = common::param_str(params, "version", "")
+    if version != "" { common::operand("version", version)? }
+    Ok(())
 }
 
-// The installed version string, or "" when not installed.
-fn installed_version(name: string) -> Result[string, string] {
-    let out = shell::bash("rpm -q --qf '%{{VERSION}}' " + common::q(name) + " 2>/dev/null", Value::Null)?
-    if !out.success { return Ok("") }
-    Ok(out.stdout.trim())
+fn converged(params: Value) -> Result[bool, string] {
+    let version = common::param_str(params, "version", "")
+    let found = common::providers(common::param_str(params, "name", ""))?
+    if !common::want_present(params)? { return Ok(found.is_empty()) }
+    Ok(found.any(|p| version == "" || common::version_matches(p, version)))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = common::param_str(params, "name", "")
-    let version = common::param_str(params, "version", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if !common::want_present(params)? {
-        // existence probe only: any installed version means work to do
-        if installed(name)? { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
-    }
-    if version == "" {
-        if installed(name)? { return Ok(CheckResult::AlreadyConfigured) }
-        return Ok(CheckResult::NotConfigured)
-    }
-    if installed_version(name)? == version { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    validate(params)?
+    if converged(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    validate(params)?
     let name = common::param_str(params, "name", "")
     let version = common::param_str(params, "version", "")
-    if name == "" { return Err("missing 'name' parameter") }
     let bin = common::dnf_bin()?
-    let cmd = if common::want_present(params)? {
+    if common::want_present(params)? {
         let target = if version != "" { name + "-" + version } else { name }
-        bin + " install -y " + common::q(target)
-    } else {
-        bin + " remove -y " + common::q(name)
+        common::run(bin + " install " + target, bin + " install -y " + common::q(target))?
+        // dnf and dnf5 install an exact older version as a downgrade; yum
+        // and microdnf report it already installed and need downgrade.
+        if version != "" && !converged(params)? {
+            common::run(bin + " downgrade " + target, bin + " downgrade -y " + common::q(target))?
+        }
+        return Ok(ApplyResult::Success)
     }
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    // Remove what name resolved to, by package name: a capability or path
+    // is not something every front-end's remove accepts.
+    let names = common::provider_names(common::providers(name)?)
+    if names.is_empty() { return Ok(ApplyResult::Success) }
+    if !common::param_bool(params, "remove_dependents", false) { common::guard_dependents(names)? }
+    common::run(bin + " remove " + names.join(" "), bin + " remove -y " + common::quoted(names))?
     Ok(ApplyResult::Success)
 }
