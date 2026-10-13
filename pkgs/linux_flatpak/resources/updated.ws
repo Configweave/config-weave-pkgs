@@ -3,22 +3,13 @@ use fs
 use path
 use shell
 use time
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
-}
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
+use common
 
 // :system and :user are separate flatpak installations holding separate app
 // sets, so each gets its own stamp and its own window — updating one says
 // nothing about the other.
 fn scope(params: Value) -> Result[string, string] {
-    let s = param_str(params, "installation", "system")
+    let s = common::param_str(params, "installation", "system")
     if s == "system" { return Ok(s) }
     if s == "user" { return Ok(s) }
     Err("invalid 'installation' value '" + s + "' (expected :system or :user)")
@@ -33,7 +24,7 @@ fn stamp_path(params: Value) -> Result[string, string] {
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
-    param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
+    common::param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
 }
 
 fn last_update(stamp: string) -> Result[int, string] {
