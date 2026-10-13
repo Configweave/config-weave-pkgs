@@ -61,11 +61,11 @@ package "windows_domain" {
       symbol "additional" { description = "Join the existing domain as an additional DC; needs credential_user and fails if no DC for the domain can be found" }
     }
     param "safe_mode_password"  { description = "DSRM (Directory Services Restore Mode) password; required for promotion. Use secret(\"...\")" type = "string" default = "" }
-    param "credential_user"     { description = "Domain admin (UPN or DOMAIN\\user): required to join an existing domain, optional for demotion. Set together with credential_password" type = "string" default = "" }
+    param "credential_user"     { description = "Domain admin (UPN or DOMAIN\\user): required to join an existing domain, and to demote unless config-weave itself runs as a domain admin (as SYSTEM it does not). Set together with credential_password" type = "string" default = "" }
     param "credential_password" { description = "Password for credential_user; use secret(\"...\")" type = "string" default = "" }
     param "local_admin_password" { description = "Local Administrator password after demotion; required with ensure = :absent. Use secret(\"...\")" type = "string" default = "" }
     param "last_dc_in_domain"   { description = "Demotion only: this is the domain's last DC — remove the domain, its partitions and DNS zone with it" type = "bool" default = false }
-    param "force_removal"       { description = "Demotion only: force removal even when the DC cannot reach the domain (leaves stale metadata to clean up)" type = "bool" default = false }
+    param "force_removal"       { description = "Demotion only: force removal even when the DC cannot reach the domain (leaves stale metadata to clean up, and drops this DC's copy of AD-integrated DNS zones without checking another DNS server holds them)" type = "bool" default = false }
     param "install_dns"         { description = "Install and configure the DNS Server role. Fixed at promotion: a DC that no longer matches is reported as an error" type = "bool" default = true }
     param "netbios_name"        { description = "Forest creation only: NetBIOS domain name; empty = derived from the first label. A promoted DC of another NetBIOS name is reported as an error" type = "string" default = "" }
     param "forest_mode"         { description = "Forest creation only: forest functional level (e.g. WinThreshold, Win2025, or the number); empty = cmdlet default. A differing level is reported as an error, since raising one is irreversible and left to the operator" type = "string" default = "" }

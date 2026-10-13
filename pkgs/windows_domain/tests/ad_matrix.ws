@@ -89,16 +89,22 @@ fn expect_wcl(m: Machine, tag: string, mode: string, resource: string, props: st
 fn promote_wcl(m: Machine, tag: string, resource: string, props: string) -> Result[bool, string] {
     expect_wcl(m, tag + "-apply", "apply", resource, props, "reboot_required")?
     expect_wcl(m, tag + "-pending", "check", resource, props, "reboot_required")?
-    m.reboot()?
-    expect_wcl(m, tag + "-after", "apply", resource, props, "already_configured")?
-    Ok(true)
+    for i in 0..3 {
+        m.reboot()?
+        let r = run_wcl(m, tag + "-after{i}", "apply", resource, props)?
+        if r[0] == "already_configured" { return Ok(true) }
+        if r[0] != "reboot_required" { return Err(tag + ": after reboot {i}, got " + r[0] + " (" + r[1] + ")") }
+    }
+    Err(tag + ": still asking for a reboot after three")
 }
 
 // ---------------------------------------------------------------- helpers
 
 // Apply a reboot-requiring resource, check that it reports the reboot as
 // still pending, reboot, and apply again — proving it converges across the
-// reboot it asked for.
+// reboot it asked for. A change can take more than one reboot (a servicing
+// reboot Windows wants first, a rename finished after a join), so up to
+// three are allowed, each one asked for by the resource.
 fn promote(m: Machine, key: string, props: Value) -> Result[bool, string] {
     let r = m.apply_resource(key, props)?
     if r.status != "reboot_required" {
@@ -108,26 +114,15 @@ fn promote(m: Machine, key: string, props: Value) -> Result[bool, string] {
     if p.status != "reboot_required" {
         return Err(key + ": before the reboot, check should report reboot_required, got " + p.status + " (" + p.message + ")")
     }
-    m.reboot()?
-    let r2 = m.apply_resource(key, props)?
-    if r2.status != "already_configured" {
-        return Err(key + ": did not converge after reboot, got " + r2.status + " (" + r2.message + ")")
+    for i in 0..3 {
+        m.reboot()?
+        let r2 = m.apply_resource(key, props)?
+        if r2.status == "already_configured" { return Ok(true) }
+        if r2.status != "reboot_required" {
+            return Err(key + ": after reboot {i}, got " + r2.status + " (" + r2.message + ")")
+        }
     }
-    Ok(true)
-}
-
-// promote(), allowing one extra reboot for a change finished in two steps.
-fn promote_twice(m: Machine, key: string, props: Value) -> Result[bool, string] {
-    let r = m.apply_resource(key, props)?
-    if r.status != "reboot_required" { return Err(key + ": expected reboot_required, got " + r.status + " (" + r.message + ")") }
-    m.reboot()?
-    let r2 = m.apply_resource(key, props)?
-    if r2.status == "already_configured" { return Ok(true) }
-    if r2.status != "reboot_required" { return Err(key + ": after the reboot, got " + r2.status + " (" + r2.message + ")") }
-    m.reboot()?
-    let r3 = m.apply_resource(key, props)?
-    if r3.status != "already_configured" { return Err(key + ": did not converge after a second reboot, got " + r3.status + " (" + r3.message + ")") }
-    Ok(true)
+    Err(key + ": still asking for a reboot after three")
 }
 
 // Install the AD-DS role and fail loudly if it does not converge.
@@ -237,9 +232,7 @@ fn run(lab: Lab) -> Result[bool, string] {
         "new_name": s("MEMBER01X"),
         "ou_path": s("OU=Servers,DC=corp,DC=example,DC=com")
     })
-    // A rename that could not finish with the join is completed after the
-    // first reboot, which asks for one more.
-    promote_twice(mem, "windows_domain.domain_member", join)?
+    promote(mem, "windows_domain.domain_member", join)?
     let pm = membership(mem)?
     if !gv_bool(pm, "part_of_domain") || gv_str(pm, "role") != "member_server" || gv_str(pm, "computer_name") != "MEMBER01X" {
         return Err("member01 did not join as MEMBER01X (role '" + gv_str(pm, "role") + "', name '" + gv_str(pm, "computer_name") + "')")
@@ -334,7 +327,8 @@ fn run(lab: Lab) -> Result[bool, string] {
     // --- dc-alt again: demote the last DC, taking the domain with it ------
     lab.log("demoting dc-alt as the last DC of alt.test")
     promote_wcl(alt, "alt-demote", "windows_domain.domain_controller",
-        "domain_name = \"alt.test\" ensure = :absent local_admin_password = \"vmlab123!\" last_dc_in_domain = true")?
+        "domain_name = \"alt.test\" ensure = :absent local_admin_password = \"vmlab123!\" last_dc_in_domain = true " +
+        "credential_user = \"ALT\\\\Administrator\" credential_password = \"vmlab123!\"")?
     let ma = membership(alt)?
     if gv_bool(ma, "is_dc") || gv_bool(ma, "part_of_domain") {
         return Err("dc-alt is still a DC or domain member after removing the last DC (role '" + gv_str(ma, "role") + "')")

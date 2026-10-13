@@ -87,15 +87,20 @@ fn drift_ps(params: Value) -> string {
 // name, case-insensitively.
 fn probe(params: Value, domain: string, present: bool) -> Result[string, string] {
     let drift = if present { drift_ps(params) } else { "$drift = @(); " }
+    // Promotion and demotion both refuse to start while a servicing reboot
+    // is pending ("Role change is in progress or this computer needs to be
+    // restarted"); an AD-DS feature install, or a promotion, can leave one.
+    let blocked = "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending')"
     common::ps("reading this machine's domain controller role",
         common::dsrole_ps() + common::pending_ps("domain_controller") +
-        "$ds = Get-CwDsRole; " +
+        "$ds = Get-CwDsRole; $mine = ($ds.role -ge 4 -and ($ds.dns -ieq " + common::ps_q(domain) + " -or $ds.netbios -ieq " + common::ps_q(domain) + ")); " +
         "if ($pending -or $ds.role_reboot) {{ 'REBOOT' }} " +
-        "elseif ($ds.role -lt 4 -or ($ds.dns -ine " + common::ps_q(domain) + " -and $ds.netbios -ine " + common::ps_q(domain) + ")) {{ " +
-        // Promotion refuses to start while a servicing reboot is pending
-        // (an AD-DS feature install can leave one).
-        (if present { "if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') {{ 'REBOOT' }} else {{ 'OTHER' }} }} " } else { "'OTHER' }} " }) +
-        "else {{ " + drift + "ConvertTo-Json -InputObject @($drift) -Compress }}")
+        (if present {
+            "elseif (-not $mine) {{ if (" + blocked + ") {{ 'REBOOT' }} else {{ 'OTHER' }} }} " +
+            "else {{ " + drift + "ConvertTo-Json -InputObject @($drift) -Compress }}"
+        } else {
+            "elseif (-not $mine) {{ 'OTHER' }} elseif (" + blocked + ") {{ 'REBOOT' }} else {{ '[]' }}"
+        }))
 }
 
 fn drifted(st: string) -> Result[List[string], string] {
@@ -207,10 +212,20 @@ fn demote(params: Value) -> Result[ApplyResult, string] {
     let cred = common::credential(params)?
     let creds = if let Some(c) = cred { common::cred_ps(c[0]) + "$o = @{{ Credential = $cred }}; " } else { "$o = @{{}}; " }
     // The last DC takes the domain (and its partitions / DNS zone) with it.
+    if common::param_bool(params, "last_dc_in_domain", false) && common::param_bool(params, "force_removal", false) {
+        return Err("'force_removal' and 'last_dc_in_domain' cannot be combined: a forced removal cannot remove the domain")
+    }
     let o_last = if common::param_bool(params, "last_dc_in_domain", false) {
         " -LastDomainControllerInDomain -RemoveApplicationPartitions -IgnoreLastDnsServerForZone"
     } else { "" }
-    let o_force = if common::param_bool(params, "force_removal", false) { " -ForceRemoval" } else { "" }
+    // A forced removal cannot ask the domain whether another DNS server holds
+    // its AD-integrated zones, so its prerequisite check refuses whenever
+    // this DC serves DNS; the forced parameter set has no
+    // -IgnoreLastDnsServerForZone, so the prerequisite checks are skipped.
+    // Operation master roles it holds are given up rather than blocking.
+    let o_force = if common::param_bool(params, "force_removal", false) {
+        " -ForceRemoval -DemoteOperationMasterRole -SkipPreChecks"
+    } else { "" }
     log::info("demoting this domain controller")
     common::ps_env("demoting this domain controller",
         guard_ps() + creds +
