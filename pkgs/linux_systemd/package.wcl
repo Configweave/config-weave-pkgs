@@ -8,17 +8,17 @@ package "linux_systemd" {
   // one. This owns .service units; `unit_file` below covers every other
   // unit type.
   resource "service" {
-    description = "Ensure a systemd service's unit file, boot enablement and running state"
+    description = "Ensure a systemd service's unit file, boot enablement and running state. Needs systemd running as PID 1. When `unit` is set and `state` is :running, a service that is running from an older unit (the file is newer than its last start, or systemd has not reloaded it) is restarted after daemon-reload"
     script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name without the .service suffix" type = "string" required = true }
+    param "name" { description = "Service name, with or without the .service suffix: no '/', whitespace or glob characters, and no leading '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Whether the service is installed"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "The service exists" }
-      symbol "absent"  { description = "Stop and disable the service, then delete its unit file under /etc/systemd/system" }
+      symbol "absent"  { description = "Stop the service, disable it if it is enabled, then delete its unit file under /etc/systemd/system and daemon-reload. `state` and `enabled` are ignored. A vendor unit under /lib or /usr/lib is stopped and disabled but not deleted: it belongs to its package" }
     }
     param "unit" { description = "Unit file body written to /etc/systemd/system/<name>.service; empty manages an existing unit without rewriting it" type = "string" default = "" }
     param "state" {
@@ -26,35 +26,45 @@ package "linux_systemd" {
       type = "symbol"
       default = :unmanaged
 
-      symbol "running"   { description = "Start the service" }
+      symbol "running"   { description = "Start the service, or try-restart it when it runs from an older unit" }
       symbol "stopped"   { description = "Stop the service" }
       symbol "unmanaged" { description = "Leave the runtime state alone" }
     }
     param "enabled" {
-      description = "Boot enablement to enforce"
+      description = "Boot enablement to enforce, read from the unit file state `systemctl is-enabled` prints"
       type = "symbol"
       default = :unmanaged
 
-      symbol "enabled"   { description = "Enable the service at boot" }
-      symbol "disabled"  { description = "Disable the service at boot" }
+      symbol "enabled"   { description = "Enable the service at boot. Only `enabled` and `enabled-runtime` count; a static, masked, alias, generated or missing unit cannot be enabled, which is an error" }
+      symbol "disabled"  { description = "Disable the service at boot. `disabled`, `linked`, `static`, `indirect`, `transient` and `masked` units already satisfy this; a generated or alias unit is an error, since systemctl cannot disable it" }
       symbol "unmanaged" { description = "Leave boot enablement alone" }
     }
   }
 
   // For unit types `service` does not cover — timers, sockets, mounts,
-  // targets — where there is no running/enabled pair to manage.
+  // targets — where there is no running/enabled pair to manage, and for
+  // drop-ins.
   resource "unit_file" {
-    description = "Ensure a systemd unit file under /etc/systemd/system (any unit type)"
+    description = "Ensure a systemd unit file under /etc/systemd/system (any unit type), or a file in a drop-in directory such as foo.service.d/override.conf"
     script = "resources/unit_file.ws"
     concurrency = "exclusive"
-    param "name" { description = "Unit filename including its suffix, such as example.timer" type = "string" required = true }
-    param "content" { description = "Unit file content" type = "string" required = true }
-    param "daemon_reload" { description = "Run systemctl daemon-reload after writing" type = "bool" default = false }
+    param "name" { description = "Path under /etc/systemd/system: a unit filename including its suffix (example.timer), or dir/file for a drop-in (example.service.d/override.conf). Every segment is a plain name: no '..', '.', leading '-', whitespace or glob characters" type = "string" required = true }
+    param "ensure" {
+      description = "Whether the file exists"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The file exists with exactly `content`" }
+      symbol "absent"  { description = "Delete the file, and its drop-in directory once that is empty" }
+    }
+    param "content" { description = "Unit file content (required when :present)" type = "string" default = "" }
+    param "daemon_reload" { description = "Run systemctl daemon-reload after writing or deleting, and treat a unit systemd has not reloaded as drift. Skipped, without error, when systemctl is missing or systemd is not running (a container, a chroot): the file is then read at the next boot" type = "bool" default = false }
   }
 
   test "unit_file_converges" {
     description = "Unit files converge in a container (no live systemd needed)"
     image = "debian:12"
+    setup = "mkdir -p /etc/systemd/system/cw-old.service.d && printf 'old\\n' > /etc/systemd/system/cw-drift.timer && printf '[Unit]\\n' > /etc/systemd/system/cw-gone.timer && printf '[Service]\\n' > /etc/systemd/system/cw-old.service.d/x.conf"
     verify = "tests/unit_file_verify.ws"
 
     step "unit" {
@@ -65,13 +75,91 @@ package "linux_systemd" {
         content = "[Unit]\nDescription=Config Weave Test\n"
       }
     }
+
+    step "drift" {
+      description = "Rewrite a unit file whose content drifted"
+      resource = "unit_file"
+      properties {
+        name = "cw-drift.timer"
+        content = "[Unit]\nDescription=Config Weave drift\n"
+      }
+    }
+
+    // No systemd here, so daemon_reload is skipped rather than an error.
+    step "dropin" {
+      description = "Write a drop-in, creating its directory"
+      resource = "unit_file"
+      properties {
+        name = "cw-new.service.d/override.conf"
+        content = "[Service]\nEnvironment=CW=1\n"
+        daemon_reload = true
+      }
+    }
+
+    step "remove" {
+      description = "Remove a unit file"
+      resource = "unit_file"
+      properties { name = "cw-gone.timer" ensure = :absent }
+    }
+
+    step "remove_dropin" {
+      description = "Remove a drop-in and its emptied directory"
+      resource = "unit_file"
+      properties { name = "cw-old.service.d/x.conf" ensure = :absent daemon_reload = true }
+    }
+
+    step "traversal" {
+      description = "A name that walks out of /etc/systemd/system"
+      resource = "unit_file"
+      expect = "error"
+      properties { name = "../cw-escape.conf" content = "x\n" }
+    }
+
+    step "service_traversal" {
+      description = "A service name with a path separator"
+      resource = "service"
+      expect = "error"
+      properties { name = "../../tmp/cw-escape" unit = "[Service]\nExecStart=/bin/true\n" }
+    }
+
+    step "service_option" {
+      description = "A service name systemctl would read as an option"
+      resource = "service"
+      expect = "error"
+      properties { name = "--all" ensure = :absent }
+    }
   }
 
-  // `service` needs live systemd — covered by vmlab.
+  // `service` needs live systemd — covered by vmlab. Seeded units run
+  // `sleep`; cw-change's and cw-stale's PIDs at seeding time are kept in
+  // /run so verify can tell a restart happened.
   test "service_control_converges" {
-    description = "Unit installation, enablement and runtime state converge against live systemd"
+    description = "Unit installation, enablement, runtime state, restarts on unit changes and removal converge against live systemd"
     template = "x86_64/ubuntu-24.04"
-    setup = "printf '[Unit]\\nDescription=config-weave seeded\\n[Service]\\nExecStart=/bin/sleep 3600\\n[Install]\\nWantedBy=multi-user.target\\n' > /etc/systemd/system/cw-seeded.service && systemctl daemon-reload && systemctl enable cw-seeded >/dev/null 2>&1"
+    setup = <<'SH'
+set -e
+mk() {
+printf '[Unit]\nDescription=config-weave %s\n[Service]\nExecStart=/bin/sleep %s\n%s' "$1" "$2" "$3" > "$4/$1.service"
+}
+inst='[Install]\nWantedBy=multi-user.target\n'
+E=/etc/systemd/system
+L=/usr/lib/systemd/system
+mk cw-seeded 3600 "$(printf "$inst")" $E
+mk cw-stop 3600 "$(printf "$inst")" $E
+mk cw-change 3600 "$(printf "$inst")" $E
+mk cw-stale 3600 '' $E
+mk cw-static 3600 '' $L
+mk cw-vstatic 3600 '' $L
+mk cw-dropin 3600 '' $E
+printf '[Unit]\nDescription=config-weave old timer\n[Timer]\nOnCalendar=daily\n' > $E/cw-old.timer
+systemctl daemon-reload
+systemctl enable --now cw-seeded cw-stop cw-change >/dev/null 2>&1
+systemctl start cw-stale cw-static cw-vstatic
+systemctl show -p MainPID --value cw-seeded > /run/cw-seeded.seeded
+systemctl show -p MainPID --value cw-stale > /run/cw-stale.seeded
+# The cw-stale unit changes after its start, with the content the step wants.
+sleep 2 && touch $E/cw-stale.service
+SH
     verify = "tests/service_verify.ws"
 
     step "disable" {
@@ -84,7 +172,6 @@ package "linux_systemd" {
     step "install" {
       description = "Install a unit, enable it and start it"
       resource = "service"
-      requires = ["disable"]
       properties {
         name = "cw-managed"
         enabled = :enabled
@@ -102,13 +189,89 @@ UNIT
       }
     }
 
-    // cw-seeded is enabled with its unit under /etc, so :absent has real
-    // work: disable it, then delete the unit file.
-    step "remove" {
-      description = "Remove the service seeded during setup"
+    // A trailing .service must not become cw-suffix.service.service.
+    step "suffix" {
+      description = "Install a unit named with its .service suffix"
       resource = "service"
-      requires = ["install"]
+      properties {
+        name = "cw-suffix.service"
+        enabled = :enabled
+        unit = "[Unit]\nDescription=config-weave suffix\n[Service]\nExecStart=/bin/sleep 3600\n[Install]\nWantedBy=multi-user.target\n"
+      }
+    }
+
+    // cw-seeded is enabled, running, and has its unit under /etc, so
+    // :absent has real work: stop, disable, delete the unit file.
+    step "remove" {
+      description = "Remove a running, enabled service seeded during setup"
+      resource = "service"
       properties { name = "cw-seeded" ensure = :absent }
+    }
+
+    step "stop" {
+      description = "Stop and disable a running, enabled service"
+      resource = "service"
+      properties { name = "cw-stop" enabled = :disabled state = :stopped }
+    }
+
+    // Running `sleep 3600`; the new unit runs `sleep 7200`.
+    step "changed" {
+      description = "Rewrite a running service's unit and restart it"
+      resource = "service"
+      properties {
+        name = "cw-change"
+        state = :running
+        unit = "[Unit]\nDescription=config-weave cw-change\n[Service]\nExecStart=/bin/sleep 7200\n[Install]\nWantedBy=multi-user.target\n"
+      }
+    }
+
+    step "stale" {
+      description = "Restart a service whose unit changed after it started"
+      resource = "service"
+      properties {
+        name = "cw-stale"
+        state = :running
+        unit = "[Unit]\nDescription=config-weave cw-stale\n[Service]\nExecStart=/bin/sleep 3600\n"
+      }
+    }
+
+    // `is-enabled --quiet` succeeds for static units; disabled already holds.
+    step "static_disabled" {
+      description = "A static unit already satisfies enabled = :disabled"
+      resource = "service"
+      expect = "already_configured"
+      properties { name = "cw-static" enabled = :disabled }
+    }
+
+    step "static_enabled" {
+      description = "A static unit cannot be enabled"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-static" enabled = :enabled }
+    }
+
+    // A running vendor static unit: stopped, but its file under /usr/lib
+    // stays with its package.
+    step "remove_vendor_static" {
+      description = "Remove a running vendor static unit"
+      resource = "service"
+      properties { name = "cw-vstatic" ensure = :absent }
+    }
+
+    step "dropin" {
+      description = "Add a drop-in and reload systemd"
+      resource = "unit_file"
+      properties {
+        name = "cw-dropin.service.d/env.conf"
+        content = "[Service]\nEnvironment=CW_DROPIN=1\n"
+        daemon_reload = true
+      }
+    }
+
+    step "remove_timer" {
+      description = "Remove a timer unit file and reload systemd"
+      resource = "unit_file"
+      properties { name = "cw-old.timer" ensure = :absent daemon_reload = true }
     }
   }
 }

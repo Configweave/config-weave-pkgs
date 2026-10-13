@@ -1,131 +1,144 @@
 use value
 use fs
 use shell
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-// :unmanaged means "do not look at this aspect" — it is what lets one
-// resource install a service without also deciding whether it runs.
-fn desired_state(params: Value) -> Result[string, string] {
-    let s = param_str(params, "state", "unmanaged")
-    if s == "running" || s == "stopped" || s == "unmanaged" { return Ok(s) }
-    Err("invalid 'state' value '" + s + "' (expected :running, :stopped or :unmanaged)")
-}
-
-fn desired_enabled(params: Value) -> Result[string, string] {
-    let e = param_str(params, "enabled", "unmanaged")
-    if e == "enabled" || e == "disabled" || e == "unmanaged" { return Ok(e) }
-    Err("invalid 'enabled' value '" + e + "' (expected :enabled, :disabled or :unmanaged)")
-}
+use common
 
 fn require_openrc() -> Result[unit, string] {
-    if fs::exists("/sbin/rc-update") || fs::exists("/usr/sbin/rc-update") || fs::exists("/bin/rc-update") { return Ok(()) }
+    if shell::bash("command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1", Value::Null)?.success { return Ok(()) }
     Err("rc-update not found; is OpenRC installed?")
 }
 
 fn script_path(name: string) -> string { "/etc/init.d/" + name }
 
-fn in_runlevel(name: string, runlevel: string) -> Result[bool, string] {
-    let out = shell::bash("rc-update show " + q(runlevel), Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    for line in out.stdout.split("\n") {
-        // lines look like " sshd | default"
-        let parts = line.split("|")
-        if parts.get(0).unwrap_or("").trim() == name { return Ok(true) }
+// Runlevel membership is a symlink /etc/runlevels/<runlevel>/<name>, which
+// is all `rc-update add` creates.
+fn link_path(name: string, runlevel: string) -> string { "/etc/runlevels/" + runlevel + "/" + name }
+
+fn in_runlevel(name: string, runlevel: string) -> bool { fs::read_link(link_path(name, runlevel)).is_ok() }
+
+// Every runlevel the service is in (boot, sysinit, default, custom ones).
+fn runlevel_links(name: string) -> Result[List[string], string] {
+    let out = []
+    for l in fs::glob("/etc/runlevels/*/" + name)? {
+        if fs::read_link(l).is_ok() { out.push(l) }
     }
-    Ok(false)
+    Ok(out)
 }
 
-// Only meaningful once the init script exists: `rc-service status` on an
-// unknown service fails the same way a stopped one does.
-fn running(name: string) -> Result[bool, string] {
-    Ok(shell::bash("rc-service " + q(name) + " status >/dev/null 2>&1", Value::Null)?.success)
+// OpenRC's status codes: 0 started, 3 stopped, 4 stopping, 8 starting,
+// 16 inactive, 32 crashed (marked started but its daemon is gone). Only
+// meaningful once the init script exists.
+fn status(name: string) -> Result[int, string] {
+    Ok(shell::bash("rc-service " + common::q(name) + " status >/dev/null 2>&1", Value::Null)?.code)
+}
+
+fn rc(name: string, verb: string) -> Result[unit, string] {
+    common::run("rc-service " + name + " " + verb, "rc-service " + common::q(name) + " " + verb)
+}
+
+fn mtime(p: string) -> int {
+    match fs::metadata(p) {
+        Ok(m) => {
+            if let Some(v) = m.get("modified") { return v.as_int().unwrap_or(0) }
+            0
+        },
+        Err(e) => 0,
+    }
+}
+
+// The service was started before its script last changed, so it is still
+// running the old definition. OpenRC records the start as the symlink
+// /run/openrc/started/<name>, whose own mtime is the start time.
+fn stale(name: string) -> bool {
+    let started = "/run/openrc/started/" + name
+    if !fs::read_link(started).is_ok() { return false }
+    mtime(script_path(name)) > mtime(started)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
+    let name = common::param_str(params, "name", "")
+    common::require_name("name", name)?
+    let runlevel = common::param_str(params, "runlevel", "default")
+    common::require_name("runlevel", runlevel)?
     require_openrc()?
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let runlevel = param_str(params, "runlevel", "default")
     let p = script_path(name)
-    if !want_present(params)? {
-        if fs::exists(p) { return Ok(CheckResult::NotConfigured) }
-        if in_runlevel(name, runlevel)? { return Ok(CheckResult::NotConfigured) }
+    if !common::want_present(params)? {
+        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if !runlevel_links(name)?.is_empty() { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
     // An empty `script` means "manage the service that is already there",
     // so the content is only drift when content was actually supplied.
-    let script = param_str(params, "script", "")
-    if script != "" && fs::read(p)? != script { return Ok(CheckResult::NotConfigured) }
-    let en = desired_enabled(params)?
-    if en != "unmanaged" && in_runlevel(name, runlevel)? != (en == "enabled") {
+    let body = common::param_str(params, "script", "")
+    if body != "" && !common::has_content(p, body) { return Ok(CheckResult::NotConfigured) }
+    if !common::executable(p)? { return Ok(CheckResult::NotConfigured) }
+    let en = common::desired_enabled(params)?
+    if en != "unmanaged" && in_runlevel(name, runlevel) != (en == "enabled") {
         return Ok(CheckResult::NotConfigured)
     }
-    let st = desired_state(params)?
-    if st != "unmanaged" && running(name)? != (st == "running") {
-        return Ok(CheckResult::NotConfigured)
+    let st = common::desired_state(params)?
+    if st == "running" {
+        if status(name)? != 0 { return Ok(CheckResult::NotConfigured) }
+        if body != "" && stale(name) { return Ok(CheckResult::NotConfigured) }
     }
+    if st == "stopped" && status(name)? != 3 { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
+    let name = common::param_str(params, "name", "")
+    common::require_name("name", name)?
+    let runlevel = common::param_str(params, "runlevel", "default")
+    common::require_name("runlevel", runlevel)?
     require_openrc()?
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let runlevel = param_str(params, "runlevel", "default")
     let p = script_path(name)
-    if !want_present(params)? {
-        // Stop before unregistering, and unregister before deleting: OpenRC
-        // cannot stop a service whose script has already gone.
-        if fs::is_file(p) && running(name)? {
-            let out = shell::bash("rc-service " + q(name) + " stop", Value::Null)?
-            if !out.success { return Err(out.stderr.trim()) }
+    if !common::want_present(params)? {
+        // Stop while the script still exists: OpenRC cannot stop a service
+        // whose script has gone. A crashed service has nothing to stop, so
+        // `zap` just clears its started mark.
+        if fs::is_file(p) {
+            let s = status(name)?
+            if s == 32 { rc(name, "zap")? } else if s != 3 { rc(name, "stop")? }
         }
-        if in_runlevel(name, runlevel)? {
-            let out = shell::bash("rc-update del " + q(name) + " " + q(runlevel), Value::Null)?
-            if !out.success { return Err(out.stderr.trim()) }
-        }
-        if fs::exists(p) { fs::delete(p)? }
+        // Out of every runlevel, not only `runlevel`.
+        for l in runlevel_links(name)? { fs::delete(l)? }
+        if fs::exists(p) || fs::read_link(p).is_ok() { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
-    let script = param_str(params, "script", "")
-    if script != "" {
-        fs::write(p, script)?
-        let out = shell::run("chmod +x " + p, Value::Null)?
-        if !out.success { return Err(out.stderr.trim()) }
+    let body = common::param_str(params, "script", "")
+    let changed = false
+    if body != "" {
+        if !common::has_content(p, body) {
+            fs::write(p, body)?
+            changed = true
+        }
     } else if !fs::is_file(p) {
         return Err("no init script at " + p + " and no 'script' content was given")
     }
-    let en = desired_enabled(params)?
-    if en != "unmanaged" {
-        let listed = in_runlevel(name, runlevel)?
-        if listed != (en == "enabled") {
-            let verb = if en == "enabled" { "add" } else { "del" }
-            let out = shell::bash("rc-update " + verb + " " + q(name) + " " + q(runlevel), Value::Null)?
-            if !out.success { return Err(out.stderr.trim()) }
+    if !common::executable(p)? { common::make_executable(p)? }
+    let en = common::desired_enabled(params)?
+    if en != "unmanaged" && in_runlevel(name, runlevel) != (en == "enabled") {
+        let verb = if en == "enabled" { "add" } else { "del" }
+        common::run("rc-update " + verb + " " + name + " " + runlevel, "rc-update " + verb + " " + common::q(name) + " " + common::q(runlevel))?
+    }
+    let st = common::desired_state(params)?
+    if st == "running" {
+        let s = status(name)?
+        // `start` on a crashed service only warns "already started", so its
+        // mark is zapped first.
+        if s == 32 {
+            rc(name, "zap")?
+            rc(name, "start")?
+        } else if s == 0 {
+            if body != "" && (changed || stale(name)) { rc(name, "restart")? }
+        } else {
+            rc(name, "start")?
         }
     }
-    let st = desired_state(params)?
-    if st != "unmanaged" {
-        let is_up = running(name)?
-        if is_up != (st == "running") {
-            let verb = if st == "running" { "start" } else { "stop" }
-            let out = shell::bash("rc-service " + q(name) + " " + verb, Value::Null)?
-            if !out.success { return Err(out.stderr.trim()) }
-        }
+    if st == "stopped" {
+        let s = status(name)?
+        if s == 32 { rc(name, "zap")? } else if s != 3 { rc(name, "stop")? }
     }
     Ok(ApplyResult::Success)
 }

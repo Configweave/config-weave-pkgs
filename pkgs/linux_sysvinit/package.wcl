@@ -6,48 +6,75 @@ package "linux_sysvinit" {
   // :unmanaged so this can install a script without also deciding those, or
   // manage an existing service without supplying a script.
   resource "service" {
-    description = "Ensure a SysV init service's script, boot enablement and running state"
+    description = "Ensure a SysV init service's script, boot enablement and running state. The script must be executable by everyone (a missing exec bit is restored with chmod a+x). Enablement uses update-rc.d (Debian) or chkconfig (RHEL family). When `script` changes and `state` is :running, a running service is restarted with the script's `restart` verb; whether a running daemon was started from an older script cannot be detected afterwards"
     script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name, and the basename of its script under /etc/init.d" type = "string" required = true }
+    param "name" { description = "Service name, and the basename of its script under /etc/init.d: no '/', '\\', whitespace or glob characters, and no leading '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Whether the service is installed"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "The init script exists" }
-      symbol "absent"  { description = "Stop the service, remove its rc.d links and delete its init script" }
+      symbol "absent"  { description = "Stop the service, remove every rc.d start and kill link (update-rc.d remove or chkconfig --del, then any link left over, even when the script is already gone) and delete its init script. `state` and `enabled` are ignored" }
     }
     param "script" { description = "Init script body; empty manages an existing script under /etc/init.d without rewriting it" type = "string" default = "" }
     param "state" {
-      description = "Runtime state to enforce"
+      description = "Runtime state to enforce, probed with the script's `status` verb"
       type = "symbol"
       default = :unmanaged
 
-      symbol "running"   { description = "Start the service" }
+      symbol "running"   { description = "Start the service, or restart it when `script` changed" }
       symbol "stopped"   { description = "Stop the service" }
       symbol "unmanaged" { description = "Leave the runtime state alone" }
     }
     param "enabled" {
-      description = "Boot enablement to enforce, via update-rc.d or chkconfig"
+      description = "Boot enablement to enforce, via update-rc.d or chkconfig. Enabled means a start (S) link exists in some /etc/rc?.d"
       type = "symbol"
       default = :unmanaged
 
-      symbol "enabled"   { description = "Create the rc.d start links" }
-      symbol "disabled"  { description = "Remove the rc.d start links" }
+      symbol "enabled"   { description = "Create the rc.d start links (update-rc.d defaults, then enable for a service disabled earlier; or chkconfig --add and on). A script whose LSB Default-Start is empty gets no start links, which is an error" }
+      symbol "disabled"  { description = "Turn the start links into kill links (update-rc.d disable or chkconfig off), so the service is still stopped at shutdown" }
       symbol "unmanaged" { description = "Leave boot enablement alone" }
     }
   }
 
-  // The resource only ever shells out to /etc/init.d/<name>, so the test
-  // seeds a script that supervises a `sleep` through a pidfile and reports
+  // The resource only ever shells out to /etc/init.d/<name>, so the tests
+  // seed scripts that supervise a `sleep` through a pidfile and report
   // `status` honestly — the resource's whole contract, without depending on
-  // which daemons an image happens to ship.
+  // which daemons an image happens to ship. A started daemon records the
+  // script version that started it in /run/<name>.ver.
   test "state_converges" {
-    description = "Starting a seeded SysV service converges and re-applying is a no-op"
+    description = "Start, stop, restart on a changed script, and a missing exec bit"
     image = "debian:12"
     group = "sysvinit"
-    setup = "printf '#!/bin/sh\\nP=/run/cw-daemon.pid\\ncase \"$1\" in\\nstart) setsid sleep 3600 >/dev/null 2>&1 & echo $! > $P ;;\\nstop) if [ -f $P ]; then kill $(cat $P) 2>/dev/null; rm -f $P; fi ;;\\nstatus) [ -f $P ] && kill -0 $(cat $P) 2>/dev/null ;;\\nesac\\n' > /etc/init.d/cw-daemon && chmod +x /etc/init.d/cw-daemon"
+    setup = <<'SH'
+mk() {
+cat > /etc/init.d/$1 <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: $1
+# Required-Start:
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: config-weave test
+### END INIT INFO
+P=/run/$1.pid
+case "\$1" in
+start) setsid sleep 3600 >/dev/null 2>&1 & echo \$! > \$P; echo $2 > /run/$1.ver ;;
+stop) if [ -f \$P ]; then kill \$(cat \$P) 2>/dev/null; rm -f \$P; fi ;;
+restart) \$0 stop; \$0 start ;;
+status) [ -f \$P ] && kill -0 \$(cat \$P) 2>/dev/null ;;
+esac
+EOF
+chmod +x /etc/init.d/$1
+}
+mk cw-daemon v1
+mk cw-stopme v1 && /etc/init.d/cw-stopme start
+mk cw-change v1 && /etc/init.d/cw-change start
+mk cw-noexec v1 && chmod a-x /etc/init.d/cw-noexec
+SH
     verify = "tests/state_verify.ws"
 
     step "start" {
@@ -55,13 +82,82 @@ package "linux_sysvinit" {
       resource = "service"
       properties { name = "cw-daemon" state = :running }
     }
+
+    step "stop" {
+      description = "Stop a running service"
+      resource = "service"
+      properties { name = "cw-stopme" state = :stopped }
+    }
+
+    // cw-change runs from the v1 script; the new script must also restart it.
+    step "change" {
+      description = "Rewrite a running service's script and restart it"
+      resource = "service"
+      properties {
+        name = "cw-change"
+        state = :running
+        script = <<'INIT'
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: cw-change
+# Required-Start:
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: config-weave test
+### END INIT INFO
+P=/run/cw-change.pid
+case "$1" in
+start) setsid sleep 3600 >/dev/null 2>&1 & echo $! > $P; echo v2 > /run/cw-change.ver ;;
+stop) if [ -f $P ]; then kill $(cat $P) 2>/dev/null; rm -f $P; fi ;;
+restart) $0 stop; $0 start ;;
+status) [ -f $P ] && kill -0 $(cat $P) 2>/dev/null ;;
+esac
+INIT
+      }
+    }
+
+    // Managing an existing script still restores its exec bit.
+    step "exec_bit" {
+      description = "Restore a missing exec bit on an existing script"
+      resource = "service"
+      properties { name = "cw-noexec" }
+    }
   }
 
   test "enable_converges" {
-    description = "Enablement converges, an installed script is removed, and a new one is installed"
+    description = "Enable, disable and remove, including kill-only links, orphaned links and a running service"
     image = "debian:12"
     group = "sysvinit"
-    setup = "for s in cw-test cw-seeded; do printf '#!/bin/sh\\n### BEGIN INIT INFO\\n# Provides: '$s'\\n# Required-Start:\\n# Required-Stop:\\n# Default-Start: 2 3 4 5\\n# Default-Stop: 0 1 6\\n# Short-Description: config-weave test\\n### END INIT INFO\\nexit 0\\n' > /etc/init.d/$s; chmod +x /etc/init.d/$s; done && update-rc.d cw-seeded defaults >/dev/null"
+    setup = <<'SH'
+mk() {
+cat > /etc/init.d/$1 <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: $1
+# Required-Start:
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: config-weave test
+### END INIT INFO
+P=/run/$1.pid
+case "\$1" in
+start) setsid sleep 3600 >/dev/null 2>&1 & echo \$! > \$P ;;
+stop) if [ -f \$P ]; then kill \$(cat \$P) 2>/dev/null; rm -f \$P; fi ;;
+status) [ -f \$P ] && kill -0 \$(cat \$P) 2>/dev/null ;;
+esac
+EOF
+chmod +x /etc/init.d/$1
+}
+for s in cw-test cw-seeded cw-dis cw-reen cw-klinks cw-orphan cw-gone; do mk $s; done
+update-rc.d cw-seeded defaults >/dev/null
+update-rc.d cw-dis defaults >/dev/null
+update-rc.d cw-reen defaults >/dev/null && update-rc.d cw-reen disable >/dev/null
+update-rc.d cw-klinks defaults >/dev/null && update-rc.d cw-klinks disable >/dev/null
+update-rc.d cw-orphan defaults >/dev/null && rm /etc/init.d/cw-orphan
+update-rc.d cw-gone defaults >/dev/null && /etc/init.d/cw-gone start && cp /run/cw-gone.pid /run/cw-gone.seeded
+SH
     verify = "tests/enable_verify.ws"
 
     step "enable" {
@@ -74,7 +170,6 @@ package "linux_sysvinit" {
     step "install" {
       description = "Install an init script and enable it"
       resource = "service"
-      requires = ["enable"]
       properties {
         name = "cw-managed"
         enabled = :enabled
@@ -98,8 +193,114 @@ INIT
     step "remove" {
       description = "Remove the service seeded during setup"
       resource = "service"
-      requires = ["install"]
       properties { name = "cw-seeded" ensure = :absent }
+    }
+
+    step "disable" {
+      description = "Disable an enabled service, keeping its kill links"
+      resource = "service"
+      properties { name = "cw-dis" enabled = :disabled }
+    }
+
+    // `update-rc.d defaults` is a no-op once kill links exist.
+    step "reenable" {
+      description = "Enable a service that was disabled with update-rc.d disable"
+      resource = "service"
+      properties { name = "cw-reen" enabled = :enabled }
+    }
+
+    step "remove_kill_links" {
+      description = "Remove a disabled service, kill links and all"
+      resource = "service"
+      properties { name = "cw-klinks" ensure = :absent }
+    }
+
+    step "remove_orphan_links" {
+      description = "Remove rc.d links whose init script is already gone"
+      resource = "service"
+      properties { name = "cw-orphan" ensure = :absent }
+    }
+
+    step "remove_running" {
+      description = "Remove a running, enabled service"
+      resource = "service"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+  }
+
+  test "invalid_input" {
+    description = "Unsafe names, and a script that cannot be enabled, are errors"
+    image = "debian:12"
+    group = "sysvinit"
+    setup = "printf '#!/bin/sh\\n### BEGIN INIT INFO\\n# Provides: cw-nostart\\n# Required-Start:\\n# Required-Stop:\\n# Default-Start:\\n# Default-Stop: 0 1 6\\n### END INIT INFO\\nexit 0\\n' > /etc/init.d/cw-nostart && chmod +x /etc/init.d/cw-nostart"
+
+    // update-rc.d creates only kill links for an empty Default-Start.
+    step "no_start_runlevels" {
+      description = "Enable a script whose Default-Start is empty"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-nostart" enabled = :enabled }
+    }
+
+    step "dot" {
+      description = "A name of '.' would delete /etc/init.d itself"
+      resource = "service"
+      expect = "error"
+      properties { name = "." ensure = :absent }
+    }
+
+    step "traversal" {
+      description = "A name with a path separator"
+      resource = "service"
+      expect = "error"
+      properties { name = "../cw-escape" script = "#!/bin/sh\nexit 0\n" }
+    }
+
+    step "option" {
+      description = "A name update-rc.d would read as an option"
+      resource = "service"
+      expect = "error"
+      properties { name = "-f" enabled = :enabled }
+    }
+  }
+
+  // The chkconfig branch (RHEL family). chkconfig is not in the base image,
+  // so setup installs it, which needs network access.
+  test "chkconfig_converges" {
+    description = "Enable, disable and remove through chkconfig"
+    image = "rockylinux:9"
+    memory = "2GiB"
+    setup = <<'SH'
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# The first metadata fetch in a fresh container sometimes fails; retry.
+for i in 1 2 3 4 5; do dnf install -y -q chkconfig >/dev/null 2>&1 && break; sleep 5; done
+command -v chkconfig >/dev/null || exit 1
+for s in cw-ck cw-ckdis cw-ckgone; do
+printf '#!/bin/sh\n### BEGIN INIT INFO\n# Provides: %s\n# Required-Start:\n# Required-Stop:\n# Default-Start: 2 3 4 5\n# Default-Stop: 0 1 6\n### END INIT INFO\nexit 0\n' $s > /etc/init.d/$s
+chmod +x /etc/init.d/$s
+done
+chkconfig --add cw-ckdis
+chkconfig --add cw-ckgone && chkconfig cw-ckgone off
+SH
+    verify = "tests/chkconfig_verify.ws"
+
+    step "enable" {
+      description = "Enable a script chkconfig has never seen"
+      resource = "service"
+      properties { name = "cw-ck" enabled = :enabled }
+    }
+
+    step "disable" {
+      description = "Disable with chkconfig off, keeping kill links"
+      resource = "service"
+      properties { name = "cw-ckdis" enabled = :disabled }
+    }
+
+    // `chkconfig off` would leave the kill links; :absent uses --del.
+    step "remove" {
+      description = "Remove a disabled service and every link"
+      resource = "service"
+      properties { name = "cw-ckgone" ensure = :absent }
     }
   }
 }

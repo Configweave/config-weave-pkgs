@@ -7,56 +7,78 @@ package "linux_runit" {
   // install a definition without also deciding those, or manage an existing
   // service without supplying a run script.
   resource "service" {
-    description = "Ensure a runit service's run script, service-directory link and running state"
+    description = "Ensure a runit service's run script, service-directory link and running state. The run script must be executable by everyone (a missing exec bit is restored with chmod a+x). Running state needs the service linked and a runsvdir supervising service_dir; `state = :running` on a service that stays unlinked is an error. When `run` is set and `state` is :running, a service started before its run script last changed is restarted with sv restart"
     script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name, and the directory name under sv_dir" type = "string" required = true }
+    param "name" { description = "Service name, and the directory name under sv_dir and link name under service_dir: no '/', '\\', whitespace or glob characters, and no leading '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Whether the service is installed"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "The service definition exists under sv_dir" }
-      symbol "absent"  { description = "Unlink the service and delete its definition directory" }
+      symbol "absent"  { description = "Bring the service down, unlink it, tell its runsv to exit and wait for it, then delete the definition directory. `state` and `enabled` are ignored" }
     }
     param "run" { description = "Body of the service's run script; empty manages an existing definition without rewriting it" type = "string" default = "" }
     param "state" {
-      description = "Runtime state to enforce"
+      description = "Runtime state to enforce. It is kept in a `down` file in the definition directory as well as applied with sv, so it holds across runsv restarts and reboots"
       type = "symbol"
       default = :unmanaged
 
-      symbol "running"   { description = "Bring the service up" }
-      symbol "stopped"   { description = "Bring the service down" }
-      symbol "unmanaged" { description = "Leave the runtime state alone" }
+      symbol "running"   { description = "Remove the down file and bring the service up (sv up), or restart it when its run script changed. Needs the service linked" }
+      symbol "stopped"   { description = "Write the down file, then bring the service down (sv down). The down file is written before the service is linked, so enabled = :enabled with :stopped never starts it. An unlinked service only gets the down file" }
+      symbol "unmanaged" { description = "Leave the runtime state and the down file alone" }
     }
     param "enabled" {
       description = "Whether the service is linked into the supervised service directory"
       type = "symbol"
       default = :unmanaged
 
-      symbol "enabled"   { description = "Link the definition into the service directory" }
+      symbol "enabled"   { description = "Link the definition into the service directory. A link pointing anywhere else is replaced; a real file or directory at the link path is an error" }
       symbol "disabled"  { description = "Remove the link, ending supervision" }
       symbol "unmanaged" { description = "Leave the link alone" }
     }
-    param "sv_dir" { description = "Service definition directory" type = "string" default = "/etc/sv" }
-    param "service_dir" { description = "Active (supervised) service directory" type = "string" default = "/var/service" }
+    param "sv_dir" { description = "Service definition directory, an absolute path" type = "string" default = "/etc/sv" }
+    param "service_dir" { description = "Active (supervised) service directory, an absolute path" type = "string" default = "/var/service" }
   }
 
-  // `sv` needs a live runsvdir supervising the service directory, so the
-  // test runs in a VM. Void has no vmlab template yet; runit from Ubuntu's
-  // archive is the same upstream, and setup stands up a real runsvdir (as a
-  // transient systemd unit so it outlives the setup exec) over the throwaway
-  // services the steps act on.
+  // `sv` needs a live runsvdir supervising the service directory. Void has
+  // no vmlab template, so the test runs Alpine's runit (the same upstream)
+  // in a container: setup starts a real runsvdir over /var/service and
+  // seeds the services the steps act on. Installing runit needs network
+  // access. Every run script records the arguments it ran with in
+  // /run/<name>.args before exec'ing sleep.
   test "service_converges" {
-    description = "A service is installed and supervised, one is stopped, and a seeded one is removed"
-    template = "x86_64/ubuntu-24.04"
-    setup = "apt-get install -y -qq runit && mkdir -p /var/service /etc/sv/cw-stop /etc/sv/cw-seeded && for s in cw-stop cw-seeded; do printf '#!/bin/sh\\nexec sleep 3600\\n' > /etc/sv/$s/run; chmod +x /etc/sv/$s/run; done && systemd-run --unit=cw-runsvdir --collect runsvdir /var/service && sleep 1 && ln -sfn /etc/sv/cw-stop /var/service/cw-stop && for i in $(seq 1 30); do [ -e /var/service/cw-stop/supervise/ok ] && break; sleep 1; done"
+    description = "Install, stop, restart on change, relink, remove a running service, and the unlinked cases"
+    image = "alpine:3.23"
+    setup = <<'SH'
+apk add -q runit >/dev/null 2>&1 || exit 1
+mk() {
+mkdir -p /etc/sv/$1
+printf '#!/bin/sh\necho %s > /run/%s.args\nexec sleep %s\n' "$2" "$1" "$2" > /etc/sv/$1/run
+chmod +x /etc/sv/$1/run
+}
+for s in cw-stop cw-seeded cw-gone cw-change cw-stale cw-wrong cw-other cw-noexec cw-dstop cw-ustop cw-urun cw-dis cw-realdir; do mk $s 3600; done
+chmod a-x /etc/sv/cw-noexec/run
+mkdir -p /var/service /var/service/cw-realdir
+(setsid runsvdir /var/service >/dev/null 2>&1 &)
+for s in cw-stop cw-gone cw-change cw-stale cw-dis; do ln -s /etc/sv/$s /var/service/$s; done
+ln -s /etc/sv/cw-other /var/service/cw-wrong
+for s in cw-stop cw-gone cw-change cw-stale cw-dis; do
+  for i in $(seq 1 30); do sv status /var/service/$s 2>/dev/null | grep -q '^run:' && break; sleep 1; done
+  sv status /var/service/$s | grep -q '^run:' || exit 1
+done
+sv status /var/service/cw-gone | sed 's/.*(pid \([0-9]*\)).*/\1/' > /run/cw-gone.seeded
+sv status /var/service/cw-stale | sed 's/.*(pid \([0-9]*\)).*/\1/' > /run/cw-stale.seeded
+# cw-stale's run script changes after the start, with the content the step wants.
+sleep 3 && touch /etc/sv/cw-stale/run
+SH
     verify = "tests/service_verify.ws"
 
     // cw-stop is supervised and running after setup, so stopping it is a
     // real convergence rather than a no-op.
     step "stop" {
-      description = "Stop a supervised service"
+      description = "Stop a supervised service and keep it down"
       resource = "service"
       properties { name = "cw-stop" state = :stopped }
     }
@@ -65,7 +87,6 @@ package "linux_runit" {
     step "install" {
       description = "Install a run script, link it and bring it up"
       resource = "service"
-      requires = ["stop"]
       properties {
         name = "cw-managed"
         enabled = :enabled
@@ -80,10 +101,94 @@ RUN
     // cw-seeded has a definition but was never linked, so :absent still has
     // the definition directory to remove.
     step "remove" {
-      description = "Remove the service definition seeded during setup"
+      description = "Remove an unlinked service definition"
       resource = "service"
-      requires = ["install"]
       properties { name = "cw-seeded" ensure = :absent }
+    }
+
+    step "remove_running" {
+      description = "Remove a linked, running service"
+      resource = "service"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    // Running `sleep 3600`; the new run script runs `sleep 7200`.
+    step "changed" {
+      description = "Rewrite a running service's run script and restart it"
+      resource = "service"
+      properties {
+        name = "cw-change"
+        state = :running
+        run = "#!/bin/sh\necho 7200 > /run/cw-change.args\nexec sleep 7200\n"
+      }
+    }
+
+    step "stale" {
+      description = "Restart a service started before its run script last changed"
+      resource = "service"
+      properties {
+        name = "cw-stale"
+        state = :running
+        run = "#!/bin/sh\necho 3600 > /run/cw-stale.args\nexec sleep 3600\n"
+      }
+    }
+
+    step "wrong_link" {
+      description = "Replace a link that points at another definition"
+      resource = "service"
+      properties { name = "cw-wrong" enabled = :enabled }
+    }
+
+    step "exec_bit" {
+      description = "Restore a missing exec bit on an existing run script"
+      resource = "service"
+      properties { name = "cw-noexec" }
+    }
+
+    step "enable_stopped" {
+      description = "Link a service as :stopped without it ever starting"
+      resource = "service"
+      properties { name = "cw-dstop" enabled = :enabled state = :stopped }
+    }
+
+    step "unlinked_stopped" {
+      description = "Keep an unlinked service stopped"
+      resource = "service"
+      properties { name = "cw-ustop" state = :stopped }
+    }
+
+    step "disable" {
+      description = "Unlink a running service"
+      resource = "service"
+      properties { name = "cw-dis" enabled = :disabled }
+    }
+
+    step "unlinked_running" {
+      description = "state = :running on a service that stays unlinked"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-urun" state = :running }
+    }
+
+    step "real_dir" {
+      description = "A real directory where the link belongs"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-realdir" enabled = :enabled }
+    }
+
+    step "bad_name" {
+      description = "A name of '.' would delete sv_dir itself"
+      resource = "service"
+      expect = "error"
+      properties { name = "." ensure = :absent }
+    }
+
+    step "bad_sv_dir" {
+      description = "A relative sv_dir"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-seeded" sv_dir = "etc/sv" ensure = :absent }
     }
   }
 }
