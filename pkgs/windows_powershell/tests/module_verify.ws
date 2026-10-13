@@ -33,8 +33,28 @@ fn verify(facts: Value) -> Result[bool, string] {
     let seeded = versions_of("CwSeeded")?
     if !seeded.is_empty() { return Err("CwSeeded was not uninstalled, found: " + seeded.join(",")) }
 
+    // The prerelease pin installed the prerelease.
+    if versions_of("CwPre")?.is_empty() { return Err("the prerelease CwPre was not installed") }
+
+    // Nothing was installed from the untrusted repository.
+    if !versions_of("CwUntrusted")?.is_empty() { return Err("a module was installed from an untrusted repository without trust_repository") }
+
+    // The module installed only machine-wide is still there: the
+    // current-user :absent step must not have touched it.
+    if versions_of("CwOtherScope")?.is_empty() { return Err("the current-user :absent step removed a machine-wide module") }
+
+    // script_resource installed one script and removed the seeded one.
+    if !fs::is_file("/usr/local/share/powershell/Scripts/CwScript.ps1") { return Err("CwScript was not installed machine-wide") }
+    if fs::exists("/usr/local/share/powershell/Scripts/CwScriptSeeded.ps1") { return Err("the seeded script was not uninstalled") }
+
+    // The named update ran and wrote its own qualified stamp.
+    let stamps = fs::glob("/var/lib/config-weave/powershell-modules-updated-*")?
+    if stamps.len() != 1 { return Err("expected one qualified modules stamp, found " + str(stamps.len())) }
+
+    // The failed help update did not advance its window.
+    if fs::exists("/var/lib/config-weave/cw-help-failed") { return Err("help_updated stamped a run in which every module failed") }
+
     // The stamp files the update-window steps relied on are still fresh.
     if !fs::is_file("/var/lib/config-weave/cw-modules-updated") { return Err("the modules update stamp vanished") }
-    if !fs::is_file("/var/lib/config-weave/cw-help-updated") { return Err("the help update stamp vanished") }
     Ok(true)
 }

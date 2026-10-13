@@ -1063,7 +1063,7 @@ package "windows_powershell" {
   }
 
   resource "module" {
-    description = "Ensure a module from a registered repository is installed at the given version and scope, or is uninstalled"
+    description = "Ensure a module from a registered repository is installed at the given version and scope, or is uninstalled. Only the scope's own module directory counts: a copy elsewhere on PSModulePath (another scope, $PSHOME, System32) neither satisfies :present nor blocks :absent"
     script = "resources/module.ws"
     concurrency = "exclusive"
     param "name" { description = "Module name as published to the repository" type = "string" required = true }
@@ -1073,9 +1073,9 @@ package "windows_powershell" {
       default = :present
 
       symbol "present" { description = "Install the module" }
-      symbol "absent"  { description = "Uninstall every installed version of the module" }
+      symbol "absent"  { description = "Uninstall every version of the module installed in `scope`" }
     }
-    param "version" { description = "Exact version to install, or a PSResourceGet range such as [1.0.0, 3.0.0); empty accepts any installed version and installs the newest" type = "string" default = "" }
+    param "version" { description = "Exact version to install, e.g. 2.1.0 or a prerelease such as 2.1.0-beta1 (matched against the manifest's Prerelease label), or a PSResourceGet range such as [1.0.0, 3.0.0); empty accepts any installed version and installs the newest" type = "string" default = "" }
     param "prerelease" { description = "Allow prerelease versions to satisfy `version`" type = "bool" default = false }
     param "repository" { description = "Repository the module is installed from; empty searches every registered repository" type = "string" default = "" }
     param "scope" {
@@ -1088,7 +1088,7 @@ package "windows_powershell" {
     }
     param "accept_license" { description = "Accept a module's licence without prompting" type = "bool" default = false }
     param "skip_dependency_check" { description = "Install without resolving the module's dependencies" type = "bool" default = false }
-    param "trust_repository" { description = "Install from an untrusted repository without prompting, without marking the repository trusted" type = "bool" default = true }
+    param "trust_repository" { description = "Install from an untrusted repository without prompting, without marking the repository trusted (-TrustRepository; -Force for PowerShellGet v2). Off by default: installing from an untrusted repository then fails, since nothing can answer the prompt — trust the repository with the `repository` resource, or set this" type = "bool" default = false }
     param "allow_clobber" { description = "Install even when the module's commands would shadow existing ones" type = "bool" default = false }
     param "provider" {
       description = "Which generation of the module cmdlets is used"
@@ -1114,6 +1114,14 @@ package "windows_powershell" {
   // The manual install: no repository, no package manager. The source is a
   // directory, a zip or a nupkg — local or fetched over HTTP — and it lands
   // in the <Name>/<Version>/ layout Get-Module -ListAvailable requires.
+  //
+  // check compares content, not just presence. A local directory source is
+  // compared file by file. An archive or URL install records what it
+  // installed (the source, the archive's hash and a digest of the installed
+  // tree) under the config-weave state directory; a different source, a
+  // changed local archive, or an installed file edited since is drift. A URL
+  // without `sha256` is not re-downloaded to compare — set sha256 so that a
+  // changed upstream archive is drift.
   resource "module_from_path" {
     description = "Install a module by copying or extracting it into a module directory, without a repository — the manual install path for private or vendored modules"
     script = "resources/module_from_path.ws"
@@ -1127,7 +1135,7 @@ package "windows_powershell" {
       symbol "present" { description = "Install the module from `source`" }
       symbol "absent"  { description = "Remove the installed module directory" }
     }
-    param "version" { description = "Version installed, which becomes the version subdirectory; empty installs flat under <Name>/ with no version folder" type = "string" default = "" }
+    param "version" { description = "Version installed, which becomes the version subdirectory and must agree with the manifest's ModuleVersion (a source that contradicts it is refused); empty installs flat under <Name>/ with no version folder" type = "string" default = "" }
     param "source" { description = "Local directory, .zip or .nupkg, or an HTTP(S) URL of one; required when :present" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of a downloaded or local archive; empty skips the check" type = "string" default = "" }
     param "strip_root" { description = "Drop a single top-level directory from the extracted archive, for archives that wrap their contents in one folder" type = "bool" default = false }
@@ -1177,7 +1185,7 @@ package "windows_powershell" {
       symbol "current_user" { description = "The user's scripts directory" }
       symbol "all_users"    { description = "The machine-wide scripts directory" }
     }
-    param "trust_repository" { description = "Install from an untrusted repository without prompting" type = "bool" default = true }
+    param "trust_repository" { description = "Install from an untrusted repository without prompting (-TrustRepository; -Force for PowerShellGet v2). Off by default: an untrusted repository then fails, since nothing can answer the prompt" type = "bool" default = false }
     param "provider" {
       description = "Which generation of the cmdlets is used"
       type = "symbol"
@@ -1204,8 +1212,8 @@ package "windows_powershell" {
   // installed, not refreshing metadata that does not exist. Hence `updated`
   // rather than `cache_updated`.
   //
-  // The update itself is untested by design: it hits the network. What the
-  // tests do cover is the max_age window, by seeding a fresh stamp file.
+  // The tests cover the max_age window, by seeding a fresh stamp file, and a
+  // real update of one named module from a local feed.
   resource "modules_updated" {
     description = "Update installed modules when the last update run is older than max_age"
     script = "resources/modules_updated.ws"
@@ -1217,6 +1225,7 @@ package "windows_powershell" {
     }
     param "names" { description = "Modules to update; an empty list updates every installed module" type = "list" }
     param "prerelease" { description = "Allow prerelease versions when updating" type = "bool" default = false }
+    param "trust_repository" { description = "Update from untrusted repositories without prompting (-TrustRepository; -Force for PowerShellGet v2). Off by default, so only trusted repositories are updated from" type = "bool" default = false }
     param "scope" {
       description = "Which installation scope is updated"
       type = "symbol"
@@ -1244,11 +1253,16 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory" type = "string" default = "" }
+    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory named for the edition, scope, names and prerelease, so steps that update different things keep separate windows" type = "string" default = "" }
   }
 
-  // Also untested by design: Update-Help downloads help content from the
-  // internet. The max_age window is what the tests exercise.
+  // Update-Help reports an error for every module without downloadable help,
+  // which is normal, so errors are collected and reported rather than fatal.
+  // The step fails — and the window stays open — when there are at least as
+  // many errors as modules targeted, which is what "nothing was updated"
+  // looks like. The tests exercise that failure through a missing
+  // source_path; a real download is untested by design (it needs the
+  // internet).
   resource "help_updated" {
     description = "Run Update-Help when the last help refresh is older than max_age"
     script = "resources/help_updated.ws"
@@ -1280,7 +1294,7 @@ package "windows_powershell" {
       symbol "pwsh_preview"       { description = "The preview install" }
       symbol "windows_powershell" { description = "Windows PowerShell 5.1" }
     }
-    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory" type = "string" default = "" }
+    param "stamp_path" { description = "File whose modification time records the last run; empty uses a path under the config-weave state directory named for the edition, scope, modules, culture and source, so steps that refresh different help keep separate windows" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -1928,19 +1942,23 @@ package "windows_powershell" {
   }
 
   test "modules_local_repo_converge" {
-    description = "Module install, version pinning and removal converge against a local repository, with no network"
+    description = "Module and script install, version pinning, prerelease, scope and removal converge against a local repository, with no network"
     image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
     group = "pwshmod"
-    // Builds two versions each of three trivial modules and publishes them
-    // into a local file repository, so the whole test is hermetic. Setup runs
-    // before the playbook is copied in, so it cannot call a script from the
-    // package — it is inlined. sh's single quotes keep PowerShell's `$` and
-    // double quotes intact.
+    // Builds trivial modules (one a prerelease) and two scripts and publishes
+    // them into a local file repository, so the whole test is hermetic. The
+    // same feed is registered a second time untrusted. Setup runs before the
+    // playbook is copied in, so it cannot call a script from the package —
+    // it is inlined. sh's single quotes keep PowerShell's `$` and double
+    // quotes intact.
     //
     // :all_users throughout: the machine-wide module directory is a fixed
     // path, whereas the per-user one moves with HOME, which the guest agent
     // sets to / rather than the invoking user's home.
-    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/cw-modules-updated /var/lib/config-weave/cw-help-updated && pwsh -NoProfile -NonInteractive -Command 'New-Item -ItemType Directory -Force -Path /srv/cwfeed,/srv/cwbuild | Out-Null; Register-PSResourceRepository -Name cwfeed -Uri /srv/cwfeed -Trusted -Force; foreach ($p in \"CwSample:1.0.0\",\"CwSample:1.2.0\",\"CwPinned:1.0.0\",\"CwPinned:2.0.0\",\"CwSeeded:1.0.0\") { $n,$v = $p -split \":\"; $md = Join-Path (Join-Path /srv/cwbuild ($n + \"-\" + $v)) $n; New-Item -ItemType Directory -Force -Path $md | Out-Null; Set-Content -LiteralPath (Join-Path $md ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { \" + $v + \" }\"); New-ModuleManifest -Path (Join-Path $md ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw; Publish-PSResource -Path $md -Repository cwfeed }; Install-PSResource -Name CwSeeded -Repository cwfeed -TrustRepository -Scope AllUsers'"
+    //
+    // The stamp at the old, unqualified default path is fresh: an update
+    // step that still used it would wrongly skip.
+    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/cw-modules-updated /var/lib/config-weave/powershell-modules-updated && pwsh -NoProfile -NonInteractive -Command 'New-Item -ItemType Directory -Force -Path /srv/cwfeed,/srv/cwbuild | Out-Null; Register-PSResourceRepository -Name cwfeed -Uri /srv/cwfeed -Trusted -Force; Register-PSResourceRepository -Name cwuntrusted -Uri /srv/cwfeed -Force; foreach ($p in \"CwSample:1.0.0:\",\"CwSample:1.2.0:\",\"CwPinned:1.0.0:\",\"CwPinned:2.0.0:\",\"CwSeeded:1.0.0:\",\"CwOtherScope:1.0.0:\",\"CwUntrusted:1.0.0:\",\"CwPre:1.0.0:beta1\") { $n,$v,$pre = $p -split \":\"; $md = Join-Path (Join-Path /srv/cwbuild ($n + \"-\" + $v + $pre)) $n; New-Item -ItemType Directory -Force -Path $md | Out-Null; Set-Content -LiteralPath (Join-Path $md ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); $extra = @{}; if ($pre) { $extra.Prerelease = $pre }; New-ModuleManifest -Path (Join-Path $md ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw @extra; Publish-PSResource -Path $md -Repository cwfeed }; foreach ($sn in \"CwScript\",\"CwScriptSeeded\") { $sf = Join-Path /srv/cwbuild ($sn + \".ps1\"); New-PSScriptFileInfo -Path $sf -Version 1.0.0 -Description cw -Author cw; Publish-PSResource -Path $sf -Repository cwfeed }; Install-PSResource -Name CwSeeded -Repository cwfeed -TrustRepository -Scope AllUsers; Install-PSResource -Name CwOtherScope -Repository cwfeed -TrustRepository -Scope AllUsers; Install-PSResource -Name CwScriptSeeded -Repository cwfeed -TrustRepository -Scope AllUsers'"
     verify = "tests/module_verify.ws"
 
     step "install" {
@@ -1974,12 +1992,78 @@ package "windows_powershell" {
       }
     }
 
-    step "remove_seeded" {
-      description = "Uninstall the module setup pre-installed"
+    step "prerelease_pinned" {
+      description = "A prerelease pin matches the installed prerelease, so the second run is a no-op"
       resource = "module"
       requires = ["pinned"]
       properties {
+        name = "CwPre"
+        version = "1.0.0-beta1"
+        prerelease = true
+        repository = "cwfeed"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "remove_seeded" {
+      description = "Uninstall the module setup pre-installed"
+      resource = "module"
+      requires = ["prerelease_pinned"]
+      properties {
         name = "CwSeeded"
+        ensure = :absent
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    // Installed machine-wide only, so the current-user scope has nothing to
+    // remove — the check looks where the uninstall acts.
+    step "other_scope_absent" {
+      description = "A module installed only for all users is already absent from the current-user scope"
+      resource = "module"
+      expect = "already_configured"
+      properties {
+        name = "CwOtherScope"
+        ensure = :absent
+        scope = :current_user
+        edition = :pwsh
+      }
+    }
+
+    step "untrusted_refused" {
+      description = "Installing from an untrusted repository fails unless trust_repository is set"
+      resource = "module"
+      expect = "error"
+      requires = ["remove_seeded"]
+      properties {
+        name = "CwUntrusted"
+        repository = "cwuntrusted"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "script_install" {
+      description = "Install a script from the local repository"
+      resource = "script_resource"
+      requires = ["remove_seeded"]
+      properties {
+        name = "CwScript"
+        version = "1.0.0"
+        repository = "cwfeed"
+        scope = :all_users
+        edition = :pwsh
+      }
+    }
+
+    step "script_remove_seeded" {
+      description = "Uninstall the script setup pre-installed"
+      resource = "script_resource"
+      requires = ["script_install"]
+      properties {
+        name = "CwScriptSeeded"
         ensure = :absent
         scope = :all_users
         edition = :pwsh
@@ -1997,30 +2081,51 @@ package "windows_powershell" {
       }
     }
 
-    step "help_window_fresh" {
-      description = "A freshly stamped help window needs no run"
-      resource = "help_updated"
-      expect = "already_configured"
+    // No stamp_path: the default stamp is qualified by edition, scope and
+    // names, so the fresh unqualified stamp setup wrote does not count, and
+    // the update really runs against the local feed.
+    step "update_named" {
+      description = "Update one named module machine-wide from the trusted local feed"
+      resource = "modules_updated"
+      requires = ["script_remove_seeded"]
       properties {
         max_age = 24h
-        stamp_path = "/var/lib/config-weave/cw-help-updated"
+        names = ["CwSample"]
+        scope = :all_users
+        trust_repository = true
+        edition = :pwsh
+      }
+    }
+
+    // Every module fails when the help source does not exist. That must be a
+    // failed step that leaves the window open, not a silent success.
+    step "help_all_failed" {
+      description = "Update-Help failing for every module is an error and does not stamp"
+      resource = "help_updated"
+      expect = "error"
+      properties {
+        modules = ["Microsoft.PowerShell.Utility"]
+        source_path = "/srv/cw-no-such-help"
+        stamp_path = "/var/lib/config-weave/cw-help-failed"
         edition = :pwsh
       }
     }
   }
 
   test "module_from_path_converges" {
-    description = "The manual module install converges from a directory and from a zip, and removes cleanly"
+    description = "The manual module install converges from a directory and from a zip, replaces stale content, refuses a version the manifest contradicts, and removes cleanly"
     image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
     group = "pwshmod"
     // Builds a source directory, a zip that wraps its contents in one folder
-    // (which is what strip_root exists for), and a hand-installed module for
-    // the :absent step to remove.
-    setup = "pwsh -NoProfile -NonInteractive -Command 'foreach ($n in \"CwLocalDir\",\"CwLocalZip\") { $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion 1.0.0 -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $seed = \"/cwhome3/.local/share/powershell/Modules/CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"'"
+    // (which is what strip_root exists for), a source whose manifest
+    // disagrees with the version asked for, a hand-installed module for the
+    // :absent step to remove, and a stale copy of CwLocalDir already in place
+    // under the right version folder — present, but with the wrong content.
+    setup = "pwsh -NoProfile -NonInteractive -Command 'foreach ($p in \"CwLocalDir:2.1.0\",\"CwLocalZip:1.4.2\",\"CwMismatch:1.0.0\") { $n,$v = $p -split \":\"; $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $m = \"/cwhome3/.local/share/powershell/Modules\"; $seed = Join-Path $m \"CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"; $stale = Join-Path $m \"CwLocalDir/2.1.0\"; New-Item -ItemType Directory -Force -Path $stale | Out-Null; Copy-Item /srv/cwsrc/CwLocalDir/* $stale; Set-Content -LiteralPath (Join-Path $stale \"CwLocalDir.psm1\") -Value \"function Get-CwLocalDir { 0 }\"'"
     verify = "tests/module_from_path_verify.ws"
 
     step "from_dir" {
-      description = "Install a module by copying a directory into the user module path"
+      description = "Install a module by copying a directory over a stale copy of it"
       resource = "module_from_path"
       properties {
         name = "CwLocalDir"
@@ -2041,6 +2146,20 @@ package "windows_powershell" {
         version = "1.4.2"
         source = "/srv/cwsrc/CwLocalZip.zip"
         strip_root = true
+        scope = :current_user
+        edition = :pwsh
+        home = "/cwhome3"
+      }
+    }
+
+    step "version_mismatch" {
+      description = "A version folder the manifest contradicts is refused"
+      resource = "module_from_path"
+      expect = "error"
+      properties {
+        name = "CwMismatch"
+        version = "9.9.9"
+        source = "/srv/cwsrc/CwMismatch"
         scope = :current_user
         edition = :pwsh
         home = "/cwhome3"

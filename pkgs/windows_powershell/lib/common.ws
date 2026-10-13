@@ -6,6 +6,8 @@ use path
 use shell
 use sys
 use env
+use hash
+use time
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
     if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
@@ -235,4 +237,42 @@ fn version_chars(label: string, value: string) -> Result[unit, string] {
         if !allowed.contains(str(c)) { return Err("'" + label + "' may only hold letters, digits, '.', '-', '+' and '~', got '" + value + "'") }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Update windows (modules_updated, help_updated)
+// ---------------------------------------------------------------------
+
+// The default stamp is per target: two steps that update different editions,
+// scopes or module sets must not share one window. `parts` names the target;
+// lists in it should already be sorted.
+fn stamp_path(params: Value, base: string, parts: List[string]) -> string {
+    let explicit = param_str(params, "stamp_path", "")
+    if explicit != "" { return explicit }
+    let tag = hash::sha256(parts.join("|")).slice(0, 12)
+    let dir = if sys::family() == "windows" { "C:/ProgramData/config-weave" } else { "/var/lib/config-weave" }
+    dir + "/" + base + "-" + tag
+}
+
+fn sorted(items: List[string]) -> List[string] {
+    let out = items.clone()
+    out.sort()
+    out
+}
+
+// A `duration` param arrives as base nanoseconds.
+fn stamp_fresh(stamp: string, params: Value) -> Result[bool, string] {
+    if !fs::is_file(stamp) { return Ok(false) }
+    let max_age = param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
+    let modified = 0
+    if let Some(m) = fs::metadata(stamp)?.get("modified") { modified = m.as_int().unwrap_or(0) }
+    Ok(time::now_millis() / 1000 - modified <= max_age)
+}
+
+// Rewriting the stamp truncates it and so refreshes its mtime, which is what
+// advances the window — no separate touch is needed.
+fn touch_stamp(stamp: string, label: string) -> Result[unit, string] {
+    let parent = path::parent(stamp)
+    if parent != "" { fs::mkdir(parent)? }
+    fs::write(stamp, label + "\n")
 }
