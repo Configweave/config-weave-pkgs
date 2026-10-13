@@ -2,20 +2,15 @@ use value
 use fs
 use shell
 use path
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 fn dropin_path(key: string) -> string { "/etc/sysctl.d/99-config-weave-" + key.replace(".", "-") + ".conf" }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let key = param_str(params, "key", "")
-    let want = param_str(params, "value", "")
+    let key = common::param_str(params, "key", "")
+    let want = common::param_str(params, "value", "")
     if key == "" { return Err("missing 'key' parameter") }
-    let out = shell::bash("sysctl -n " + q(key), Value::Null)?
+    let out = shell::bash("sysctl -n " + common::q(key), Value::Null)?
     if !out.success { return Err(out.stderr.trim()) }
     if out.stdout.trim() != want { return Ok(CheckResult::NotConfigured) }
     let p = dropin_path(key)
@@ -24,10 +19,10 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let key = param_str(params, "key", "")
-    let want = param_str(params, "value", "")
+    let key = common::param_str(params, "key", "")
+    let want = common::param_str(params, "value", "")
     if key == "" { return Err("missing 'key' parameter") }
-    let out = shell::bash("sysctl -w " + q(key + "=" + want), Value::Null)?
+    let out = shell::bash("sysctl -w " + common::q(key + "=" + want), Value::Null)?
     if !out.success { return Err(out.stderr.trim()) }
     let p = dropin_path(key)
     fs::mkdir(path::parent(p))?

@@ -1,33 +1,10 @@
 use value
 use fs
 use shell
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(i) = v.as_int() { return i } }
-    fallback
-}
-
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
+use common
 
 fn entry(params: Value) -> string {
-    param_str(params, "spec", "") + " " + param_str(params, "mountpoint", "") + " " + param_str(params, "fstype", "") + " " + param_str(params, "options", "defaults") + " " + str(param_int(params, "dump", 0)) + " " + str(param_int(params, "pass", 0))
+    common::param_str(params, "spec", "") + " " + common::param_str(params, "mountpoint", "") + " " + common::param_str(params, "fstype", "") + " " + common::param_str(params, "options", "defaults") + " " + str(common::param_int(params, "dump", 0)) + " " + str(common::param_int(params, "pass", 0))
 }
 
 fn has_entry(text: string, line: string) -> bool {
@@ -79,14 +56,14 @@ fn mounted(mountpoint: string) -> Result[bool, string] {
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let mountpoint = param_str(params, "mountpoint", "")
+    let mountpoint = common::param_str(params, "mountpoint", "")
     if mountpoint == "" { return Err("missing 'mountpoint' parameter") }
     let text = fstab_text()?
-    if !want_present(params)? {
+    if !common::want_present(params)? {
         if listed(text, mountpoint) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    if param_str(params, "spec", "") == "" || param_str(params, "fstype", "") == "" {
+    if common::param_str(params, "spec", "") == "" || common::param_str(params, "fstype", "") == "" {
         return Err("spec and fstype are required when ensure is :present")
     }
     // An entry for this mount point that differs in any field is drift, not a
@@ -96,15 +73,15 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let mountpoint = param_str(params, "mountpoint", "")
+    let mountpoint = common::param_str(params, "mountpoint", "")
     if mountpoint == "" { return Err("missing 'mountpoint' parameter") }
-    let present = want_present(params)?
-    if present && (param_str(params, "spec", "") == "" || param_str(params, "fstype", "") == "") {
+    let present = common::want_present(params)?
+    if present && (common::param_str(params, "spec", "") == "" || common::param_str(params, "fstype", "") == "") {
         return Err("spec and fstype are required when ensure is :present")
     }
     // Unmount before the entry goes, so the running system and fstab agree.
-    if !present && param_bool(params, "mount", false) && mounted(mountpoint)? {
-        let out = shell::bash("umount " + q(mountpoint), Value::Null)?
+    if !present && common::param_bool(params, "mount", false) && mounted(mountpoint)? {
+        let out = shell::bash("umount " + common::q(mountpoint), Value::Null)?
         if !out.success { return Err(out.stderr.trim()) }
     }
     let text = fstab_text()?
@@ -121,8 +98,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         fs::write("/etc/fstab", rebuilt)?
     }
-    if present && param_bool(params, "mount", false) {
-        let out = shell::bash("mount " + q(mountpoint), Value::Null)?
+    if present && common::param_bool(params, "mount", false) {
+        let out = shell::bash("mount " + common::q(mountpoint), Value::Null)?
         if !out.success { return Err(out.stderr.trim()) }
     }
     Ok(ApplyResult::Success)

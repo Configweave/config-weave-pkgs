@@ -1,23 +1,12 @@
 use value
 use fs
 use shell
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
+use common
 
 fn gen_line(params: Value) -> Result[string, string] {
-    let name = param_str(params, "name", "")
+    let name = common::param_str(params, "name", "")
     if name == "" { return Err("missing 'name' parameter") }
-    Ok(name + " " + param_str(params, "charset", "UTF-8"))
+    Ok(name + " " + common::param_str(params, "charset", "UTF-8"))
 }
 
 fn has_line(text: string, line: string) -> bool {
@@ -68,13 +57,13 @@ fn run_locale_gen() -> Result[unit, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let line = gen_line(params)?
     let text = if fs::is_file("/etc/locale.gen") { fs::read("/etc/locale.gen")? } else { "" }
-    if has_line(text, line) == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if has_line(text, line) == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let line = gen_line(params)?
     let text = if fs::is_file("/etc/locale.gen") { fs::read("/etc/locale.gen")? } else { "" }
-    if want_present(params)? {
+    if common::want_present(params)? {
         if !has_line(text, line) { fs::write("/etc/locale.gen", with_line(text, line))? }
     } else {
         if !has_line(text, line) { return Ok(ApplyResult::Success) }
