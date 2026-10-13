@@ -19,7 +19,7 @@ package "linux_network" {
   }
 
   resource "firewalld_rule" {
-    description = "Ensure a firewalld rule (service, port, source or rich rule) is present or absent"
+    description = "Ensure a firewalld rule (service, port, source or rich rule) is present or absent in a zone. firewall-cmd needs the firewalld daemon running, for the saved configuration too, so start the service first; check and apply fail while it is stopped. With permanent = true (the default) the rule is managed in both the running firewall and the saved configuration, so it takes effect now and survives a reload or reboot; each is checked and only the one that differs is changed. With permanent = false only the running firewall is touched, and a reload restores the saved rules"
     script = "resources/firewalld_rule.ws"
     concurrency = "global"
     param "ensure" {
@@ -31,11 +31,11 @@ package "linux_network" {
       symbol "absent"  { description = "Remove the rule" }
     }
     param "zone" { description = "Zone to operate on; empty uses the default zone" type = "string" default = "" }
-    param "permanent" { description = "Operate on the permanent configuration" type = "bool" default = true }
+    param "permanent" { description = "Manage the saved configuration as well as the running firewall (true), or the running firewall only (false)" type = "bool" default = true }
     param "service" { description = "Named service to allow, such as https" type = "string" default = "" }
-    param "port" { description = "Port rule such as 8080/tcp" type = "string" default = "" }
-    param "source" { description = "Source address or CIDR bound to the zone" type = "string" default = "" }
-    param "rich_rule" { description = "Full firewalld rich rule text" type = "string" default = "" }
+    param "port" { description = "Port rule such as 8080/tcp or 6000-6007/udp" type = "string" default = "" }
+    param "source" { description = "Source address or CIDR bound to the zone. firewalld binds a source to one zone only, so adding it to a second zone fails" type = "string" default = "" }
+    param "rich_rule" { description = "Full firewalld rich rule text, on one line; firewalld compares it by meaning, not spelling" type = "string" default = "" }
   }
 
   resource "ufw_rule" {
@@ -387,32 +387,83 @@ package "linux_network" {
     }
   }
 
-  // firewalld is not in the Fedora cloud image, so setup installs it; the
-  // permanent configuration converges without the daemon needing to run.
+  // firewalld is not in the Fedora cloud image, so setup installs and
+  // starts it (firewall-cmd needs the daemon, --permanent included), then
+  // seeds http in the saved configuration only, and a port and a rich rule
+  // in both, for the removal steps.
   test "firewalld_converges" {
-    description = "A firewalld port and service rule converge in the permanent configuration"
+    description = "firewalld ports, services, sources and rich rules converge in the running and saved configuration"
     template = "x86_64/fedora-44"
-    setup = "dnf install -y firewalld && systemctl start firewalld"
+    setup = "dnf install -y -q firewalld && systemctl start firewalld && firewall-cmd --permanent --add-service=http && firewall-cmd --add-port=7070/tcp && firewall-cmd --permanent --add-port=7070/tcp && firewall-cmd --add-rich-rule='rule family=ipv4 source address=198.51.100.0/24 reject' && firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=198.51.100.0/24 reject'"
     verify = "tests/firewalld_verify.ws"
 
     step "port" {
       description = "Allow a port in the default zone"
       resource = "firewalld_rule"
-      properties { port = "8443/tcp" permanent = true ensure = :present }
+      properties { port = "8443/tcp" }
     }
 
     step "service" {
       description = "Allow a named service"
       resource = "firewalld_rule"
-      requires = ["port"]
-      properties { service = "https" permanent = true ensure = :present }
+      properties { service = "https" }
+    }
+
+    step "saved_only" {
+      description = "A service only in the saved configuration is added to the running firewall"
+      resource = "firewalld_rule"
+      properties { service = "http" }
+    }
+
+    step "runtime_only" {
+      description = "permanent = false touches only the running firewall"
+      resource = "firewalld_rule"
+      properties { port = "9443/tcp" permanent = false }
+    }
+
+    step "source" {
+      description = "Bind a source to a named zone"
+      resource = "firewalld_rule"
+      properties { zone = "internal" source = "192.0.2.0/24" }
+    }
+
+    step "rich_rule" {
+      description = "Add a rich rule to a named zone"
+      resource = "firewalld_rule"
+      properties { zone = "public" rich_rule = "rule family=\"ipv4\" source address=\"203.0.113.0/24\" port port=\"5000\" protocol=\"tcp\" accept" }
+    }
+
+    step "remove_port" {
+      description = "Remove a seeded port from both configurations"
+      resource = "firewalld_rule"
+      properties { port = "7070/tcp" ensure = :absent }
+    }
+
+    step "remove_rich_rule" {
+      description = "Remove a seeded rich rule, spelled differently from the seed"
+      resource = "firewalld_rule"
+      properties { rich_rule = "rule family=\"ipv4\" source address=\"198.51.100.0/24\" reject" ensure = :absent }
     }
 
     step "absent_port_stays_absent" {
       description = "A port that was never allowed is already configured"
       resource = "firewalld_rule"
       expect = "already_configured"
-      properties { port = "9999/udp" permanent = true ensure = :absent }
+      properties { port = "9999/udp" ensure = :absent }
+    }
+
+    step "two_selectors" {
+      description = "Setting two selectors is rejected"
+      resource = "firewalld_rule"
+      expect = "error"
+      properties { port = "1234/tcp" service = "ssh" }
+    }
+
+    step "unknown_zone" {
+      description = "An unknown zone is an error, not an absent rule"
+      resource = "firewalld_rule"
+      expect = "error"
+      properties { zone = "cw-no-such-zone" port = "1234/tcp" ensure = :absent }
     }
   }
 }
