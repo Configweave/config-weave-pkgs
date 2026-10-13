@@ -33,10 +33,19 @@ fn converge(m: Machine, key: string, props: Value) -> Result[bool, string] {
     let c = m.check_resource(key, props)?
     if c.status != "not_configured" { return Err(key + ": expected not_configured on check, got " + c.status + " (" + c.message + ")") }
     let a = m.apply_resource(key, props)?
-    if a.status != "configured" { return Err(key + ": expected configured on first apply, got " + a.status + " (" + a.message + ")") }
+    if a.status != "configured" { return Err(key + ": expected configured on first apply, got " + a.status + " (" + a.message + ")" + diagnose(m)) }
     let b = m.apply_resource(key, props)?
     if b.status != "already_configured" { return Err(key + ": expected already_configured on second apply, got " + b.status + " (" + b.message + ")") }
     Ok(true)
+}
+
+// What the directory holds for the test users, to explain a failed step.
+fn diagnose(m: Machine) -> string {
+    if let Ok(r) = m.powershell("Get-ADUser -Filter \"Name -like 'weave-*'\" -Properties DisplayName,UserPrincipalName,Enabled,PasswordLastSet | " +
+        "ForEach-Object {{ $_.DistinguishedName + ' | ' + $_.UserPrincipalName + ' | ' + $_.DisplayName + ' | enabled=' + $_.Enabled + ' | pwdLastSet=' + $_.PasswordLastSet }}") {
+        return "\n" + r.stdout.trim() + r.stderr.trim()
+    }
+    ""
 }
 
 fn expect(m: Machine, key: string, props: Value, want: string) -> Result[bool, string] {
@@ -112,7 +121,10 @@ fn run(lab: Lab) -> Result[bool, string] {
         "-SafeModeAdministratorPassword (ConvertTo-SecureString 'P@ssw0rd-DSRM!' -AsPlainText -Force) " +
         "-Force -NoRebootOnCompletion -WarningAction SilentlyContinue | Out-Null")?
     dc.reboot()?
+    // AD Web Services, and the DC locator the password check's logon goes
+    // through, both come up a while after the promotion reboot.
     ps(dc, "$ErrorActionPreference='SilentlyContinue'; for ($i = 0; $i -lt 90; $i++) {{ if ((Get-ADDomain).DNSRoot -eq 'acct.test') {{ break }}; Start-Sleep 5 }}; " +
+        "for ($i = 0; $i -lt 60; $i++) {{ & cmd.exe /c 'nltest /dsgetdc:acct.test >nul 2>&1'; if ($LASTEXITCODE -eq 0) {{ break }}; Start-Sleep 5 }}; " +
         "$ErrorActionPreference='Stop'; New-ADOrganizationalUnit -Name Staff -Path 'DC=acct,DC=test'")?
     let staff = "OU=Staff,DC=acct,DC=test"
 

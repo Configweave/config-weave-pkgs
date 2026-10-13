@@ -1,4 +1,5 @@
 use value
+use log
 use common
 
 // UF_DONT_EXPIRE_PASSWD in the SAM userFlags.
@@ -52,15 +53,18 @@ fn check(params: Value) -> Result[CheckResult, string] {
     }
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
     let u = common::parse_json(st)?
+    let drift: List[string] = []
     let full = common::param_str(params, "full_name", "")
-    if full != "" && common::get_str(u, "full_name") != full { return Ok(CheckResult::NotConfigured) }
+    if full != "" && common::get_str(u, "full_name") != full { drift.push("full_name") }
     let desc = common::param_str(params, "description", "")
-    if desc != "" && common::get_str(u, "description") != desc { return Ok(CheckResult::NotConfigured) }
-    if common::get_bool(u, "enabled") == common::param_bool(params, "disabled", false) { return Ok(CheckResult::NotConfigured) }
+    if desc != "" && common::get_str(u, "description") != desc { drift.push("description") }
+    if common::get_bool(u, "enabled") == common::param_bool(params, "disabled", false) { drift.push("disabled") }
     if let Some(ne) = common::param_opt_bool(params, "password_never_expires") {
-        if common::get_bool(u, "never_expires") != ne { return Ok(CheckResult::NotConfigured) }
+        if common::get_bool(u, "never_expires") != ne { drift.push("password_never_expires") }
     }
-    if pw != "" && !common::password_state_err(common::get_str(u, "password"), name)? {
+    if pw != "" && !common::password_state_err(common::get_str(u, "password"), name)? { drift.push("password") }
+    if !drift.is_empty() {
+        log::info("local user '" + name + "' differs in: " + drift.join(", "))
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)

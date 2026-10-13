@@ -82,7 +82,7 @@ package "windows_account" {
       symbol "present" { description = "Create the directory user" }
       symbol "absent"  { description = "Delete the directory user" }
     }
-    param "password" { description = "Account password; use secret(\"...\"). Checked by a logon attempt through this machine's domain logon (so the machine must be in, or trust, the user's domain) and reset when it no longer validates. Required in practice to create an enabled account. Empty leaves it unmanaged" type = "string" default = "" }
+    param "password" { description = "Account password; use secret(\"...\"). Checked by a logon attempt through this machine's domain logon (so the machine must be in, or trust, the user's domain) and reset when it no longer validates. A disabled account's password cannot be checked (the domain reports the account disabled first), so it is left alone while the account is disabled. Required in practice to create an enabled account. Empty leaves it unmanaged" type = "string" default = "" }
     param "upn" { description = "UserPrincipalName (compared case-insensitively); empty leaves it unmanaged" type = "string" default = "" }
     param "display_name" { description = "DisplayName; empty leaves it unmanaged" type = "string" default = "" }
     param "ou_path" { description = "Distinguished name of the OU the user belongs in; an existing user elsewhere is moved there (Move-ADObject). Empty leaves placement unmanaged" type = "string" default = "" }

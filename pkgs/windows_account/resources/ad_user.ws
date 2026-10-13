@@ -1,4 +1,5 @@
 use value
+use log
 use common
 
 fn validate(params: Value) -> Result[string, string] {
@@ -25,9 +26,13 @@ fn fetch(name: string, props: string) -> string {
 // PowerShell binding $pwState to the password probe for the account in $u.
 // The logon goes through this machine's own domain logon path, so the
 // password is checked against the PDC emulator when a DC has an older copy.
+// A domain reports a disabled account as disabled before it looks at the
+// password, so a disabled account's password cannot be tested: that is
+// 'UNKNOWN', and no logon is attempted.
 fn password_probe() -> string {
     common::logon_test_ps() +
-    "$pwState = Test-CwPassword $u.SamAccountName (Get-ADDomain @srv).NetBIOSName $env:CW_PASSWORD; "
+    "$pwState = if ((Get-ADUser @srv -Identity $u.ObjectGUID).Enabled) {{ " +
+    "Test-CwPassword $u.SamAccountName (Get-ADDomain @srv).NetBIOSName $env:CW_PASSWORD }} else {{ 'UNKNOWN' }}; "
 }
 
 // 'ABSENT' or a JSON object { upn, display_name, enabled, ou_ok, password }.
@@ -53,13 +58,17 @@ fn check(params: Value) -> Result[CheckResult, string] {
     }
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
     let u = common::parse_json(st)?
+    let drift: List[string] = []
     let upn = common::param_str(params, "upn", "")
-    if upn != "" && common::get_str(u, "upn").to_lower() != upn.to_lower() { return Ok(CheckResult::NotConfigured) }
+    if upn != "" && common::get_str(u, "upn").to_lower() != upn.to_lower() { drift.push("upn") }
     let display = common::param_str(params, "display_name", "")
-    if display != "" && common::get_str(u, "display_name") != display { return Ok(CheckResult::NotConfigured) }
-    if common::get_bool(u, "enabled") != common::param_bool(params, "enabled", true) { return Ok(CheckResult::NotConfigured) }
-    if !common::get_bool(u, "ou_ok") { return Ok(CheckResult::NotConfigured) }
-    if pw != "" && !common::password_state_err(common::get_str(u, "password"), name)? {
+    if display != "" && common::get_str(u, "display_name") != display { drift.push("display_name") }
+    if common::get_bool(u, "enabled") != common::param_bool(params, "enabled", true) { drift.push("enabled") }
+    if !common::get_bool(u, "ou_ok") { drift.push("ou_path") }
+    let pw_state = common::get_str(u, "password")
+    if pw != "" && pw_state != "UNKNOWN" && !common::password_state_err(pw_state, name)? { drift.push("password") }
+    if !drift.is_empty() {
+        log::info("AD user '" + name + "' differs in: " + drift.join(", "))
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
@@ -88,17 +97,18 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         (if ou != "" { " -Path " + common::ps_q(ou) } else { "" }) +
         (if pw != "" { " -AccountPassword $sp" } else { "" }) +
         enabled_arg + "; "
-    // The password is reset only when it no longer validates, and before the
-    // account is enabled, which AD refuses for an account without one.
+    // The password is reset only when it no longer validates. It is tested
+    // after the enabled state is set, since a disabled account's cannot be;
+    // a disabled account's password is left alone.
     let reset = if pw != "" {
         password_probe() +
-        "if ($pwState -ne 'OK') {{ Set-ADAccountPassword @srv -Identity $u.ObjectGUID -Reset -NewPassword $sp }}; "
+        "if ($pwState -eq 'BAD') {{ Set-ADAccountPassword @srv -Identity $u.ObjectGUID -Reset -NewPassword $sp }}; "
     } else { "" }
     let move = if ou != "" {
         "$dn = $u.DistinguishedName; " + common::ou_match_ps(ou) +
         "if (-not $ouOk) {{ Move-ADObject @srv -Identity $u.ObjectGUID -TargetPath $ouObj.DistinguishedName }}; "
     } else { "" }
-    let updates = reset + "Set-ADUser @srv -Identity $u.ObjectGUID" + shared + enabled_arg + "; " + move
+    let updates = "Set-ADUser @srv -Identity $u.ObjectGUID" + shared + enabled_arg + "; " + reset + move
     common::ps_env("configuring AD user '" + name + "'",
         prelude + secure + fetch(name, "") +
         "if ($null -eq $u) {{ " + create + "}} else {{ " + updates + "}}",
