@@ -2,40 +2,102 @@ package "windows_share" {
   description = "Manage SMB shares"
 
   resource "share" {
-    description = "Ensure an SMB share exists with the given path and access grants, or is absent"
+    description = "Ensure an SMB share exists with the given path, settings and access list, or is absent. An existing share is reconciled in place (Set-SmbShare, Grant-/Revoke-/Unblock-SmbShareAccess), so open sessions and settings this resource does not manage survive; only a changed path recreates it, after every account has been resolved and the directory created"
     script = "resources/share.ws"
     concurrency = "exclusive"
-    param "name" { description = "Share name" type = "string" required = true }
+    param "name" { description = "Share name (at most 80 characters, none of \\ / [ ] : | < > + = ; , ? * \")" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the share" }
-      symbol "absent"  { description = "Delete the share" }
+      symbol "present" { description = "Create or reconcile the share" }
+      symbol "absent"  { description = "Remove the share; the directory and its files stay. Special (administrative) shares such as ADMIN$ and C$ are refused" }
     }
-    param "path" { description = "Directory backing the share (created when missing); required when present" type = "string" default = "" }
+    param "path" { description = "Directory backing the share, created when missing; required when present. Compared as a full path, case-insensitively and ignoring trailing separators. Changing it recreates the share, which drops its open sessions" type = "string" default = "" }
     param "description" { description = "Share description; empty leaves it unmanaged" type = "string" default = "" }
-    param "full_access" { description = "Accounts granted Full access; matched by exact name or the name after the domain/computer prefix" type = "list" }
+    param "full_access" { description = "Accounts granted Full access, as names (Administrators, BUILTIN\\Administrators, DOMAIN\\user) or SID strings; matched by SID" type = "list" }
     param "change_access" { description = "Accounts granted Change access" type = "list" }
     param "read_access" { description = "Accounts granted Read access" type = "list" }
+    // The three access lists together are the share's whole access list:
+    // an Allow entry for any other account, or a different right for a
+    // listed one, is revoked, and every Deny entry is removed. An account
+    // may appear in only one list. With all three empty, access is not
+    // managed at all, and a new share gets Windows' default Everyone:Read.
+    param "encrypt_data" { description = "Require SMB encryption for this share" type = "bool" default = false }
+    param "caching_mode" {
+      description = "Offline files (client-side caching) mode"
+      type = "symbol"
+      default = :manual
+
+      symbol "manual"       { description = "Users choose which files are available offline (the Windows default)" }
+      symbol "documents"    { description = "Files users open are cached automatically" }
+      symbol "programs"     { description = "Files are cached automatically, optimised for programs" }
+      symbol "none"         { description = "Nothing is available offline" }
+      symbol "branch_cache" { description = "BranchCache is enabled for the share" }
+    }
+    param "folder_enumeration_mode" {
+      description = "Which entries a user sees when listing the share"
+      type = "symbol"
+      default = :unrestricted
+
+      symbol "unrestricted" { description = "Every entry, whatever the user's access" }
+      symbol "access_based" { description = "Only entries the user can access (access-based enumeration)" }
+    }
+    param "concurrent_user_limit" { description = "Maximum simultaneous connections; 0 means unlimited" type = "int" default = 0 }
   }
 
   test "share_converges" {
-    description = "An SMB share converges and absent detection works"
+    description = "SMB shares converge, drift is reconciled in place, and removal works"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/share_verify.ws"
+    // Seeds the drift the steps converge away from: weave-drift with a
+    // stale description, two extra grants and a Deny entry; weave-moved on
+    // a path the step changes; weave-gone to remove; and weave-keep, which a
+    // step with an unknown account must leave untouched. Windows test
+    // setups run under cmd.exe and must not contain double quotes.
+    setup = "mkdir C:\\weave-share-seed 2>NUL & mkdir C:\\weave-share-old 2>NUL & mkdir C:\\weave-share-gone 2>NUL & mkdir C:\\weave-share-keep 2>NUL & powershell -NoProfile -Command New-SmbShare -Name weave-drift -Path C:\\weave-share-seed -Description old -FullAccess Administrators -ChangeAccess Users -ReadAccess Everyone; Block-SmbShareAccess -Name weave-drift -AccountName Guests -Force; New-SmbShare -Name weave-moved -Path C:\\weave-share-old -FullAccess Administrators; New-SmbShare -Name weave-gone -Path C:\\weave-share-gone; New-SmbShare -Name weave-keep -Path C:\\weave-share-keep -Description kept -FullAccess Administrators & exit 0"
 
     step "data_share" {
-      description = "Share C:\\weave-share-test as weave-data"
+      description = "Share a new directory, given with a trailing backslash, with every setting managed"
       resource = "share"
       properties {
         name = "weave-data"
-        path = "C:\\weave-share-test"
+        path = "C:\\weave-share-test\\"
         description = "config-weave test share"
         full_access = ["Administrators"]
+        change_access = ["BUILTIN\\Users"]
+        read_access = ["Everyone"]
+        encrypt_data = true
+        caching_mode = :none
+        folder_enumeration_mode = :access_based
+        concurrent_user_limit = 5
       }
+    }
+
+    step "drift_share" {
+      description = "Reconcile a seeded share: new description, an added grant, revoked grants and a removed Deny"
+      resource = "share"
+      properties {
+        name = "weave-drift"
+        path = "c:\\weave-share-seed"
+        description = "new description"
+        full_access = ["BUILTIN\\Administrators"]
+        read_access = ["NT AUTHORITY\\Authenticated Users"]
+      }
+    }
+
+    step "moved_share" {
+      description = "Move a seeded share to a new directory"
+      resource = "share"
+      properties { name = "weave-moved" path = "C:\\weave-share-new" full_access = ["Administrators"] }
+    }
+
+    step "gone_share" {
+      description = "Remove a seeded share"
+      resource = "share"
+      properties { name = "weave-gone" ensure = :absent }
     }
 
     step "ghost_share_absent" {
@@ -43,6 +105,20 @@ package "windows_share" {
       resource = "share"
       expect = "already_configured"
       properties { name = "weave-ghost-share" ensure = :absent }
+    }
+
+    step "unknown_account" {
+      description = "An unknown account is an error and leaves the existing share alone"
+      resource = "share"
+      expect = "error"
+      properties { name = "weave-keep" path = "C:\\weave-share-elsewhere" full_access = ["CW-NO-SUCH-ACCOUNT"] }
+    }
+
+    step "admin_share_refused" {
+      description = "Removing an administrative share is refused"
+      resource = "share"
+      expect = "error"
+      properties { name = "ADMIN$" ensure = :absent }
     }
   }
 }
