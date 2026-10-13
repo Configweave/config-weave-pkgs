@@ -61,19 +61,19 @@ package "linux_files" {
   }
 
   resource "symlink" {
-    description = "Ensure a symbolic or hard link points at a target, or is absent"
+    description = "Ensure a symbolic or hard link points at a target, or is absent. Whatever is at path is replaced (a dangling symlink included), except a directory, which is an error. A symlink may point at a target that does not exist yet; a hard link's target must be an existing file"
     script = "resources/symlink.ws"
     concurrency = "parallel"
-    param "path" { description = "Link path" type = "string" required = true }
+    param "path" { description = "Absolute link path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Create the link" }
-      symbol "absent"  { description = "Delete the link" }
+      symbol "absent"  { description = "Delete the link itself, never its target; for a hard link only this name goes" }
     }
-    param "target" { description = "Link target (required when present)" type = "string" default = "" }
+    param "target" { description = "Link target (required when present); a symlink stores it verbatim, so it may be relative to the link's directory" type = "string" default = "" }
     param "hard" { description = "Create a hard link instead of a symlink" type = "bool" default = false }
   }
 
@@ -98,13 +98,13 @@ package "linux_files" {
   }
 
   resource "permissions" {
-    description = "Ensure owner, group and mode on an existing path"
+    description = "Ensure owner, group and mode on an existing path (not recursive). A symlink at path is followed: the target's attributes are compared and changed. A missing path is an error"
     script = "resources/permissions.ws"
     concurrency = "parallel"
-    param "path" { description = "Target path" type = "string" required = true }
-    param "mode" { description = "Optional octal mode" type = "string" default = "" }
-    param "owner" { description = "Optional owner" type = "string" default = "" }
-    param "group" { description = "Optional group" type = "string" default = "" }
+    param "path" { description = "Absolute target path (no .. segments)" type = "string" required = true }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0640 or 2775; symbolic modes are rejected" type = "string" default = "" }
+    param "owner" { description = "Optional owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   gatherer "path_stat" {
