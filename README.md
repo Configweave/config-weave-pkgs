@@ -70,6 +70,32 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 
+### `git`
+
+Global and system git configuration. Every resource shells out to
+`git config`, so git must be installed on the target; `home` needs
+git 2.30 or later.
+
+- Section resources (`user`, `core`, `init`, `commit`, `push`, `pull`,
+  `fetch`, `merge`, `rebase`, `diff`, `status`, `log`, `color`) declare one
+  param per config variable, with no defaults. An omitted param, or an
+  empty string, leaves that key alone, so these resources cannot remove a
+  key. A key is converged when it holds exactly one value equal to the
+  desired one. Bool and int params are compared the way git reads them
+  (`yes`, `on`, `1` and a bare `key` line all count as `true`; `1k` counts
+  as `1024`). String and symbol params fold only `yes`/`on`/`no`/`off`,
+  never digits, because keys such as `merge.log` treat `1` as a count.
+- `alias`, `safe_directory` and `config_entry` take `ensure`.
+  `config_entry` reaches any variable the typed resources do not, and is
+  the way to remove a key. With `ensure = :absent` and a `value`, it
+  removes only that occurrence of a multi-valued key. A malformed key is an
+  error, not a no-op. Values are compared exactly, folding only the
+  true/false word spellings, and are never logged; git takes them only on
+  its command line, so a secret such as an `http.extraHeader` token is
+  briefly visible in the process list while git runs.
+- `scope` is `:global` (the default) or `:system`. `home` points global
+  scope at `<home>/.gitconfig` and is ignored under `:system`.
+
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting

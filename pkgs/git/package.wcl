@@ -734,7 +734,7 @@ package "git" {
     description = "Ensure a git alias is present in or absent from the global or system config"
     script = "resources/alias.ws"
     concurrency = "global"
-    param "name" { description = "Alias name, as in git <name>" type = "string" required = true }
+    param "name" { description = "Alias name, as in git <name>: letters, digits and -, starting with a letter" type = "string" required = true }
     param "command" { description = "Command the alias expands to; prefix with ! for a shell command (required when present)" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -761,7 +761,7 @@ package "git" {
     concurrency = "global"
     // safe.directory is multi-valued, so this adds and removes single
     // entries and leaves any siblings alone.
-    param "path" { description = "Repository path to trust, or the literal * to trust every path" type = "string" required = true }
+    param "path" { description = "Repository path to trust, or the literal * to trust every path; compared exactly, and may not contain line breaks" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -787,8 +787,12 @@ package "git" {
     concurrency = "global"
     // The escape hatch for the ~900 variables without a typed resource,
     // and the only way to remove a key a section resource can set.
-    param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase" type = "string" required = true }
-    param "value" { description = "Desired value (required when present); when absent, removes just this occurrence of a multi-valued key" type = "string" default = "" }
+    // Converged means exactly one value, since apply writes with
+    // --replace-all. git config has no way to read a value from stdin or
+    // the environment, so a secret value (an http.extraHeader token)
+    // appears in git's argv while it runs; it is never logged.
+    param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase. A malformed key is an error, including with ensure = :absent" type = "string" required = true }
+    param "value" { description = "Desired value (required when present), compared exactly except that yes/on and no/off match true and false. Never logged, but passed to git on its command line. When absent, removes just this occurrence of a multi-valued key" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
