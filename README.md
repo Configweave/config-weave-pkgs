@@ -788,6 +788,84 @@ steps for the same manager but of different types, such as a source and a
 package, can run at once. Chain them with `requires` when one depends on
 the other.
 
+### `windows_account`
+
+Local and Active Directory users and groups:
+
+- `local_user`, `local_group` and `local_group_member`: the SAM. Membership
+  is compared by SID, read through ADSI, so a group holding an orphaned SID
+  still works. A bare member name means the local account of that name only;
+  write domain accounts and built-in principals qualified (`CORP\alice`,
+  `NT AUTHORITY\NETWORK SERVICE`).
+- `ad_user`, `ad_group` and `ad_group_member`: the directory, through the
+  `ActiveDirectory` PowerShell module (RSAT-AD-PowerShell, present on every
+  DC). `server` picks the DC or domain. `ou_path` is reconciled: an object
+  outside it is moved. A group scope change between Global and DomainLocal
+  steps through Universal. A member is resolved to one DN, which is both
+  what check searches the group for and what apply writes.
+
+Passwords reach PowerShell only through environment variables, so they are
+never on a command line or in an error message; write them as
+`secret("...")`. Password drift is detected by a logon attempt with the
+wanted password and fixed by re-setting it, so there is no "force" flag. Each
+check of a drifted password counts as one failed logon toward the account
+lockout threshold.
+
+### `windows_domain`
+
+Domain controllers and domain membership:
+
+- `domain_controller`: promotes and demotes. `mode` decides between creating
+  a forest and joining an existing domain. The default `:auto` joins when a
+  credential is given and creates a forest only when no DC answers and the
+  name does not resolve, so a DNS hiccup cannot build a second forest of the
+  same name. `ensure = :absent` only demotes a DC of `domain_name`.
+- `domain_member`: joins (FQDN or NetBIOS name), renames to `new_name`,
+  moves the computer account into `ou_path`, and leaves with
+  `ensure = :absent`.
+- `workgroup_member`: puts the machine in a workgroup, leaving its domain if
+  it has one.
+- `membership` gatherer: domain or workgroup, role, NetBIOS name, and the
+  FSMO roles a DC holds (read over LDAP from the DC itself; `fsmo_known` is
+  false when they could not be read).
+
+Promotion needs the `AD-Domain-Services` feature with its management tools
+installed first. Joining a domain, or promoting into one, needs the
+machine's DNS pointed at a DC of it. Every change that needs a reboot
+returns `RebootRequired`, and the step keeps reporting it until the machine
+has rebooted. The `ad_matrix` scenario drives the whole lifecycle across
+four VMs.
+
+### `windows_network`
+
+- `static_ip`: one manual IPv4 or IPv6 address per step, so several steps
+  can share an interface. Only what differs is changed. `gateway` makes the
+  interface's default routes exactly that one, and `exclusive` removes other
+  manual addresses. Removing the last manual IPv4 address also removes its
+  static routes and turns DHCP back on.
+- `dns_servers`: the interface's static DNS servers, read from the registry
+  rather than the effective list, so DHCP-assigned servers never count. An
+  empty list removes them.
+- `firewall_rule`: direction, action, protocol, profile, ports, remote
+  addresses and enabled state, all compared the way Windows stores them.
+
+Names and interface aliases holding wildcard characters (`*?[]`) are
+refused, because the cmdlets would expand them to other rules or adapters.
+
+### `windows_defender`
+
+- `realtime_protection`: compared against the engine's effective state
+  (`Get-MpComputerStatus`). Passive mode, a Group Policy value and Tamper
+  Protection are reported as errors that name the cause.
+- `exclusion`: path, extension, process and IP address exclusions.
+- `preference`: any single `Set-MpPreference` setting. The value is
+  converted to the setting's own type and compared in it: enums by name or
+  number, times of day, numbers, booleans and lists.
+
+Every resource needs Microsoft Defender Antivirus installed with its
+`WinDefend` service running. When another antivirus product has taken over,
+they fail with an error that says so.
+
 ### `mssql`
 
 Install and configure Microsoft SQL Server on **Windows** (silent `setup.exe`)

@@ -1,37 +1,45 @@
 package "windows_network" {
   description = "Manage Windows network configuration and firewall rules"
 
+  // IPv4 and IPv6 are both supported; the family is taken from 'ip'. Only
+  // what differs is changed, so a converged step never drops the address a
+  // remote session uses. Several static_ip steps may share one interface,
+  // each owning its own address.
   resource "static_ip" {
-    description = "Ensure an interface has a static IPv4 address (absent removes it and returns the interface to DHCP; it is converged only once DHCP is enabled)"
+    description = "Ensure an interface holds a static (manual) IPv4 or IPv6 address, or does not. Removing the last manual IPv4 address returns the interface to DHCP"
     script = "resources/static_ip.ws"
     concurrency = "exclusive"
-    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
-    param "ip" { description = "IPv4 address the interface should hold" type = "string" required = true }
-    param "prefix_length" { description = "Subnet prefix length, e.g. 24" type = "int" required = true }
-    param "gateway" { description = "Default gateway; empty leaves the default route unmanaged" type = "string" default = "" }
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0; wildcards (*?[]) are refused" type = "string" required = true }
+    param "ip" { description = "IPv4 or IPv6 address the interface should hold. A DHCP lease of the same address does not count: it is replaced by a manual one" type = "string" required = true }
+    param "prefix_length" { description = "Subnet prefix length: 1-32 for IPv4, 1-128 for IPv6" type = "int" required = true }
+    param "gateway" { description = "Default gateway of the same family. When set, the interface's default routes are exactly this one (others on the interface are removed, in the active and persistent stores). Empty leaves the routes alone" type = "string" default = "" }
+    param "exclusive" { description = "Also remove every other manual address of the same family from the interface, and count one as drift" type = "bool" default = false }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Set the static address" }
-      symbol "absent"  { description = "Remove the address and return the interface to DHCP" }
+      symbol "present" { description = "The address is set manually on the interface (for IPv4, with DHCP off)" }
+      symbol "absent"  { description = "The manual address is gone. When no other manual address of the family remains, the manually added default routes go too and an IPv4 interface is back on DHCP; while others remain, routes and DHCP are theirs" }
     }
   }
 
+  // The static servers are read from the per-interface NameServer registry
+  // values (Tcpip and Tcpip6), not the effective list, which also holds
+  // servers DHCP handed out.
   resource "dns_servers" {
-    description = "Ensure an interface uses exactly the given IPv4 DNS servers (an empty list resets to DHCP-assigned)"
+    description = "Ensure an interface's static DNS servers are exactly the given IPv4 and IPv6 addresses; an empty list removes them, leaving DHCP-assigned servers"
     script = "resources/dns_servers.ws"
     concurrency = "exclusive"
-    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
-    param "servers" { description = "DNS server addresses in preference order; compared order-sensitively" type = "list" required = true }
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0; wildcards (*?[]) are refused" type = "string" required = true }
+    param "servers" { description = "DNS server addresses (IPv4 and IPv6 may be mixed) in preference order; order is compared within each family. Empty is the removal of every static server" type = "list" required = true }
   }
 
   resource "firewall_rule" {
     description = "Ensure a Windows Firewall rule exists and matches every param: enabled state, direction, action, protocol, profile, local port and remote address are all probed for drift"
     script = "resources/firewall_rule.ws"
     concurrency = "exclusive"
-    param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
+    param "name" { description = "Rule Name (also used as DisplayName at create time); wildcards (*?[]) are refused, since the cmdlets would expand them to other rules" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -85,17 +93,15 @@ package "windows_network" {
     }
     // Addresses and ports stay strings: they carry ranges and CIDR, which a
     // closed symbol set cannot express.
-    param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any. Only applied and compared for :tcp and :udp" type = "string" default = "" }
-    param "remote_address" { description = "Remote address filter, e.g. 10.0.0.0/8; empty means any" type = "string" default = "" }
+    param "local_port" { description = "Local ports, comma-separated, each a port or range, e.g. 443 or 80,8000-8010; empty means any. Only applied and compared for :tcp and :udp; other protocols get Any" type = "string" default = "" }
+    param "remote_address" { description = "Remote addresses, comma-separated: addresses, ranges, CIDR subnets or keywords such as LocalSubnet, e.g. 10.0.0.0/8; empty means any. Compared the way Windows stores them (a /32 or /128 is a bare address, host bits are cleared)" type = "string" default = "" }
     param "enabled" { description = "Whether the rule is enabled" type = "bool" default = true }
   }
 
-  // Reconfiguring the test VM's only adapter (static_ip / dns_servers) would
-  // cut the testlab's own connection, so the vmlab test sticks to firewall
-  // rules: adding one is safe, and the ghost rule exercises the absent
-  // detection path.
+  // Firewall rules are safe on the shared instance. Verify reads each rule
+  // back field by field.
   test "firewall_rule_converges" {
-    description = "A firewall rule converges and absent detection works"
+    description = "Firewall rules of each shape converge, and absent detection works"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/network_verify.ws"
@@ -106,24 +112,45 @@ package "windows_network" {
       properties { name = "weave-test-8443" direction = :inbound action = :allow protocol = :tcp local_port = "8443" }
     }
 
+    step "block_icmp_out" {
+      description = "A disabled outbound ICMPv4 block rule"
+      resource = "firewall_rule"
+      properties { name = "weave-test-icmp" direction = :outbound action = :block protocol = :icmpv4 enabled = false }
+    }
+
+    step "port_and_address_lists" {
+      description = "Comma lists of ports and remote addresses, including a /32 and a CIDR with host bits set"
+      resource = "firewall_rule"
+      properties { name = "weave-test-lists" protocol = :udp local_port = "5353, 6000-6010" remote_address = "10.20.30.40/32, 10.20.30.77/24" }
+    }
+
     step "ghost_rule_absent" {
       description = "A never-created rule with ensure = absent is already configured"
       resource = "firewall_rule"
       expect = "already_configured"
       properties { name = "weave-ghost-rule" ensure = :absent }
     }
+
+    step "wildcard_name_refused" {
+      description = "A name holding a wildcard is refused rather than expanded to other rules"
+      resource = "firewall_rule"
+      expect = "error"
+      properties { name = "weave-*" ensure = :absent }
+    }
   }
 
-  // Each seeded rule already matches name, direction, action and enabled, and
-  // drifts in exactly one other field, so run 1 can only report Not Configured
-  // if check reads that field back. Run 3 then proves the read-back spelling
-  // (dotted masks, `Domain, Private`) normalises to what apply wrote. Setup
-  // runs under `cmd /C`: no double quotes, no pipes.
+  // Each seeded rule already matches name and direction, and drifts in
+  // exactly one other field, so run 1 can only report Not Configured if
+  // check reads that field back. Run 3 then proves the read-back spelling
+  // (dotted masks, `Domain, Private`) normalises to what apply wrote.
+  // weave-drift-cidr is seeded exactly the way Windows stores the wanted
+  // filter, so it must read as converged from the start. Setup runs under
+  // `cmd /C`: no double quotes, no pipes.
   test "firewall_rule_drift_converges" {
-    description = "Port, protocol, profile and remote address drift is detected and corrected"
+    description = "Port, protocol, profile, remote address, action and enabled drift is detected and corrected"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; New-NetFirewallRule -Name weave-drift-port -DisplayName weave-drift-port -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1434; New-NetFirewallRule -Name weave-drift-protocol -DisplayName weave-drift-protocol -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5001; New-NetFirewallRule -Name weave-drift-profile -DisplayName weave-drift-profile -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5002 -Profile Public; New-NetFirewallRule -Name weave-drift-remote -DisplayName weave-drift-remote -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5003 -RemoteAddress 10.0.0.0/8; New-NetFirewallRule -Name weave-drift-remote-any -DisplayName weave-drift-remote-any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5004 -RemoteAddress 10.0.0.0/8"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; New-NetFirewallRule -Name weave-drift-port -DisplayName weave-drift-port -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1434; New-NetFirewallRule -Name weave-drift-protocol -DisplayName weave-drift-protocol -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5001; New-NetFirewallRule -Name weave-drift-profile -DisplayName weave-drift-profile -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5002 -Profile Public; New-NetFirewallRule -Name weave-drift-remote -DisplayName weave-drift-remote -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5003 -RemoteAddress 10.0.0.0/8; New-NetFirewallRule -Name weave-drift-remote-any -DisplayName weave-drift-remote-any -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5004 -RemoteAddress 10.0.0.0/8; New-NetFirewallRule -Name weave-drift-icmp -DisplayName weave-drift-icmp -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5005; New-NetFirewallRule -Name weave-drift-action -DisplayName weave-drift-action -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5006; New-NetFirewallRule -Name weave-drift-enabled -DisplayName weave-drift-enabled -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5007 -Enabled True; New-NetFirewallRule -Name weave-drift-cidr -DisplayName weave-drift-cidr -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5008 -RemoteAddress 10.1.2.3,10.1.2.0/24"
     verify = "tests/firewall_drift_verify.ws"
 
     step "port_drift" {
@@ -154,21 +181,122 @@ package "windows_network" {
       description = "Rule seeded for 10.0.0.0/8 with no remote_address goes back to Any"
       resource = "firewall_rule"
       properties { name = "weave-drift-remote-any" protocol = :tcp local_port = "5004" }
-      }
     }
 
-  // The one static_ip case that is safe on the testlab's only adapter: the
-  // testlab drives the guest through the vmlab agent, not the network, and
-  // the step itself hands the adapter back to DHCP. Setup leaves it in the
-  // drifted state — the address already gone but DHCP still off — which
-  // check must report as not configured so apply re-enables DHCP. Its own
-  // instance, so the outage cannot leak into the win2025 group.
+    step "tcp_to_icmp" {
+      description = "Rule seeded as TCP 5005 becomes ICMPv4, and loses its port"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-icmp" protocol = :icmpv4 }
+    }
+
+    step "action_drift" {
+      description = "Rule seeded as Allow becomes Block"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-action" protocol = :tcp local_port = "5006" action = :block }
+    }
+
+    step "enabled_drift" {
+      description = "Rule seeded enabled is disabled"
+      resource = "firewall_rule"
+      properties { name = "weave-drift-enabled" protocol = :tcp local_port = "5007" enabled = false }
+    }
+
+    step "cidr_spelling" {
+      description = "A /32 and a CIDR with host bits match how Windows stored them"
+      resource = "firewall_rule"
+      expect = "already_configured"
+      properties { name = "weave-drift-cidr" protocol = :tcp local_port = "5008" remote_address = "10.1.2.3/32, 10.1.2.77/24" }
+    }
+  }
+
+  test "firewall_rule_removed" {
+    description = "ensure = :absent removes a real rule"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command New-NetFirewallRule -Name weave-rm-rule -DisplayName weave-rm-rule -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5999"
+    verify = "tests/firewall_removed_verify.ws"
+
+    step "remove_rule" {
+      description = "Delete weave-rm-rule"
+      resource = "firewall_rule"
+      properties { name = "weave-rm-rule" ensure = :absent }
+    }
+  }
+
+  // The static_ip tests reconfigure the instance's only adapter. That is
+  // safe because the testlab drives the guest through the vmlab agent, not
+  // the network; they share their own instance so the outage cannot leak
+  // into the win2025 group. Each setup first clears the manual addresses
+  // and default routes the previous test left, then seeds its own state.
+  // Setups run under cmd.exe, so they stay unquoted.
+  test "static_ip_converges" {
+    description = "A static address with a gateway converges exclusively, removing a stray address and route; an IPv6 address converges alongside"
+    template = "x86_64/windows-server-2025"
+    group = "netcut"
+    setup = "powershell -NoProfile -Command Remove-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4 -PrefixOrigin Manual -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceAlias Ethernet -DestinationPrefix 0.0.0.0/0 -Confirm:$false -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled; New-NetIPAddress -InterfaceAlias Ethernet -IPAddress 192.0.2.99 -PrefixLength 24 -DefaultGateway 192.0.2.254"
+    verify = "tests/static_ip_present_verify.ws"
+
+    step "v4_exclusive" {
+      description = "192.0.2.20/24 via 192.0.2.1, and nothing else"
+      resource = "static_ip"
+      properties { interface = "Ethernet" ip = "192.0.2.20" prefix_length = 24 gateway = "192.0.2.1" exclusive = true }
+    }
+
+    step "v6_address" {
+      description = "A manual IPv6 address"
+      resource = "static_ip"
+      properties { interface = "Ethernet" ip = "fd00:77::20" prefix_length = 64 }
+    }
+  }
+
+  // Two static_ip steps own one address each on the same interface. Removing
+  // one must not re-enable DHCP, which would flip the other step back to
+  // Not Configured on every run.
+  test "static_ip_absent_keeps_other" {
+    description = "Removing one of two static addresses leaves the other, its route and DHCP off"
+    template = "x86_64/windows-server-2025"
+    group = "netcut"
+    setup = "powershell -NoProfile -Command Remove-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4 -PrefixOrigin Manual -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceAlias Ethernet -DestinationPrefix 0.0.0.0/0 -Confirm:$false -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled; New-NetIPAddress -InterfaceAlias Ethernet -IPAddress 192.0.2.10 -PrefixLength 24; New-NetIPAddress -InterfaceAlias Ethernet -IPAddress 192.0.2.11 -PrefixLength 24 -DefaultGateway 192.0.2.1"
+    verify = "tests/static_ip_keep_verify.ws"
+
+    step "drop_10" {
+      description = "192.0.2.10 is removed"
+      resource = "static_ip"
+      properties { interface = "Ethernet" ip = "192.0.2.10" prefix_length = 24 ensure = :absent }
+    }
+
+    step "keep_11" {
+      description = "192.0.2.11 with its gateway stays converged throughout"
+      resource = "static_ip"
+      expect = "already_configured"
+      requires = ["drop_10"]
+      properties { interface = "Ethernet" ip = "192.0.2.11" prefix_length = 24 gateway = "192.0.2.1" }
+    }
+  }
+
+  // The last static address goes, and with it its manually added default
+  // route, which would otherwise outlive the static configuration.
+  test "static_ip_absent_drops_route" {
+    description = "Removing the last static address removes its static default route and restores DHCP"
+    template = "x86_64/windows-server-2025"
+    group = "netcut"
+    setup = "powershell -NoProfile -Command Remove-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4 -PrefixOrigin Manual -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceAlias Ethernet -DestinationPrefix 0.0.0.0/0 -Confirm:$false -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled; New-NetIPAddress -InterfaceAlias Ethernet -IPAddress 192.0.2.56 -PrefixLength 24 -DefaultGateway 192.0.2.1"
+    verify = "tests/static_ip_verify.ws"
+
+    step "drop_56" {
+      description = "192.0.2.56 and its route are removed and DHCP comes back"
+      resource = "static_ip"
+      properties { interface = "Ethernet" ip = "192.0.2.56" prefix_length = 24 ensure = :absent }
+    }
+  }
+
+  // Issue 29: the address already gone but DHCP still off is drift, which
+  // apply corrects by re-enabling DHCP.
   test "static_ip_absent_restores_dhcp" {
     description = "An absent static address with DHCP still disabled is drift, and apply re-enables DHCP"
     template = "x86_64/windows-server-2025"
-    // Setup runs under cmd.exe; the command stays unquoted because a quoted
-    // -Command reaches PowerShell as a string literal and is only echoed.
-    setup = "powershell -NoProfile -Command Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled"
+    group = "netcut"
+    setup = "powershell -NoProfile -Command Remove-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4 -PrefixOrigin Manual -Confirm:$false -ErrorAction SilentlyContinue; Remove-NetRoute -InterfaceAlias Ethernet -DestinationPrefix 0.0.0.0/0 -Confirm:$false -ErrorAction SilentlyContinue; Set-NetIPInterface -InterfaceAlias Ethernet -AddressFamily IPv4 -Dhcp Disabled"
     verify = "tests/static_ip_verify.ws"
 
     step "absent_with_dhcp_off" {
@@ -176,5 +304,16 @@ package "windows_network" {
       resource = "static_ip"
       properties { interface = "Ethernet" ip = "192.0.2.55" prefix_length = 24 ensure = :absent }
     }
+  }
+
+  // A second adapter, on a segment whose DHCP leases it a known address:
+  // static_ip must not mistake that lease for the static address, and
+  // dns_servers must not mistake DHCP-assigned servers for static ones.
+  // A scenario, because a test instance has one adapter. It drives only
+  // :present and lists, which scenario properties can carry.
+  scenario "second_adapter" {
+    description = "static_ip and dns_servers converge on a second adapter, telling DHCP-assigned state from static"
+    lab = "tests/net-lab"
+    script = "tests/second_adapter.ws"
   }
 }

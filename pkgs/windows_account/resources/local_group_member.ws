@@ -1,55 +1,67 @@
 use value
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+// The member as the account name Windows resolves. A bare name means the
+// local account of that name (COMPUTERNAME\name) and nothing else, so a bare
+// "admin" can never select CORP\admin. Qualified names (DOMAIN\name,
+// NT AUTHORITY\name), UPNs and SID strings pass through.
+fn qualified_member(member: string) -> string {
+    if member.contains("\\") || member.contains("@") || member.starts_with("S-1-") { return common::ps_q(member) }
+    "($env:COMPUTERNAME + '\\' + " + common::ps_q(member) + ")"
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+fn validate(params: Value) -> Result[List[string], string] {
+    let group = common::param_str(params, "group", "")
+    common::account_name("group", group)?
+    let member = common::param_str(params, "member", "")
+    if member == "" { return Err("missing 'member' parameter") }
+    common::single_line("member", member)?
+    if member.contains("\\") {
+        let parts = member.split("\\")
+        if parts.len() != 2 || parts[0] == "" { return Err("'member' must be NAME, DOMAIN\\NAME, a UPN or a SID, got '" + member + "'") }
+        common::account_name("member", parts[1])?
+    } else if !member.contains("@") && !member.starts_with("S-1-") {
+        common::account_name("member", member)?
+    }
+    Ok([group, member])
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
+// PowerShell binding $grp (the ADSI group, or $null when the group does not
+// exist), $sid (the member's SID string, or $null when the name resolves to
+// no account) and $sids (the SIDs of every current member).
+//
+// Membership is read through ADSI rather than Get-LocalGroupMember, which
+// fails outright (error 1789) on a group holding an orphaned SID and would
+// otherwise hide every other member. SIDs make the comparison exact.
+fn load(group: string, member: string) -> string {
+    "$grp = $null; $sid = $null; $sids = @(); " +
+    "$lg = $null; try {{ $lg = Get-LocalGroup -Name " + common::ps_q(group) + " }} " +
+    "catch [Microsoft.PowerShell.Commands.GroupNotFoundException] {{ }}; " +
+    "$m = " + qualified_member(member) + "; " +
+    "if ($m -like 'S-1-*') {{ $sid = (New-Object System.Security.Principal.SecurityIdentifier($m)).Value }} else {{ " +
+    "try {{ $sid = (New-Object System.Security.Principal.NTAccount($m)).Translate([System.Security.Principal.SecurityIdentifier]).Value }} " +
+    "catch [System.Security.Principal.IdentityNotMappedException] {{ }} }}; " +
+    "if ($lg) {{ " +
+    "$grp = [ADSI]('WinNT://' + $env:COMPUTERNAME + '/' + $lg.Name + ',group'); " +
+    "$sids = @($grp.psbase.Invoke('Members') | ForEach-Object {{ " +
+    "$b = $_.GetType().InvokeMember('objectSid', 'GetProperty', $null, $_, $null); " +
+    "(New-Object System.Security.Principal.SecurityIdentifier($b, 0)).Value }}) }}; "
 }
 
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-// Member names come back qualified (COMPUTER\name or DOMAIN\name), so a spec
-// matches on the exact name or on the part after the backslash.
-fn member_filter(member: string) -> string {
-    let qm = ps_q(member)
-    "Where-Object {{ $_.Name -eq " + qm + " -or $_.Name.ToLower().EndsWith(('\\' + " + qm + ").ToLower()) }}"
-}
-
+// 'NOGROUP', 'PRESENT' or 'ABSENT'.
 fn probe(group: string, member: string) -> Result[string, string] {
-    ps_out(
-        "$hits = @(Get-LocalGroupMember -Group " + ps_q(group) + " -ErrorAction SilentlyContinue | " +
-        member_filter(member) + "); " +
-        "if ($hits.Count -gt 0) {{ 'PRESENT' }} else {{ 'ABSENT' }}"
+    common::ps("reading the members of local group '" + group + "'",
+        load(group, member) +
+        "if ($null -eq $grp) {{ 'NOGROUP' }} elseif ($sid -and ($sids -contains $sid)) {{ 'PRESENT' }} else {{ 'ABSENT' }}"
     )
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let group = param_str(params, "group", "")
-    if group == "" { return Err("missing 'group' parameter") }
-    let member = param_str(params, "member", "")
-    if member == "" { return Err("missing 'member' parameter") }
-    let st = probe(group, member)?
-    if want_present(params)? {
+    let gm = validate(params)?
+    let st = probe(gm[0], gm[1])?
+    if common::want_present(params)? {
         if st == "PRESENT" { return Ok(CheckResult::AlreadyConfigured) }
+        // NOGROUP is NotConfigured too: apply then reports the missing group.
         return Ok(CheckResult::NotConfigured)
     }
     if st == "PRESENT" { return Ok(CheckResult::NotConfigured) }
@@ -57,21 +69,19 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let group = param_str(params, "group", "")
-    if group == "" { return Err("missing 'group' parameter") }
-    let member = param_str(params, "member", "")
-    if member == "" { return Err("missing 'member' parameter") }
-    let qg = ps_q(group)
-    if want_present(params)? {
-        ps_run("Add-LocalGroupMember -Group " + qg + " -Member " + ps_q(member))?
-        return Ok(ApplyResult::Success)
+    let gm = validate(params)?
+    let group = gm[0]
+    let member = gm[1]
+    let present = common::want_present(params)?
+    let body = if present {
+        "if ($null -eq $grp) {{ throw ('local group ' + " + common::ps_q(group) + " + ' does not exist') }}; " +
+        "if ($null -eq $sid) {{ throw ('no account named ' + $m + ' exists') }}; " +
+        "if ($sids -notcontains $sid) {{ $grp.Add('WinNT://' + $sid) }}"
+    } else {
+        // Exactly one SID is removed: the one the member name resolves to.
+        "if ($grp -and $sid -and ($sids -contains $sid)) {{ $grp.Remove('WinNT://' + $sid) }}"
     }
-    // Remove by the qualified name reported by Get-LocalGroupMember so a bare
-    // member spec still removes COMPUTER\member.
-    ps_run(
-        "$hits = @(Get-LocalGroupMember -Group " + qg + " -ErrorAction SilentlyContinue | " +
-        member_filter(member) + "); " +
-        "foreach ($m in $hits) {{ Remove-LocalGroupMember -Group " + qg + " -Member $m.Name }}"
-    )?
+    let what = if present { "adding '" + member + "' to" } else { "removing '" + member + "' from" }
+    common::ps(what + " local group '" + group + "'", load(group, member) + body)?
     Ok(ApplyResult::Success)
 }

@@ -1,14 +1,22 @@
 use value
-use shell
+use common
 
+// weave-svc exists, is enabled, never-expires is set, its password validates,
+// and it is in weave-ops (by SID).
 fn verify(facts: Value) -> Result[bool, string] {
-    let out = shell::powershell(
-        "$ErrorActionPreference='Stop'; " +
-        "$u = Get-LocalUser -Name 'weave-svc' -ErrorAction SilentlyContinue; " +
-        "$hits = @(Get-LocalGroupMember -Group 'weave-ops' -ErrorAction SilentlyContinue | " +
-        "Where-Object {{ $_.Name.ToLower().EndsWith('\\weave-svc') }}); " +
-        "if ($u -and [bool]$u.Enabled -and $hits.Count -gt 0) {{ 'OK' }} else {{ 'BAD' }}",
-        Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim() == "OK")
+    let out = common::ps_env("verify",
+        common::logon_test_ps() +
+        "$u = Get-LocalUser -Name 'weave-svc'; " +
+        "$flags = [int]([ADSI]'WinNT://./weave-svc,user').UserFlags.Value; " +
+        "$sids = @(Get-LocalGroupMember -Group 'weave-ops' | ForEach-Object {{ $_.SID.Value }}); " +
+        "$bad = @(); " +
+        "if (-not $u.Enabled) {{ $bad += 'weave-svc is disabled' }}; " +
+        "if ($u.FullName -ne 'Weave Service') {{ $bad += ('full name is ' + $u.FullName) }}; " +
+        "if (-not ($flags -band 0x10000)) {{ $bad += 'password_never_expires is not set' }}; " +
+        "if ((Test-CwPassword 'weave-svc' '.' $env:CW_PASSWORD) -ne 'OK') {{ $bad += 'the password does not validate' }}; " +
+        "if ($sids -notcontains $u.SID.Value) {{ $bad += 'weave-svc is not in weave-ops' }}; " +
+        "$bad -join '; '",
+        #{ "CW_PASSWORD": Value::String("Qx7!vTr9pLm2#Zk4") })?
+    if out != "" { return Err(out) }
+    Ok(true)
 }

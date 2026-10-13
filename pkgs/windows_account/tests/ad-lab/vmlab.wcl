@@ -1,0 +1,25 @@
+// vmlab lab for the windows_account `ad_accounts` scenario: one server the
+// driver promotes to the first DC of its own forest, so the AD resources run
+// against a real directory.
+
+import <vmlab.wcl>
+
+lab "cw-windows-account" {
+
+  // A guest agent refresh that fails leaves the agent unable to answer the
+  // first exec; keep the agent the template sealed.
+  agent_update = false
+
+  segment "corp" {
+    subnet = "10.76.0.0/24"
+    nat = true
+    dns { server = "10.76.0.10" }
+  }
+
+  vm "dc" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 2
+    memory   = 4GiB
+    nic { segment = "corp" ip = "10.76.0.10" }
+  }
+}

@@ -1,25 +1,12 @@
 use value
-use shell
-use json
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
+use common
 
 // The params are lowercase symbols, matching this library's convention; AD
 // speaks PascalCase and `[string]$g.GroupScope` reports it that way, so the
 // symbol is translated once here and that spelling is used for both the
 // comparison in `check` and the cmdlet arguments in `apply`.
 fn ad_scope(params: Value) -> Result[string, string] {
-    let s = param_str(params, "scope", "global")
+    let s = common::param_str(params, "scope", "global")
     if s == "global" { return Ok("Global") }
     if s == "universal" { return Ok("Universal") }
     if s == "domainlocal" { return Ok("DomainLocal") }
@@ -27,86 +14,83 @@ fn ad_scope(params: Value) -> Result[string, string] {
 }
 
 fn ad_category(params: Value) -> Result[string, string] {
-    let c = param_str(params, "category", "security")
+    let c = common::param_str(params, "category", "security")
     if c == "security" { return Ok("Security") }
     if c == "distribution" { return Ok("Distribution") }
     Err("invalid 'category' value '" + c + "' (expected :security or :distribution)")
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
-}
-
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
-}
-
-fn ad_guard() -> string {
-    "if (-not (Get-Module -ListAvailable ActiveDirectory)) {{ throw 'the ActiveDirectory PowerShell module is required' }}; " +
-    "Import-Module ActiveDirectory; "
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::account_name("name", name)?
+    common::single_line("ou_path", common::param_str(params, "ou_path", ""))?
+    ad_scope(params)?
+    ad_category(params)?
+    Ok(name)
 }
 
 fn fetch(name: string) -> string {
-    "$g = $null; try {{ $g = Get-ADGroup -Identity " + ps_q(name) + " }} " +
+    "$g = $null; try {{ $g = Get-ADGroup @srv -Identity " + common::ps_q(name) + " }} " +
     "catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {{ }}; "
 }
 
-// 'ABSENT' or a JSON object { scope, category }.
-fn probe(name: string) -> Result[string, string] {
-    ps_out(
-        ad_guard() + fetch(name) +
-        "if ($null -eq $g) {{ 'ABSENT' }} else {{ " +
-        "[pscustomobject]@{{ scope = [string]$g.GroupScope; category = [string]$g.GroupCategory }} | ConvertTo-Json -Compress }}"
+// 'ABSENT' or a JSON object { scope, category, ou_ok }.
+fn probe(params: Value, name: string) -> Result[string, string] {
+    let ou = common::param_str(params, "ou_path", "")
+    common::ps("reading AD group '" + name + "'",
+        common::ad_prelude(params)? + fetch(name) +
+        "if ($null -eq $g) {{ 'ABSENT' }} else {{ $dn = $g.DistinguishedName; " + common::ou_match_ps(ou) +
+        "[pscustomobject]@{{ scope = [string]$g.GroupScope; category = [string]$g.GroupCategory; ou_ok = [bool]$ouOk }} | ConvertTo-Json -Compress }}"
     )
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let st = probe(name)?
-    if !want_present(params)? {
+    let name = validate(params)?
+    let st = probe(params, name)?
+    if !common::want_present(params)? {
         if st == "ABSENT" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
     if st == "ABSENT" { return Ok(CheckResult::NotConfigured) }
-    // ou_path is create-only placement, so the DN is not compared.
-    let g = json::parse(st)?
-    if get_str(g, "scope") != ad_scope(params)? { return Ok(CheckResult::NotConfigured) }
-    if get_str(g, "category") != ad_category(params)? { return Ok(CheckResult::NotConfigured) }
+    let g = common::parse_json(st)?
+    if common::get_str(g, "scope") != ad_scope(params)? { return Ok(CheckResult::NotConfigured) }
+    if common::get_str(g, "category") != ad_category(params)? { return Ok(CheckResult::NotConfigured) }
+    if !common::get_bool(g, "ou_ok") { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let qn = ps_q(name)
-    if !want_present(params)? {
-        ps_run(ad_guard() + fetch(name) + "if ($g) {{ Remove-ADGroup -Identity " + qn + " -Confirm:$false }}")?
+    let name = validate(params)?
+    let qn = common::ps_q(name)
+    let prelude = common::ad_prelude(params)?
+    if !common::want_present(params)? {
+        common::ps("removing AD group '" + name + "'",
+            prelude + fetch(name) + "if ($g) {{ Remove-ADGroup @srv -Identity $g.ObjectGUID -Confirm:$false }}")?
         return Ok(ApplyResult::Success)
     }
-    let scope = ps_q(ad_scope(params)?)
-    let category = ps_q(ad_category(params)?)
-    let ou = param_str(params, "ou_path", "")
-    let create = "New-ADGroup -Name " + qn + " -SamAccountName " + qn +
+    let scope = common::ps_q(ad_scope(params)?)
+    let category = common::ps_q(ad_category(params)?)
+    let ou = common::param_str(params, "ou_path", "")
+    let create = "New-ADGroup @srv -Name " + qn + " -SamAccountName " + qn +
         " -GroupScope " + scope + " -GroupCategory " + category +
-        (if ou != "" { " -Path " + ps_q(ou) } else { "" })
-    // Note: AD only allows some direct scope transitions (Global <-> Universal
-    // <-> DomainLocal via Universal); an illegal transition surfaces AD's error.
-    let update = "Set-ADGroup -Identity " + qn + " -GroupScope " + scope + " -GroupCategory " + category
-    ps_run(
-        ad_guard() + fetch(name) +
-        "if ($null -eq $g) {{ " + create + " }} else {{ " + update + " }}"
+        (if ou != "" { " -Path " + common::ps_q(ou) } else { "" }) + "; "
+    // AD has no direct Global <-> DomainLocal conversion, only each of them to
+    // and from Universal, so such a change steps through Universal. AD still
+    // refuses a step the members rule out (a Global group cannot become
+    // Universal while it is a member of another Global group, for example),
+    // and that error is surfaced.
+    let rescope = "$want = " + scope + "; $cur = [string]$g.GroupScope; " +
+        "if ($cur -ne $want) {{ " +
+        "if ($cur -ne 'Universal' -and $want -ne 'Universal') {{ Set-ADGroup @srv -Identity $g.ObjectGUID -GroupScope Universal }}; " +
+        "Set-ADGroup @srv -Identity $g.ObjectGUID -GroupScope $want }}; "
+    let move = if ou != "" {
+        "$dn = $g.DistinguishedName; " + common::ou_match_ps(ou) +
+        "if (-not $ouOk) {{ Move-ADObject @srv -Identity $g.ObjectGUID -TargetPath $ouObj.DistinguishedName }}; "
+    } else { "" }
+    let update = rescope + "Set-ADGroup @srv -Identity $g.ObjectGUID -GroupCategory " + category + "; " + move
+    common::ps("configuring AD group '" + name + "'",
+        prelude + fetch(name) +
+        "if ($null -eq $g) {{ " + create + "}} else {{ " + update + "}}"
     )?
     Ok(ApplyResult::Success)
 }

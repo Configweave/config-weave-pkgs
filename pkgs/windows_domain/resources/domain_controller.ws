@@ -1,173 +1,251 @@
 use value
-use shell
 use log
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[string, string] {
+    let domain = common::param_str(params, "domain_name", "")
+    common::domain_name("domain_name", domain)?
+    let nb = common::param_str(params, "netbios_name", "")
+    if nb != "" { common::domain_name("netbios_name", nb)? }
+    for key in ["site_name", "forest_mode", "domain_mode", "database_path", "log_path", "sysvol_path"] {
+        common::single_line(key, common::param_str(params, key, ""))?
+    }
+    common::credential(params)?
+    Ok(domain)
 }
 
-fn param_bool(params: Value, key: string, fallback: bool) -> bool {
-    if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
-    fallback
+fn mode(params: Value) -> Result[string, string] {
+    let m = common::param_str(params, "mode", "auto")
+    if m == "auto" || m == "new_forest" || m == "additional" { return Ok(m) }
+    Err("invalid 'mode' value '" + m + "' (expected :auto, :new_forest or :additional)")
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+fn secrets(params: Value) -> Map[string, Value] {
+    #{
+        "CW_SAFE_MODE": Value::String(common::param_str(params, "safe_mode_password", "")),
+        "CW_CRED_PW": Value::String(common::param_str(params, "credential_password", "")),
+        "CW_LOCAL_ADMIN": Value::String(common::param_str(params, "local_admin_password", ""))
+    }
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// PowerShell that binds $cred to a PSCredential for the given account.
-fn ps_cred(user: string, pw: string) -> string {
-    "$cp = ConvertTo-SecureString " + ps_q(pw) + " -AsPlainText -Force; " +
-    "$cred = New-Object System.Management.Automation.PSCredential(" + ps_q(user) + ", $cp); "
+// A functional level as the number AD stores (msDS-Behavior-Version), from
+// the names Install-ADDSForest accepts or a number.
+fn level_ps() -> string {
+    "function Level($m) {{ $s = [string]$m; $n = 0; if ([int]::TryParse($s, [ref]$n)) {{ return $n }}; " +
+    "$map = @{{ 'win2008' = 3; 'windows2008forest' = 3; 'windows2008domain' = 3; " +
+    "'win2008r2' = 4; 'windows2008r2forest' = 4; 'windows2008r2domain' = 4; " +
+    "'win2012' = 5; 'windows2012forest' = 5; 'windows2012domain' = 5; " +
+    "'win2012r2' = 6; 'windows2012r2forest' = 6; 'windows2012r2domain' = 6; " +
+    "'winthreshold' = 7; 'win2016' = 7; 'windows2016forest' = 7; 'windows2016domain' = 7; " +
+    "'win2025' = 10; 'windows2025forest' = 10; 'windows2025domain' = 10 }}; " +
+    "$k = $s.ToLower(); if ($map.ContainsKey($k)) {{ return $map[$k] }}; throw ('unknown functional level ' + $s) }}; "
 }
 
-// True when this machine is a DC whose domain matches `domain`.
-// Win32_ComputerSystem.DomainRole: 4 = backup DC, 5 = primary DC.
-fn is_dc_for(domain: string) -> Result[bool, string] {
-    let script = "$ErrorActionPreference='Stop'; $c = Get-CimInstance Win32_ComputerSystem; " +
-        "if ($c.DomainRole -ge 4 -and $c.Domain -eq " + ps_q(domain) + ") {{ 'YES' }} else {{ 'NO' }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim() == "YES")
+fn dir_eq(param: string, current_ps: string) -> string {
+    "((" + current_ps + ").TrimEnd('\\') -ieq " + common::ps_q(param) + ".TrimEnd('\\'))"
 }
 
-// True when this machine is a DC for ANY domain (the demotion check).
-fn is_dc() -> Result[bool, string] {
-    let script = "$ErrorActionPreference='Stop'; " +
-        "if ((Get-CimInstance Win32_ComputerSystem).DomainRole -ge 4) {{ 'YES' }} else {{ 'NO' }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim() == "YES")
+// PowerShell collecting, into $drift, the params a promoted DC no longer
+// matches. Only site_name can be changed after promotion (it is moved with
+// Move-ADDirectoryServer); every other one is fixed by the promotion itself,
+// so its drift is reported as an error rather than ignored.
+fn drift_ps(params: Value) -> string {
+    let out = "$drift = @(); $ntds = Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NTDS\\Parameters'; "
+    let site = common::param_str(params, "site_name", "")
+    if site != "" {
+        out = out + "$site = [System.DirectoryServices.ActiveDirectory.ActiveDirectorySite]::GetComputerSite().Name; " +
+            "if ($site -ne " + common::ps_q(site) + ") {{ $drift += 'site_name' }}; "
+    }
+    let nb = common::param_str(params, "netbios_name", "")
+    if nb != "" { out = out + "if ($ds.netbios -ne " + common::ps_q(nb) + ") {{ $drift += 'netbios_name' }}; " }
+    let dbp = common::param_str(params, "database_path", "")
+    if dbp != "" { out = out + "if (-not " + dir_eq(dbp, "Split-Path $ntds.'DSA Database file'") + ") {{ $drift += 'database_path' }}; " }
+    let lp = common::param_str(params, "log_path", "")
+    if lp != "" { out = out + "if (-not " + dir_eq(lp, "$ntds.'Database log files path'") + ") {{ $drift += 'log_path' }}; " }
+    let sv = common::param_str(params, "sysvol_path", "")
+    if sv != "" {
+        out = out + "if (-not " + dir_eq(sv, "Split-Path (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Netlogon\\Parameters').SysVol") + ") {{ $drift += 'sysvol_path' }}; "
+    }
+    let fm = common::param_str(params, "forest_mode", "")
+    let dm = common::param_str(params, "domain_mode", "")
+    // Right after the promotion reboot the directory may not answer yet, and
+    // an unanswered read is not a level of 0, so it is retried, then an error.
+    if fm != "" || dm != "" {
+        out = out + level_ps() +
+            "$root = $null; for ($i = 0; $i -lt 36; $i++) {{ try {{ $root = [ADSI]'LDAP://localhost/RootDSE'; if ($null -ne $root.forestFunctionality.Value) {{ break }} }} catch {{ }}; Start-Sleep -Seconds 5 }}; " +
+            "if ($null -eq $root -or $null -eq $root.forestFunctionality.Value) {{ throw 'cannot read the functional levels from this DC (the directory does not answer yet)' }}; "
+    }
+    if fm != "" { out = out + "if ([int]$root.forestFunctionality.Value -ne (Level " + common::ps_q(fm) + ")) {{ $drift += 'forest_mode' }}; " }
+    if dm != "" { out = out + "if ([int]$root.domainFunctionality.Value -ne (Level " + common::ps_q(dm) + ")) {{ $drift += 'domain_mode' }}; " }
+    let dns = common::param_bool(params, "install_dns", true)
+    out = out + "if ([bool](Get-Service -Name DNS -ErrorAction SilentlyContinue) -ne " + common::ps_bool(dns) + ") {{ $drift += 'install_dns' }}; "
+    out
 }
 
-// True when a DC for `domain` is discoverable from this machine (nltest is
-// built in, needs no credentials, and asks the locator the same way a join
-// would). Undiscoverable means we are the first DC and create the forest —
-// so DNS must already point at an existing DC when one exists, or a
-// same-named second forest results.
-fn domain_exists(domain: string) -> Result[bool, string] {
-    let script = "nltest /dsgetdc:" + ps_q(domain) + " *> $null; " +
-        "if ($LASTEXITCODE -eq 0) {{ 'YES' }} else {{ 'NO' }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim() == "YES")
+// 'REBOOT', 'OTHER' (not a DC of this domain) or a JSON list of drifted
+// params (empty when converged). The domain is matched by its DNS or NetBIOS
+// name, case-insensitively.
+fn probe(params: Value, domain: string, present: bool) -> Result[string, string] {
+    let drift = if present { drift_ps(params) } else { "$drift = @(); " }
+    // Promotion and demotion both refuse to start while a servicing reboot
+    // is pending ("Role change is in progress or this computer needs to be
+    // restarted"); an AD-DS feature install, or a promotion, can leave one.
+    let blocked = "(Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending')"
+    common::ps("reading this machine's domain controller role",
+        common::dsrole_ps() + common::pending_ps("domain_controller") +
+        "$ds = Get-CwDsRole; $mine = ($ds.role -ge 4 -and ($ds.dns -ieq " + common::ps_q(domain) + " -or $ds.netbios -ieq " + common::ps_q(domain) + ")); " +
+        "if ($pending -or $ds.role_reboot) {{ 'REBOOT' }} " +
+        (if present {
+            "elseif (-not $mine) {{ if (" + blocked + ") {{ 'REBOOT' }} else {{ 'OTHER' }} }} " +
+            "else {{ " + drift + "ConvertTo-Json -InputObject @($drift) -Compress }}"
+        } else {
+            "elseif (-not $mine) {{ 'OTHER' }} elseif (" + blocked + ") {{ 'REBOOT' }} else {{ '[]' }}"
+        }))
+}
+
+fn drifted(st: string) -> Result[List[string], string] {
+    let out: List[string] = []
+    let v = common::parse(st)?
+    if let Some(items) = v.as_list() {
+        for item in items { if let Some(s) = item.as_string() { out.push(s) } }
+    } else if let Some(s) = v.as_string() { out.push(s) }
+    Ok(out)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let domain = param_str(params, "domain_name", "")
-    if domain == "" { return Err("missing 'domain_name' parameter") }
-    if want_present(params)? {
-        if is_dc_for(domain)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let domain = validate(params)?
+    mode(params)?
+    let present = common::want_present(params)?
+    let st = probe(params, domain, present)?
+    if st == "REBOOT" { return Ok(CheckResult::RebootRequired) }
+    if !present {
+        // Only a DC of *this* domain is demoted; a DC of another domain is
+        // not this step's business.
+        if st == "OTHER" { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
+    }
+    if st == "OTHER" { return Ok(CheckResult::NotConfigured) }
+    let drift = drifted(st)?
+    for d in drift {
+        if d != "site_name" {
+            return Err("this DC no longer matches '" + d + "', which is fixed when the DC is promoted and cannot be changed by this resource" +
+                (if d == "forest_mode" || d == "domain_mode" { " (raising a functional level is irreversible; do it deliberately with Set-ADForestMode/Set-ADDomainMode)" } else { "" }))
+        }
+    }
+    if !drift.is_empty() { return Ok(CheckResult::NotConfigured) }
+    Ok(CheckResult::AlreadyConfigured)
+}
+
+// PowerShell binding $exists (a DC for the domain answers the locator, the
+// way a join would ask) and $resolves (the name resolves in DNS at all).
+fn discover_ps(domain: string) -> string {
+    // Through cmd, so nltest's stderr never reaches PowerShell, which turns
+    // a native command's stderr into a terminating error under Stop.
+    "& cmd.exe /c " + common::ps_q("nltest /dsgetdc:" + domain + " >nul 2>&1") + "; $exists = ($LASTEXITCODE -eq 0); " +
+    "$resolves = [bool](Resolve-DnsName -Name " + common::ps_q(domain) + " -ErrorAction SilentlyContinue); "
+}
+
+fn guard_ps() -> string {
+    "if (-not (Get-Module -ListAvailable ADDSDeployment)) {{ throw 'the ADDSDeployment module is missing: install the AD-Domain-Services feature (with its management tools) before promoting' }}; " +
+    "Import-Module ADDSDeployment; "
+}
+
+fn smp_ps() -> string { "$smp = ConvertTo-SecureString $env:CW_SAFE_MODE -AsPlainText -Force; " }
+
+fn opt(params: Value, key: string, flag: string) -> string {
+    let v = common::param_str(params, key, "")
+    if v != "" { " -" + flag + " " + common::ps_q(v) } else { "" }
+}
+
+fn promote(params: Value, domain: string) -> Result[ApplyResult, string] {
+    if common::param_str(params, "safe_mode_password", "") == "" { return Err("promotion needs 'safe_mode_password'") }
+    let m = mode(params)?
+    let cred = common::credential(params)?
+    let paths = opt(params, "database_path", "DatabasePath") + opt(params, "log_path", "LogPath") + opt(params, "sysvol_path", "SysvolPath")
+    let dns = " -InstallDns:" + common::ps_bool(common::param_bool(params, "install_dns", true))
+    // A credential means "join the existing domain" under :auto, and
+    // :additional always does; neither may fall through to creating a forest.
+    let additional = m == "additional" || (m == "auto" && cred.is_some())
+    let qd = common::ps_q(domain)
+    let body = if additional {
+        let user = if let Some(c) = cred { c[0] } else { return Err("joining '" + domain + "' as an additional DC needs 'credential_user' and 'credential_password'") }
+        log::info("promoting this server as an additional DC of " + domain)
+        "if (-not $exists) {{ throw ('no domain controller for ' + " + qd + " + ' can be found; point this server''s DNS at one before promoting it as an additional DC') }}; " +
+        guard_ps() + smp_ps() + common::cred_ps(user) +
+        "Install-ADDSDomainController -DomainName " + qd + " -Credential $cred -SafeModeAdministratorPassword $smp" +
+        dns + opt(params, "site_name", "SiteName") + paths + " -Force -NoRebootOnCompletion -WarningAction SilentlyContinue | Out-Null; "
     } else {
-        if is_dc()? { Ok(CheckResult::NotConfigured) } else { Ok(CheckResult::AlreadyConfigured) }
+        log::info("creating the forest " + domain + " (first DC)")
+        let guard = if m == "new_forest" {
+            "if ($exists) {{ throw ('a domain controller for ' + " + qd + " + ' already answers; refusing to create a second forest of the same name') }}; "
+        } else {
+            "if ($exists) {{ throw ('the domain ' + " + qd + " + ' already exists; joining it as an additional DC needs credential_user and credential_password') }}; " +
+            "if ($resolves) {{ throw (" + qd + " + ' resolves in DNS but no domain controller answers for it; fix DNS, or set mode = :new_forest to create the forest regardless') }}; "
+        }
+        guard + guard_ps() + smp_ps() +
+        "Install-ADDSForest -DomainName " + qd + " -SafeModeAdministratorPassword $smp" + dns +
+        opt(params, "netbios_name", "DomainNetbiosName") + opt(params, "forest_mode", "ForestMode") + opt(params, "domain_mode", "DomainMode") +
+        paths + " -Force -NoRebootOnCompletion -WarningAction SilentlyContinue | Out-Null; "
     }
-}
-
-// Promote into an existing domain (additional DC) — requires credentials.
-fn promote_additional(params: Value, domain: string, pw: string) -> Result[ApplyResult, string] {
-    let user = param_str(params, "credential_user", "")
-    let cpw = param_str(params, "credential_password", "")
-    if user == "" || cpw == "" {
-        return Err("domain '" + domain + "' already exists — joining it as an additional DC needs 'credential_user' and 'credential_password'")
-    }
-
-    let site = param_str(params, "site_name", "")
-    let o_site = if site != "" { " -SiteName " + ps_q(site) } else { "" }
-    let dbp = param_str(params, "database_path", "")
-    let o_dbp = if dbp != "" { " -DatabasePath " + ps_q(dbp) } else { "" }
-    let lp = param_str(params, "log_path", "")
-    let o_lp = if lp != "" { " -LogPath " + ps_q(lp) } else { "" }
-    let sv = param_str(params, "sysvol_path", "")
-    let o_sv = if sv != "" { " -SysvolPath " + ps_q(sv) } else { "" }
-    let opts = o_site + o_dbp + o_lp + o_sv
-    let dns = if param_bool(params, "install_dns", true) { "$true" } else { "$false" }
-
-    log::info("domain " + domain + " is reachable — promoting as an additional DC")
-    let script = "$ErrorActionPreference='Stop'; Import-Module ADDSDeployment; " +
-        ps_cred(user, cpw) +
-        "$smp = ConvertTo-SecureString " + ps_q(pw) + " -AsPlainText -Force; " +
-        "Install-ADDSDomainController -DomainName " + ps_q(domain) +
-        " -Credential $cred -SafeModeAdministratorPassword $smp -InstallDns:" + dns +
-        opts + " -Force -NoRebootOnCompletion | Out-Null"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err("domain controller promotion failed: " + out.stderr.trim()) }
+    // Discovery runs before the module guard, so a wrong mode is reported as
+    // such even on a server that could not have promoted anyway.
+    common::ps_env("promoting this server to a domain controller",
+        discover_ps(domain) + body + common::mark_ps("domain_controller"),
+        secrets(params))?
     Ok(ApplyResult::RebootRequired)   // DC promotion always needs a reboot to finish
 }
 
-// No DC answers for the domain: create it (new forest, first DC).
-fn promote_first(params: Value, domain: string, pw: string) -> Result[ApplyResult, string] {
-    let nb = param_str(params, "netbios_name", "")
-    let o_nb = if nb != "" { " -DomainNetbiosName " + ps_q(nb) } else { "" }
-    let fm = param_str(params, "forest_mode", "")
-    let o_fm = if fm != "" { " -ForestMode " + ps_q(fm) } else { "" }
-    let dm = param_str(params, "domain_mode", "")
-    let o_dm = if dm != "" { " -DomainMode " + ps_q(dm) } else { "" }
-    let dbp = param_str(params, "database_path", "")
-    let o_dbp = if dbp != "" { " -DatabasePath " + ps_q(dbp) } else { "" }
-    let lp = param_str(params, "log_path", "")
-    let o_lp = if lp != "" { " -LogPath " + ps_q(lp) } else { "" }
-    let sv = param_str(params, "sysvol_path", "")
-    let o_sv = if sv != "" { " -SysvolPath " + ps_q(sv) } else { "" }
-    let opts = o_nb + o_fm + o_dm + o_dbp + o_lp + o_sv
-    let dns = if param_bool(params, "install_dns", true) { "$true" } else { "$false" }
-
-    log::info("no DC answers for " + domain + " — creating the forest (first DC)")
-    let script = "$ErrorActionPreference='Stop'; Import-Module ADDSDeployment; " +
-        "$smp = ConvertTo-SecureString " + ps_q(pw) + " -AsPlainText -Force; " +
-        "Install-ADDSForest -DomainName " + ps_q(domain) +
-        " -SafeModeAdministratorPassword $smp -InstallDns:" + dns +
-        opts + " -Force -NoRebootOnCompletion | Out-Null"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err("forest promotion failed: " + out.stderr.trim()) }
-    Ok(ApplyResult::RebootRequired)   // DC promotion always needs a reboot to finish
+// A promoted DC in the wrong site is moved; that needs no reboot.
+fn move_site(params: Value) -> Result[ApplyResult, string] {
+    let site = common::param_str(params, "site_name", "")
+    log::info("moving this DC to site " + site)
+    common::ps("moving this DC to site '" + site + "'",
+        "Import-Module ActiveDirectory; " +
+        "Move-ADDirectoryServer -Identity $env:COMPUTERNAME -Site " + common::ps_q(site))?
+    Ok(ApplyResult::Success)
 }
 
-// Demote this DC (ensure = :absent).
 fn demote(params: Value) -> Result[ApplyResult, string] {
-    let lap = param_str(params, "local_admin_password", "")
-    if lap == "" { return Err("demoting a DC needs 'local_admin_password' (the machine's local Administrator password after demotion)") }
-
-    let user = param_str(params, "credential_user", "")
-    let cpw = param_str(params, "credential_password", "")
-    let creds = if user != "" && cpw != "" { ps_cred(user, cpw) } else { "" }
-    let o_cred = if creds != "" { " -Credential $cred" } else { "" }
+    if common::param_str(params, "local_admin_password", "") == "" {
+        return Err("demoting a DC needs 'local_admin_password' (the machine's local Administrator password after demotion)")
+    }
+    let cred = common::credential(params)?
+    let creds = if let Some(c) = cred { common::cred_ps(c[0]) + "$o = @{{ Credential = $cred }}; " } else { "$o = @{{}}; " }
     // The last DC takes the domain (and its partitions / DNS zone) with it.
-    let o_last = if param_bool(params, "last_dc_in_domain", false) {
+    if common::param_bool(params, "last_dc_in_domain", false) && common::param_bool(params, "force_removal", false) {
+        return Err("'force_removal' and 'last_dc_in_domain' cannot be combined: a forced removal cannot remove the domain")
+    }
+    let o_last = if common::param_bool(params, "last_dc_in_domain", false) {
         " -LastDomainControllerInDomain -RemoveApplicationPartitions -IgnoreLastDnsServerForZone"
     } else { "" }
-    let o_force = if param_bool(params, "force_removal", false) { " -ForceRemoval" } else { "" }
-
+    // A forced removal cannot ask the domain whether another DNS server holds
+    // its AD-integrated zones, so its prerequisite check refuses whenever
+    // this DC serves DNS; the forced parameter set has no
+    // -IgnoreLastDnsServerForZone, so the prerequisite checks are skipped.
+    // Operation master roles it holds are given up rather than blocking.
+    let o_force = if common::param_bool(params, "force_removal", false) {
+        " -ForceRemoval -DemoteOperationMasterRole -SkipPreChecks"
+    } else { "" }
     log::info("demoting this domain controller")
-    let script = "$ErrorActionPreference='Stop'; Import-Module ADDSDeployment; " +
-        creds +
-        "$lap = ConvertTo-SecureString " + ps_q(lap) + " -AsPlainText -Force; " +
-        "Uninstall-ADDSDomainController -LocalAdministratorPassword $lap" +
-        o_cred + o_last + o_force + " -Force -NoRebootOnCompletion | Out-Null"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err("domain controller demotion failed: " + out.stderr.trim()) }
+    common::ps_env("demoting this domain controller",
+        guard_ps() + creds +
+        "$lap = ConvertTo-SecureString $env:CW_LOCAL_ADMIN -AsPlainText -Force; " +
+        "Uninstall-ADDSDomainController @o -LocalAdministratorPassword $lap" +
+        o_last + o_force + " -Force -NoRebootOnCompletion -WarningAction SilentlyContinue | Out-Null; " +
+        common::mark_ps("domain_controller"),
+        secrets(params))?
     Ok(ApplyResult::RebootRequired)   // demotion always needs a reboot to finish
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let domain = param_str(params, "domain_name", "")
-    if domain == "" { return Err("missing 'domain_name' parameter") }
-
-    if !want_present(params)? {
-        if !is_dc()? { return Ok(ApplyResult::Success) }
+    let domain = validate(params)?
+    let present = common::want_present(params)?
+    let st = probe(params, domain, present)?
+    if st == "REBOOT" { return Ok(ApplyResult::RebootRequired) }
+    if !present {
+        if st == "OTHER" { return Ok(ApplyResult::Success) }
         return demote(params)
     }
-
-    let pw = param_str(params, "safe_mode_password", "")
-    if pw == "" { return Err("missing 'safe_mode_password' parameter") }
-    if domain_exists(domain)? {
-        promote_additional(params, domain, pw)
-    } else {
-        promote_first(params, domain, pw)
-    }
+    if st == "OTHER" { return promote(params, domain) }
+    move_site(params)
 }

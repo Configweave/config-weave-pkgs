@@ -1,81 +1,89 @@
 use value
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[List[string], string] {
+    let group = common::param_str(params, "group", "")
+    common::account_name("group", group)?
+    let member = common::param_str(params, "member", "")
+    if member == "" { return Err("missing 'member' parameter") }
+    common::single_line("member", member)?
+    Ok([group, member])
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+// PowerShell binding $mdn to the member's distinguished name, or $null when
+// no object matches. The member is a DN (it holds '='), a SID string, or a
+// sAMAccountName (a computer's ends in '$').
+fn resolve_member(member: string) -> string {
+    let lookup = if member.contains("=") {
+        "try {{ $mo = Get-ADObject @srv -Identity " + common::ps_q(member) + " -Properties primaryGroupID }} " +
+        "catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {{ }}; "
+    } else {
+        let attr = if member.starts_with("S-1-") { "objectSid" } else { "sAMAccountName" }
+        "$mo = @(Get-ADObject @srv -LDAPFilter " + common::ps_q("(" + attr + "=" + common::ldap_escape(member) + ")") +
+        " -Properties primaryGroupID); " +
+        "if ($mo.Count -gt 1) {{ throw ('more than one AD object matches ' + " + common::ps_q(member) + ") }}; " +
+        "$mo = $mo | Select-Object -First 1; "
+    }
+    "$mo = $null; " + lookup + "$mdn = if ($mo) {{ $mo.DistinguishedName }} else {{ $null }}; "
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
+// PowerShell binding $g (the group, or $null when it does not exist) and $st:
+// 'NOGROUP', 'NOMEMBER' (the member resolves to nothing), 'PRIMARY' (it is
+// the member's primary group), 'PRESENT' or 'ABSENT'.
+//
+// The test is a base-scope search for (member=<dn>) on the group, so the
+// server answers it however large the group is; Get-ADGroupMember fails
+// above 5000 members and on foreign security principals. A primary-group
+// membership is not stored in 'member' at all, so it is read from the
+// member's primaryGroupID.
+fn load(group: string, member: string) -> string {
+    "function Esc($s) {{ $s.Replace('\\', '\\5c').Replace('*', '\\2a').Replace('(', '\\28').Replace(')', '\\29') }}; " +
+    "$g = $null; try {{ $g = Get-ADGroup @srv -Identity " + common::ps_q(group) + " -Properties primaryGroupToken }} " +
+    "catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {{ }}; " +
+    resolve_member(member) +
+    "$st = if ($null -eq $g) {{ 'NOGROUP' }} elseif ($null -eq $mdn) {{ 'NOMEMBER' }} " +
+    "elseif ($mo.primaryGroupID -and $mo.primaryGroupID -eq $g.primaryGroupToken) {{ 'PRIMARY' }} " +
+    "elseif (@(Get-ADObject @srv -SearchBase $g.DistinguishedName -SearchScope Base -LDAPFilter ('(member=' + (Esc $mdn) + ')')).Count -gt 0) {{ 'PRESENT' }} " +
+    "else {{ 'ABSENT' }}; "
 }
 
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn ad_guard() -> string {
-    "if (-not (Get-Module -ListAvailable ActiveDirectory)) {{ throw 'the ActiveDirectory PowerShell module is required' }}; " +
-    "Import-Module ActiveDirectory; "
-}
-
-// 'PRESENT', 'ABSENT' or 'NOGROUP' (the group itself does not exist).
-fn probe(group: string, member: string) -> Result[string, string] {
-    let qm = ps_q(member)
-    ps_out(
-        ad_guard() +
-        "$st = 'NOGROUP'; try {{ " +
-        "$hits = @(Get-ADGroupMember -Identity " + ps_q(group) + " | " +
-        "Where-Object {{ $_.SamAccountName -eq " + qm + " -or $_.Name -eq " + qm + " }}); " +
-        "$st = $(if ($hits.Count -gt 0) {{ 'PRESENT' }} else {{ 'ABSENT' }}) " +
-        "}} catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {{ }}; $st"
-    )
+fn probe(params: Value, group: string, member: string) -> Result[string, string] {
+    common::ps("reading the members of AD group '" + group + "'",
+        common::ad_prelude(params)? + load(group, member) + "$st")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let group = param_str(params, "group", "")
-    if group == "" { return Err("missing 'group' parameter") }
-    let member = param_str(params, "member", "")
-    if member == "" { return Err("missing 'member' parameter") }
-    let st = probe(group, member)?
-    if want_present(params)? {
-        if st == "PRESENT" { return Ok(CheckResult::AlreadyConfigured) }
-        // NOGROUP is NotConfigured too: apply then surfaces the real AD error.
+    let gm = validate(params)?
+    let st = probe(params, gm[0], gm[1])?
+    if common::want_present(params)? {
+        if st == "PRESENT" || st == "PRIMARY" { return Ok(CheckResult::AlreadyConfigured) }
+        // NOGROUP and NOMEMBER are NotConfigured too: apply reports them.
         return Ok(CheckResult::NotConfigured)
+    }
+    if st == "PRIMARY" {
+        return Err("'" + gm[1] + "' cannot be removed from '" + gm[0] + "': it is the member's primary group (change its primary group first)")
     }
     if st == "PRESENT" { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let group = param_str(params, "group", "")
-    if group == "" { return Err("missing 'group' parameter") }
-    let member = param_str(params, "member", "")
-    if member == "" { return Err("missing 'member' parameter") }
-    let qg = ps_q(group)
-    let qm = ps_q(member)
-    if want_present(params)? {
-        ps_run(ad_guard() + "Add-ADGroupMember -Identity " + qg + " -Members " + qm)?
-        return Ok(ApplyResult::Success)
+    let gm = validate(params)?
+    let group = gm[0]
+    let member = gm[1]
+    let present = common::want_present(params)?
+    // 'member' is written directly, by the DN resolved above, so the value
+    // added is the value the check looks for, for any object AD allows in a
+    // group (users, groups, computers, contacts).
+    let body = if present {
+        "if ($st -eq 'NOGROUP') {{ throw ('AD group ' + " + common::ps_q(group) + " + ' does not exist') }}; " +
+        "if ($st -eq 'NOMEMBER') {{ throw ('no AD object matches ' + " + common::ps_q(member) + ") }}; " +
+        "if ($st -eq 'ABSENT') {{ Set-ADObject @srv -Identity $g.ObjectGUID -Add @{{ member = $mdn }} }}"
+    } else {
+        "if ($st -eq 'PRIMARY') {{ throw 'it is the member''s primary group (change its primary group first)' }}; " +
+        "if ($st -eq 'PRESENT') {{ Set-ADObject @srv -Identity $g.ObjectGUID -Remove @{{ member = $mdn }} }}"
     }
-    // A vanished group means the membership is gone as well.
-    ps_run(
-        ad_guard() +
-        "try {{ Remove-ADGroupMember -Identity " + qg + " -Members " + qm + " -Confirm:$false }} " +
-        "catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {{ }}"
-    )?
+    let what = if present { "adding '" + member + "' to" } else { "removing '" + member + "' from" }
+    common::ps(what + " AD group '" + group + "'", common::ad_prelude(params)? + load(group, member) + body)?
     Ok(ApplyResult::Success)
 }

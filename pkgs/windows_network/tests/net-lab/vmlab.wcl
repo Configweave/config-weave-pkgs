@@ -1,0 +1,29 @@
+// vmlab lab for the windows_network `second_adapter` scenario: one server
+// with its management adapter on `lan` and a second adapter on `iso`, where
+// DHCP leases it a known address.
+
+import <vmlab.wcl>
+
+lab "cw-windows-network" {
+
+  // A guest agent refresh that fails leaves the agent unable to answer the
+  // first exec; keep the agent the template sealed.
+  agent_update = false
+
+  segment "lan" {
+    subnet = "10.74.0.0/24"
+    nat = true
+  }
+
+  segment "iso" {
+    subnet = "10.75.0.0/24"
+  }
+
+  vm "net01" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 2
+    memory   = 4GiB
+    nic { segment = "lan" }
+    nic { segment = "iso" ip = "10.75.0.10" }
+  }
+}
