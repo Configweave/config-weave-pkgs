@@ -2,6 +2,7 @@ use value
 use log
 use fs
 use http
+use hash
 use common
 
 // ---------------------------------------------------------------------------
@@ -11,6 +12,10 @@ use common
 // cannot match the wrong certificate — and the subject otherwise. An import
 // only happens when nothing already matches, so re-running never produces a
 // second copy and never rotates a certificate a binding is pointing at.
+//
+// Removal by subject alone refuses when more than one certificate matches:
+// a subject is not unique, and the others may be CA-issued certificates
+// another site is serving.
 // ---------------------------------------------------------------------------
 
 fn store_path(params: Value) -> Result[string, string] {
@@ -37,13 +42,28 @@ fn matcher(params: Value) -> Result[string, string] {
 }
 
 fn count(params: Value) -> Result[int, string] {
-    let out = common::ps_out("@(Get-ChildItem -Path " + common::ps_q(store_path(params)?) +
+    let out = common::ps_out("@(Get-ChildItem -LiteralPath " + common::ps_q(store_path(params)?) +
         " | Where-Object {{ " + matcher(params)? + " }}).Count")?
     if let Some(n) = out.parse_int() { return Ok(n) }
     Err("could not read the certificate store: " + out)
 }
 
+// :absent identified by subject only removes a certificate it can name
+// unambiguously.
+fn removable(params: Value) -> Result[int, string] {
+    let n = count(params)?
+    if n > 1 && common::param_str(params, "thumbprint", "") == "" {
+        return Err(common::itoa(n) + " certificates have subject '" + common::param_str(params, "subject", "") +
+            "'; give 'thumbprint' to say which one to remove")
+    }
+    Ok(n)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
+    if !common::want_present(params)? {
+        if removable(params)? > 0 { return Ok(CheckResult::NotConfigured) }
+        return Ok(CheckResult::AlreadyConfigured)
+    }
     let there = count(params)? > 0
     if common::want_present(params)? {
         if there { return Ok(CheckResult::AlreadyConfigured) }
@@ -52,14 +72,13 @@ fn check(params: Value) -> Result[CheckResult, string] {
         }
         return Ok(CheckResult::NotConfigured)
     }
-    if there { return Ok(CheckResult::NotConfigured) }
-    Ok(CheckResult::AlreadyConfigured)
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let store = store_path(params)?
     if !common::want_present(params)? {
-        if count(params)? == 0 { return Ok(ApplyResult::Success) }
+        if removable(params)? == 0 { return Ok(ApplyResult::Success) }
         // -DeleteKey, not -Force: in the Cert: drive Remove-Item honours only
         // DeleteKey/Path/WhatIf/Confirm and IGNORES everything else, so -Force
         // did nothing and the private key was left behind in MachineKeys.
@@ -67,8 +86,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // parameter of the certificate provider, and piping gives PowerShell no
         // path to resolve it against.
         log::info("removing certificate from " + store)
-        common::ps_run("Get-ChildItem -Path " + common::ps_q(store) + " | Where-Object {{ " + matcher(params)? +
-            " }} | ForEach-Object {{ Remove-Item -Path $_.PSPath -DeleteKey }}")?
+        common::ps_run("Get-ChildItem -LiteralPath " + common::ps_q(store) + " | Where-Object {{ " + matcher(params)? +
+            " }} | ForEach-Object {{ Remove-Item -LiteralPath $_.PSPath -DeleteKey }}")?
         return Ok(ApplyResult::Success)
     }
     if count(params)? > 0 { return Ok(ApplyResult::Success) }
@@ -76,25 +95,45 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if source == "" {
         return Err("no matching certificate in the store and no 'pfx_path' was given to import one")
     }
+    let want_sha = common::param_str(params, "sha256", "").to_lower()
     // A URL is fetched host-side so the guest needs no network stack of its
     // own, the same way windows_installers.msi_package handles a remote MSI.
-    let local = if source.starts_with("http://") || source.starts_with("https://") {
-        let tmp = fs::temp_file()?
+    // The download is a temporary copy of a private key, so it is deleted
+    // whether or not the import succeeds.
+    let remote = source.starts_with("http://") || source.starts_with("https://")
+    let local = source
+    if remote {
+        local = fs::temp_file()?
         log::info("downloading " + source)
-        http::download(source, tmp, Value::Null)?
-        tmp
-    } else {
-        source
+        if let Err(e) = http::download(source, local, Value::Null) {
+            fs::delete(local).unwrap_or(())
+            return Err(e)
+        }
+    }
+    let result = import(params, store, local, want_sha)
+    if remote { fs::delete(local).unwrap_or(()) }
+    result?
+    // Import-PfxCertificate succeeds on any valid PFX, whatever it holds, so
+    // the store is asked again: the step is only done if the certificate it
+    // names arrived.
+    if count(params)? == 0 {
+        return Err("imported " + source + " but the store still holds no certificate matching " + matcher(params)?)
+    }
+    Ok(ApplyResult::Success)
+}
+
+fn import(params: Value, store: string, local: string, want_sha: string) -> Result[unit, string] {
+    if want_sha != "" {
+        let got = hash::sha256_file(local)?.to_lower()
+        if got != want_sha {
+            return Err("sha256 of " + common::param_str(params, "pfx_path", "") + " is " + got + ", expected " + want_sha)
+        }
     }
     let password = common::param_str(params, "password", "")
-    let pw = if password == "" {
-        ""
-    } else {
-        " -Password (ConvertTo-SecureString " + common::ps_q(password) + " -AsPlainText -Force)"
-    }
+    // The password travels in the environment, never in the script text.
+    let pw = if password == "" { "" } else { " -Password (ConvertTo-SecureString $env:CW_SECRET -AsPlainText -Force)" }
     let exportable = if common::param_bool(params, "exportable", false) { " -Exportable" } else { "" }
     log::info("importing certificate into " + store)
-    common::ps_run("Import-PfxCertificate -FilePath " + common::ps_q(local) + " -CertStoreLocation " +
-        common::ps_q(store) + pw + exportable + " | Out-Null")?
-    Ok(ApplyResult::Success)
+    common::ps_run_env("Import-PfxCertificate -FilePath " + common::ps_q(local) + " -CertStoreLocation " +
+        common::ps_q(store) + pw + exportable + " | Out-Null", common::secret_env(password))
 }

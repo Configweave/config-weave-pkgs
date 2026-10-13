@@ -1724,10 +1724,11 @@ package "windows_iis" {
       symbol "web_hosting" { description = "LocalMachine\\WebHosting, which scales to many more certificates and is the right store for shared hosting" }
     }
     param "pfx_path" { description = "Local path or HTTP(S) URL of the .pfx to import; required when present and the certificate is missing" type = "string" default = "" }
-    param "password" { description = "Password protecting the .pfx; empty for an unprotected file" type = "string" default = "" }
-    param "thumbprint" { description = "SHA-1 thumbprint identifying the certificate. Give this when you know it — it is the only identity that cannot match the wrong certificate" type = "string" default = "" }
-    param "subject" { description = "Subject to identify the certificate by when thumbprint is empty, such as CN=www.example.com" type = "string" default = "" }
-    param "exportable" { description = "Mark the private key exportable, so the certificate can be moved to another node later" type = "bool" default = false }
+    param "password" { description = "Password protecting the .pfx; empty for an unprotected file. Passed to PowerShell through the environment and never logged" type = "string" default = "" }
+    param "sha256" { description = "Expected SHA-256 of the .pfx, hex. When given, the file is checked before import and a mismatch fails the step; recommended for a URL. A downloaded copy is deleted after the import either way" type = "string" default = "" }
+    param "thumbprint" { description = "SHA-1 thumbprint identifying the certificate. Give this when you know it — it is the only identity that cannot match the wrong certificate. After an import the step fails unless a certificate matching it (or subject) is in the store" type = "string" default = "" }
+    param "subject" { description = "Subject to identify the certificate by when thumbprint is empty, such as CN=www.example.com. With ensure = :absent, more than one certificate with this subject is an error: give thumbprint to say which" type = "string" default = "" }
+    param "exportable" { description = "Mark the private key exportable, so the certificate can be moved to another node later. Applied at import only: the exportability of a key already in the store cannot be changed" type = "bool" default = false }
   }
 
   // Converges on "the store holds an unexpired certificate for these
