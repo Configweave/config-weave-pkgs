@@ -354,7 +354,8 @@ package "windows_iis" {
   // Identity is the whole tuple (site, protocol, ip, port, host_header) —
   // that is what IIS itself keys a binding on, and it is why changing a
   // port adds a binding rather than editing one. Use ensure = :absent on
-  // the old tuple to retire it.
+  // the old tuple to retire it; that also deletes the HTTP.sys certificate
+  // binding for its endpoint, unless another https binding still uses it.
   resource "binding" {
     description = "Ensure a site binding exists on the given protocol, address, port and host header, or is absent"
     script = "resources/binding.ws"
@@ -395,7 +396,14 @@ package "windows_iis" {
     }
     param "certificate_thumbprint" { description = "SHA-1 thumbprint of the certificate to bind; required for https unless certificate_subject is given or ssl_flags uses the central certificate store" type = "string" default = "" }
     param "certificate_subject" { description = "Subject of the certificate to bind, such as CN=www.example.com, looked up in certificate_store when certificate_thumbprint is empty. This is how a binding follows a certificate another step created, since a thumbprint is not known until then" type = "string" default = "" }
-    param "certificate_store" { description = "LocalMachine store holding the certificate, usually My or WebHosting" type = "string" default = "My" }
+    param "certificate_store" {
+      description = "The LocalMachine store holding the certificate — the same values as certificate.store"
+      type = "symbol"
+      default = :my
+
+      symbol "my"          { description = "LocalMachine\\My, the Personal store" }
+      symbol "web_hosting" { description = "LocalMachine\\WebHosting" }
+    }
   }
 
   resource "application" {
@@ -2368,7 +2376,7 @@ package "windows_iis" {
         protocol = :https
         port = 8443
         certificate_subject = "CN=weave.local"
-        certificate_store = "My"
+        certificate_store = :my
       }
     }
 
