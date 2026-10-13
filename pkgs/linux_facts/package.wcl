@@ -2,7 +2,7 @@ package "linux_facts" {
   description = "Gather Linux operating system facts"
 
   gatherer "os_release" {
-    description = "Read /etc/os-release and kernel facts"
+    description = "Read os-release (/etc/os-release, falling back to /usr/lib/os-release) and kernel facts. Values are unquoted the way os-release(5) specifies: single quotes literally, double quotes with backslash escapes"
     script = "gatherers/os_release.ws"
     returns "family" { description = "OS family (linux, windows, macos)" type = "string" }
     returns "name" { description = "OS name" type = "string" }
@@ -45,7 +45,7 @@ package "linux_facts" {
     description = "List mounted filesystems from /proc/mounts"
     script = "gatherers/mounts.ws"
     returns "count" { description = "Number of mounted filesystems" type = "int" }
-    returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount" type = "list" }
+    returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount; the kernel's \\040-style escapes in spec and mountpoint are decoded, so a mount point with a space reads as one" type = "list" }
   }
 
   // In a VM the gatherers must return substance, not just degrade
@@ -90,9 +90,15 @@ package "linux_facts" {
     }
   }
 
+  // /etc/os-release becomes a copy whose PRETTY_NAME is single-quoted, and
+  // a mount point with a space shows up in /proc/mounts as \040.
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"
+    setup = <<'SH'
+sed "s/^PRETTY_NAME=.*/PRETTY_NAME='Debian 12 (cw)'/" /usr/lib/os-release > /tmp/os-release && rm /etc/os-release && mv /tmp/os-release /etc/os-release
+mkdir -p "/mnt/cw space" && mount -t tmpfs tmpfs "/mnt/cw space"
+SH
     verify = "tests/facts_verify.ws"
 
     gather "os" {
@@ -100,6 +106,9 @@ package "linux_facts" {
       from = "os_release"
       expect {
         family = "linux"
+        id = "debian"
+        version_id = "12"
+        pretty_name = "Debian 12 (cw)"
       }
     }
 
@@ -125,6 +134,55 @@ package "linux_facts" {
 
     gather "svc" {
       description = "services degrades to an empty list without systemd"
+      from = "services"
+    }
+  }
+
+  // OpenRC is not PID 1 in a container, so /run/openrc (what a booted
+  // OpenRC leaves) is seeded. /etc/os-release is removed to exercise the
+  // /usr/lib/os-release fallback, whose PRETTY_NAME carries escapes.
+  test "facts_gather_alpine" {
+    description = "Linux facts gatherers on Alpine: OpenRC detection, os-release fallback and escapes"
+    image = "alpine:3.20"
+    setup = <<'SH'
+f=$(readlink -f /etc/os-release)
+grep -v '^PRETTY_NAME=' "$f" > /tmp/os-release
+printf '%s\n' 'PRETTY_NAME="Alpine \"cw\" \$HOME"' >> /tmp/os-release
+rm -f /etc/os-release /usr/lib/os-release && mv /tmp/os-release /usr/lib/os-release
+mkdir -p /run/openrc
+SH
+    verify = "tests/facts_verify.ws"
+
+    gather "os" {
+      description = "OS facts from /usr/lib/os-release"
+      from = "os_release"
+      expect {
+        family = "linux"
+        id = "alpine"
+        pretty_name = "Alpine \"cw\" $HOME"
+      }
+    }
+
+    gather "init" {
+      description = "A booted OpenRC is detected without being PID 1"
+      from = "init_system"
+      expect {
+        init = :openrc
+      }
+    }
+
+    gather "net" {
+      description = "Interfaces enumerate"
+      from = "network"
+    }
+
+    gather "mnt" {
+      description = "Mounts parse"
+      from = "mounts"
+    }
+
+    gather "svc" {
+      description = "services is empty without systemd"
       from = "services"
     }
   }

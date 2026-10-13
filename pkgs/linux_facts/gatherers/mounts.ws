@@ -9,8 +9,8 @@ fn gather(params: Value) -> Result[Value, string] {
         if line.trim() == "" { continue }
         let p = common::fields(line)
         entries.push(Value::Map(#{
-            "spec": Value::String(p.get(0).unwrap_or("")),
-            "mountpoint": Value::String(p.get(1).unwrap_or("")),
+            "spec": Value::String(common::unescape_octal(p.get(0).unwrap_or(""))),
+            "mountpoint": Value::String(common::unescape_octal(p.get(1).unwrap_or(""))),
             "fstype": Value::String(p.get(2).unwrap_or("")),
             "options": Value::String(p.get(3).unwrap_or(""))
         }))

@@ -23,3 +23,10 @@ fn run_ok(cmd: string) -> bool {
     let out = shell::bash(cmd, Value::Null).unwrap_or(CmdOutput { stdout: "", stderr: "", code: 127, success: false })
     out.success
 }
+
+// /proc/mounts escapes a space, tab, newline or backslash in a field as
+// octal \NNN; the kernel escapes exactly these. Backslash goes last so an
+// escaped backslash is never re-read as the start of another escape.
+fn unescape_octal(f: string) -> string {
+    f.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+}
