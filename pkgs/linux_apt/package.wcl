@@ -30,19 +30,27 @@ package "linux_apt" {
   }
 
   resource "repository" {
-    description = "Ensure an apt sources.list.d file exists or is absent"
+    description = "Ensure an apt source file under /etc/apt/sources.list.d holds exactly content, or is absent. format picks the file: one-line entries in <name>.list, or deb822 stanzas in <name>.sources (the default on Debian 12+ and Ubuntu 24.04). The other format's file for the same name is removed, so switching format never leaves apt reading both. Run cache_updated afterwards to index it"
     script = "resources/repository.ws"
     concurrency = "exclusive"
-    param "name" { description = "Repository file basename without .list" type = "string" required = true }
+    param "name" { description = "File basename without extension: letters, digits, '_', '-' and '.', not starting with '.' or '-' (apt ignores other names)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Write the sources.list.d file" }
-      symbol "absent"  { description = "Remove the sources.list.d file" }
+      symbol "present" { description = "Write the source file" }
+      symbol "absent"  { description = "Remove the source file, both <name>.list and <name>.sources" }
     }
-    param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
+    param "format" {
+      description = "Source file format, which also sets the file extension"
+      type = "symbol"
+      default = :list
+
+      symbol "list"   { description = "One-line format (deb [options] uri suite components) in <name>.list" }
+      symbol "deb822" { description = "deb822 stanzas (Types:, URIs:, Suites:, Components:, Signed-By:) in <name>.sources" }
+    }
+    param "content" { description = "Exact file content, in the chosen format (required when present)" type = "string" default = "" }
   }
 
   resource "signing_key" {
@@ -206,17 +214,17 @@ SETUP
     }
   }
 
-  // The absent steps converge on files seeded during setup (run 1 checks
-  // every step before any apply).
-  test "repositories_and_keys_converge" {
-    description = "repository and signing_key add and remove converge"
+  // The absent and switch steps converge on files seeded during setup (run 1
+  // checks every step before any apply).
+  test "repositories_converge" {
+    description = "repository writes both formats, fixes drift, switches format and removes"
     image = "debian:12"
     group = "debian"
-    setup = "mkdir -p /etc/apt/sources.list.d /etc/apt/keyrings && echo 'deb http://stale.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-stale.list && echo stale-key > /etc/apt/keyrings/cw-stale.asc"
+    setup = "mkdir -p /etc/apt/sources.list.d && echo 'deb http://stale.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-stale.list && echo 'Types: deb' > /etc/apt/sources.list.d/cw-stale.sources && echo 'deb http://drift.invalid/debian bookworm main' > /etc/apt/sources.list.d/config-weave-test.list && echo 'deb http://old.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-switch.list && rm -f /etc/apt/sources.list.d/cw-switch.sources"
     verify = "tests/apt_repository_verify.ws"
 
     step "repo" {
-      description = "Write repository file"
+      description = "Rewrite a one-line source file whose content drifted"
       resource = "repository"
       properties {
         name = "config-weave-test"
@@ -224,11 +232,46 @@ SETUP
       }
     }
 
+    step "deb822" {
+      description = "Write a deb822 .sources file"
+      resource = "repository"
+      properties {
+        name = "cw-deb822"
+        format = :deb822
+        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+      }
+    }
+
+    step "switch" {
+      description = "Switching a source to deb822 removes its .list file"
+      resource = "repository"
+      properties {
+        name = "cw-switch"
+        format = :deb822
+        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+      }
+    }
+
     step "rm_repo" {
-      description = "Remove the seeded stale repository"
+      description = "Remove the seeded stale source in both formats"
       resource = "repository"
       properties { name = "cw-stale" ensure = :absent }
     }
+
+    step "traversal" {
+      description = "A name that leaves sources.list.d is rejected"
+      resource = "repository"
+      expect = "error"
+      properties { name = "../../cw-evil" content = "deb http://evil.invalid/ x main\n" }
+    }
+  }
+
+  test "repositories_and_keys_converge" {
+    description = "signing_key add and remove converge"
+    image = "debian:12"
+    group = "debian"
+    setup = "mkdir -p /etc/apt/keyrings && echo stale-key > /etc/apt/keyrings/cw-stale.asc"
+    verify = "tests/apt_key_verify.ws"
 
     step "key" {
       description = "Install an apt signing key (armored, no dearmor)"
