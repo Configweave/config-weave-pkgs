@@ -7,8 +7,9 @@
 //     from the params map, and that absence means "leave this setting
 //     alone" — the only way a bool or int param can say that, since a
 //     declared default would instead mean "set it to false" / "set it to
-//     0". They therefore cannot *remove* a key; use git.config_entry with
-//     ensure = :absent for that.
+//     0". An empty string param means the same as omitting it. Section
+//     resources therefore cannot *remove* a key; use git.config_entry
+//     with ensure = :absent for that.
 //
 //   * Symbol params enumerate git's own values with `symbol` blocks, so
 //     config-weave validates them and the generated docs list them. WCL
@@ -38,7 +39,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "user" {
-    description = "Ensure git identity settings (user.*) in the global or system config"
+    description = "Ensure git identity settings (user.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/user.ws"
     // Every resource here read-modify-writes the one gitconfig, and
     // `exclusive` only serializes steps of the SAME resource type — so a
@@ -56,11 +57,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "core" {
-    description = "Ensure core git settings (core.*) in the global or system config"
+    description = "Ensure core git settings (core.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/core.ws"
     concurrency = "global"
     param "editor" { description = "core.editor: editor invoked for commit messages and interactive commands" type = "string" }
@@ -130,11 +131,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "init" {
-    description = "Ensure repository-creation defaults (init.*) in the global or system config"
+    description = "Ensure repository-creation defaults (init.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/init.ws"
     concurrency = "global"
     param "default_branch" { description = "init.defaultBranch: branch created by git init, such as main" type = "string" }
@@ -161,7 +162,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -169,7 +170,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "commit" {
-    description = "Ensure commit settings (commit.*) in the global or system config"
+    description = "Ensure commit settings (commit.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/commit.ws"
     concurrency = "global"
     param "gpg_sign" { description = "commit.gpgSign: sign every commit" type = "bool" }
@@ -194,11 +195,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "push" {
-    description = "Ensure push settings (push.*) in the global or system config"
+    description = "Ensure push settings (push.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/push.ws"
     concurrency = "global"
     param "default" {
@@ -241,11 +242,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "pull" {
-    description = "Ensure pull settings (pull.*) in the global or system config"
+    description = "Ensure pull settings (pull.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/pull.ws"
     concurrency = "global"
     param "rebase" {
@@ -276,11 +277,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "fetch" {
-    description = "Ensure fetch settings (fetch.*) in the global or system config"
+    description = "Ensure fetch settings (fetch.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/fetch.ws"
     concurrency = "global"
     param "prune" { description = "fetch.prune: delete remote-tracking refs that no longer exist upstream" type = "bool" }
@@ -323,11 +324,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "merge" {
-    description = "Ensure merge settings (merge.*) in the global or system config"
+    description = "Ensure merge settings (merge.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/merge.ws"
     concurrency = "global"
     param "tool" { description = "merge.tool: merge tool used by git mergetool" type = "string" }
@@ -380,11 +381,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "rebase" {
-    description = "Ensure rebase settings (rebase.*) in the global or system config"
+    description = "Ensure rebase settings (rebase.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/rebase.ws"
     concurrency = "global"
     param "auto_squash" { description = "rebase.autoSquash: honour fixup! and squash! commits automatically" type = "bool" }
@@ -427,7 +428,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -435,7 +436,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "diff" {
-    description = "Ensure diff settings (diff.*) in the global or system config"
+    description = "Ensure diff settings (diff.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/diff.ws"
     concurrency = "global"
     param "tool" { description = "diff.tool: diff tool used by git difftool" type = "string" }
@@ -511,11 +512,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "status" {
-    description = "Ensure status settings (status.*) in the global or system config"
+    description = "Ensure status settings (status.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/status.ws"
     concurrency = "global"
     param "short" { description = "status.short: use short-format output by default" type = "bool" }
@@ -550,11 +551,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "log" {
-    description = "Ensure log settings (log.*) in the global or system config"
+    description = "Ensure log settings (log.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/log.ws"
     concurrency = "global"
     param "date" { description = "log.date: default date format, such as relative, iso or short" type = "string" }
@@ -594,11 +595,11 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "color" {
-    description = "Ensure colour switches (color.*) in the global or system config"
+    description = "Ensure colour switches (color.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/color.ws"
     concurrency = "global"
     // Individual colour slots (color.diff.meta and friends) are not
@@ -722,7 +723,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -733,7 +734,7 @@ package "git" {
     description = "Ensure a git alias is present in or absent from the global or system config"
     script = "resources/alias.ws"
     concurrency = "global"
-    param "name" { description = "Alias name, as in git <name>" type = "string" required = true }
+    param "name" { description = "Alias name, as in git <name>: letters, digits and -, starting with a letter (a dotted name such as a.b is stored as [alias \"a\"] b)" type = "string" required = true }
     param "command" { description = "Command the alias expands to; prefix with ! for a shell command (required when present)" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -751,7 +752,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "safe_directory" {
@@ -760,7 +761,7 @@ package "git" {
     concurrency = "global"
     // safe.directory is multi-valued, so this adds and removes single
     // entries and leaves any siblings alone.
-    param "path" { description = "Repository path to trust, or the literal * to trust every path" type = "string" required = true }
+    param "path" { description = "Repository path to trust, or the literal * to trust every path; compared exactly, and may not contain line breaks" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -777,7 +778,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   resource "config_entry" {
@@ -786,8 +787,12 @@ package "git" {
     concurrency = "global"
     // The escape hatch for the ~900 variables without a typed resource,
     // and the only way to remove a key a section resource can set.
-    param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase" type = "string" required = true }
-    param "value" { description = "Desired value (required when present); when absent, removes just this occurrence of a multi-valued key" type = "string" default = "" }
+    // Converged means exactly one value, since apply writes with
+    // --replace-all. git config has no way to read a value from stdin or
+    // the environment, so a secret value (an http.extraHeader token)
+    // appears in git's argv while it runs; it is never logged.
+    param "key" { description = "Dotted config key such as user.name, core.editor or branch.main.rebase. A malformed key is an error, including with ensure = :absent" type = "string" required = true }
+    param "value" { description = "Desired value (required when present), compared exactly except that yes/on and no/off match true and false. Never logged, but passed to git on its command line. When absent, removes just this occurrence of a multi-valued key" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -804,7 +809,7 @@ package "git" {
       symbol "global" { description = "The user's own config, ~/.gitconfig" }
       symbol "system" { description = "The machine-wide config, /etc/gitconfig" }
     }
-    param "home" { description = "Home directory for global scope; empty = the current user home" type = "string" default = "" }
+    param "home" { description = "Home directory for global scope, holding .gitconfig; empty = the current user home. Ignored for :system" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------
@@ -1102,7 +1107,7 @@ package "git" {
   // The contract that justifies section params having no default: a param
   // the step omits must leave that setting exactly as it was.
   test "unset_params_are_left_alone" {
-    description = "A section resource touches only the parameters the step sets"
+    description = "A section resource touches only the non-empty parameters the step sets"
     image = "debian:12"
     group = "git"
     setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/preserve && printf '[core]\\n\\tpager = less\\n\\tautocrlf = true\\n[user]\\n\\temail = seed@example.invalid\\n[alias]\\n\\tco = checkout\\n' > /root/preserve/.gitconfig"
@@ -1113,17 +1118,33 @@ package "git" {
       resource = "core"
       properties { editor = "nano" home = "/root/preserve" }
     }
+
+    // The seeded core.pager holds a value; an empty string must not
+    // overwrite it with an empty one.
+    step "empty_is_omitted" {
+      description = "An empty pager leaves the seeded core.pager alone"
+      resource = "core"
+      expect = "already_configured"
+      properties { pager = "" home = "/root/preserve" }
+    }
   }
 
   // Seeded with values that are already correct but spelled differently:
-  // git stores "yes"/"on"/"1" verbatim, so without norm() folding these
-  // steps would rewrite the file on every run. `already_configured` means
-  // converged in all three runs, i.e. nothing was rewritten.
+  // git stores "yes"/"on"/"1" verbatim, so without folding these steps
+  // would rewrite the file on every run. `already_configured` means
+  // converged in all three runs, i.e. nothing was rewritten. bool and int
+  // params read back through git's own --type, so git decides what a
+  // spelling means; strings and symbols fold only yes/on/no/off.
+  //
+  // The last two steps are the other side: values that a blanket 1/0 fold
+  // used to call equal, which git reads differently. They expect the
+  // default not_configured -> configured -> already_configured.
   test "converged_state_is_detected" {
-    description = "Equivalent boolean spellings and hyphenated symbols do not churn"
+    description = "Equivalent spellings do not churn, and values git reads differently are drift"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/converged && printf '[core]\\n\\tfileMode = yes\\n\\tcompression = 9\\n[pull]\\n\\tautoStash = on\\n[fetch]\\n\\tprune = 1\\n\\trecurseSubmodules = on-demand\\n' > /root/converged/.gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/converged && printf '[core]\\n\\tfileMode = yes\\n\\tcompression = 9\\n[pull]\\n\\tautoStash = on\\n[fetch]\\n\\tprune = 1\\n\\trecurseSubmodules = on-demand\\n\\tparallel = true\\n[status]\\n\\tshort\\n[merge]\\n\\tlog = true\\n[cw]\\n\\tcount = true\\n\\tflag = yes\\n' > /root/converged/.gitconfig"
+    verify = "tests/converged_verify.ws"
 
     step "core_folded" {
       description = "core.fileMode = yes already satisfies file_mode = true"
@@ -1145,6 +1166,42 @@ package "git" {
       expect = "already_configured"
       properties { prune = true recurse_submodules = :on_demand home = "/root/converged" }
     }
+
+    // A bare `short` line is git's spelling of true; it reads back as "".
+    step "status_implicit_true" {
+      description = "A bare status.short line already satisfies short = true"
+      resource = "status"
+      expect = "already_configured"
+      properties { short = true home = "/root/converged" }
+    }
+
+    // merge.log = true means 20 shortlog entries; "1" means one.
+    step "merge_log_count" {
+      description = "merge.log = true does not satisfy log = \"1\""
+      resource = "merge"
+      properties { log = "1" home = "/root/converged" }
+    }
+
+    // fetch.parallel is an int; "true" is not a number git accepts there.
+    step "fetch_parallel_int" {
+      description = "fetch.parallel = true does not satisfy parallel = 1"
+      resource = "fetch"
+      properties { parallel = 1 home = "/root/converged" }
+    }
+
+    // config_entry has no type to go on, so it folds words only.
+    step "entry_words_folded" {
+      description = "A raw entry holding yes already satisfies true"
+      resource = "config_entry"
+      expect = "already_configured"
+      properties { key = "cw.flag" value = "true" home = "/root/converged" }
+    }
+
+    step "entry_digit_not_folded" {
+      description = "A raw entry holding true does not satisfy 1"
+      resource = "config_entry"
+      properties { key = "cw.count" value = "1" home = "/root/converged" }
+    }
   }
 
   // Script-level failures. Missing *required* params are deliberately not
@@ -1158,7 +1215,7 @@ package "git" {
   // can no longer be expressed as erroring steps. config-weave's own suite
   // covers that check.
   test "invalid_input_errors" {
-    description = "Missing values are rejected"
+    description = "Missing values and malformed keys are rejected"
     image = "debian:12"
     group = "git"
     setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/errors"
@@ -1176,6 +1233,29 @@ package "git" {
       expect = "error"
       properties { key = "core.editor" home = "/root/errors" }
     }
+
+    // git exits 1 for a malformed key exactly as for an unset one, so a
+    // typo in an :absent step used to report converged forever.
+    step "entry_absent_no_section" {
+      description = "Removing a key with no section is an error, not a no-op"
+      resource = "config_entry"
+      expect = "error"
+      properties { key = "editor" ensure = :absent home = "/root/errors" }
+    }
+
+    step "entry_absent_bad_name" {
+      description = "Removing a key whose name holds a space is an error, not a no-op"
+      resource = "config_entry"
+      expect = "error"
+      properties { key = "core.bad name" ensure = :absent home = "/root/errors" }
+    }
+
+    step "alias_bad_name" {
+      description = "An alias name containing a space is rejected"
+      resource = "alias"
+      expect = "error"
+      properties { name = "bad name" command = "status" home = "/root/errors" }
+    }
   }
 
   // The keyed resources, plus every removal path. Every :absent step
@@ -1185,7 +1265,7 @@ package "git" {
     description = "Aliases, safe directories and raw entries converge and are removable"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/entries && printf '[alias]\\n\\toldco = checkout\\n[safe]\\n\\tdirectory = /srv/stale\\n[core]\\n\\teditor = seeded-editor\\n[http]\\n\\textraHeader = X-One: 1\\n\\textraHeader = X-Two: 2\\n[url \"git@example.com:\"]\\n\\tinsteadOf = https://one.invalid/\\n\\tinsteadOf = https://two.invalid/\\n' > /root/entries/.gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/entries && printf '[alias]\\n\\toldco = checkout\\n\\tst = status\\n\\tst = status -sb\\n[safe]\\n\\tdirectory = /srv/stale\\n[core]\\n\\teditor = seeded-editor\\n[http]\\n\\textraHeader = X-One: 1\\n\\textraHeader = X-Two: 2\\n[url \"git@example.com:\"]\\n\\tinsteadOf = https://one.invalid/\\n\\tinsteadOf = https://two.invalid/\\n' > /root/entries/.gitconfig"
     verify = "tests/entries_verify.ws"
 
     // The value carries # and " — the characters the old hand-rolled INI
@@ -1194,6 +1274,35 @@ package "git" {
       description = "An alias whose value needs git's quoting rules"
       resource = "alias"
       properties { name = "lg" command = "log --graph --format=\"%h %s\" # pretty" home = "/root/entries" }
+    }
+
+    // Edge whitespace must survive the read-back: values used to be
+    // trimmed, so these never converged.
+    step "alias_padded" {
+      description = "An alias whose command has leading and trailing spaces"
+      resource = "alias"
+      properties { name = "padded" command = "  status  " home = "/root/entries" }
+    }
+
+    step "entry_padded" {
+      description = "A raw entry whose value has a trailing space"
+      resource = "config_entry"
+      properties { key = "cw.padded" value = "tail " home = "/root/entries" }
+    }
+
+    // --get-all used to split on newlines, so this read back as two values.
+    step "entry_multiline" {
+      description = "A raw entry whose value spans two lines"
+      resource = "config_entry"
+      properties { key = "cw.multiline" value = "first\nsecond" home = "/root/entries" }
+    }
+
+    // Seeded twice. git uses the last definition, which already matches,
+    // but apply writes one value with --replace-all, so two is drift.
+    step "alias_duplicated" {
+      description = "An alias defined twice is collapsed to one definition"
+      resource = "alias"
+      properties { name = "st" command = "status -sb" home = "/root/entries" }
     }
 
     step "rm_alias" {
@@ -1243,12 +1352,13 @@ package "git" {
   }
 
   // The other scope. The container runs as root, so /etc/gitconfig is
-  // writable; `home` is irrelevant here and deliberately omitted.
+  // writable; `home` is irrelevant here, and one step passes it anyway to
+  // prove it is ignored.
   test "system_scope_converges" {
     description = "System scope writes /etc/gitconfig rather than a home directory"
     image = "debian:12"
     group = "git"
-    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); printf '[user]\\n\\tname = Seeded System\\n' > /etc/gitconfig"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); rm -rf /root/not-a-home; printf '[user]\\n\\tname = Seeded System\\n[safe]\\n\\tdirectory = /srv/sys-stale\\n' > /etc/gitconfig"
     verify = "tests/system_verify.ws"
 
     step "system_identity" {
@@ -1261,6 +1371,20 @@ package "git" {
       description = "A raw entry in the system scope"
       resource = "config_entry"
       properties { key = "init.defaultBranch" value = "trunk" scope = :system }
+    }
+
+    // `home` is ignored under :system. It used to be created anyway, and
+    // GIT_CONFIG_GLOBAL pointed into it.
+    step "system_safe_dir" {
+      description = "Trust a path system-wide; the stray home must not be created"
+      resource = "safe_directory"
+      properties { path = "/srv/sys-repo" scope = :system home = "/root/not-a-home" }
+    }
+
+    step "system_rm_safe_dir" {
+      description = "Untrust the seeded system-wide path"
+      resource = "safe_directory"
+      properties { path = "/srv/sys-stale" ensure = :absent scope = :system }
     }
   }
 }
