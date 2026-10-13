@@ -77,7 +77,7 @@ fn run(lab: Lab) -> Result[bool, string] {
         "setup_path": s("C:\\sqlsetup\\SETUP.EXE"),
         "features": s("SQLENGINE"),
         "edition": s("Developer"),
-        "security_mode": s("SQL"),
+        "security_mode": s("sql"),
         "sa_password": s("Str0ng!Passw0rd"),
         "tcp_enabled": b(true),
         "instance": s("MSSQLSERVER")
@@ -96,29 +96,26 @@ fn run(lab: Lab) -> Result[bool, string] {
     if rc.status != "already_configured" {
         return Err("instance is not idempotent: " + rc.status + " (" + rc.message + ")")
     }
+    // The instance installs go-sqlcmd itself (install_tools), and setup read
+    // the sa password from a ConfigurationFile.ini that is gone again.
+    psh(m, "sqlcmd installed", "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{throw 'sqlcmd not installed'}}")?
     lab.log("SQL Server installed")
 
-    // Install sqlcmd for the config resources: winget first (per-user alias, may
-    // be missing under the SYSTEM context the guest agent runs in), else the
-    // go-sqlcmd MSI. Both land sqlcmd at C:\Program Files\sqlcmd\sqlcmd.exe.
-    lab.log("installing sqlcmd")
-    psh(m, "install sqlcmd",
-        "$ErrorActionPreference='Stop'; " +
-        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; " +
-        "$winget=Get-Command winget -ErrorAction SilentlyContinue; " +
-        "if($winget){{ winget install --id sqlcmd --exact --silent --accept-package-agreements --accept-source-agreements }} " +
-        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{ " +
-        "  $rel=Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/microsoft/go-sqlcmd/releases/latest; " +
-        "  $a=$rel.assets | Where-Object {{ $_.name -like '*amd64.msi' }} | Select-Object -First 1; " +
-        "  if(-not $a){{throw 'no go-sqlcmd msi asset found'}}; " +
-        "  Invoke-WebRequest -UseBasicParsing $a.browser_download_url -OutFile C:\\media\\sqlcmd.msi; " +
-        "  Start-Process msiexec.exe -ArgumentList '/i','C:\\media\\sqlcmd.msi','/qn' -Wait " +
-        "}} " +
-        "if(-not (Test-Path 'C:\\Program Files\\sqlcmd\\sqlcmd.exe')){{throw 'sqlcmd not installed'}}")?
+    // Reconcile the existing instance: a new backup directory (registry +
+    // engine restart) and an extra sysadmin account (T-SQL).
+    psh(m, "backup dir", "New-Item -ItemType Directory -Force -Path C:\\SQLBackup | Out-Null")?
+    let reinstall = Value::Map(#{
+        "setup_path": s("C:\\sqlsetup\\SETUP.EXE"),
+        "security_mode": s("sql"),
+        "sa_password": s("Str0ng!Passw0rd"),
+        "backup_dir": s("C:\\SQLBackup"),
+        "sql_sysadmin_accounts": s("BUILTIN\\Administrators,NT AUTHORITY\\SYSTEM")
+    })
+    converge(m, "mssql.instance", reinstall)?
 
     lab.log("converging configuration")
     let db = Value::Map(#{
-        "name": s("weave_app_db"), "recovery_model": s("SIMPLE"),
+        "name": s("weave_app_db"), "recovery_model": s("simple"),
         "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
     })
     converge(m, "mssql.database", db)?
@@ -130,10 +127,24 @@ fn run(lab: Lab) -> Result[bool, string] {
     converge(m, "mssql.server_setting", setting)?
 
     let cdc = Value::Map(#{
-        "database": s("weave_app_db"), "enabled": b(true),
+        "database": s("weave_app_db"),
         "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
     })
     converge(m, "mssql.database_cdc", cdc)?
+
+    // The TCP restart stops SQL Server Agent with the engine; it must come
+    // back, and the dynamic port must be cleared.
+    psh(m, "start agent", "Set-Service SQLSERVERAGENT -StartupType Manual; Start-Service SQLSERVERAGENT")?
+    let tcp = Value::Map(#{ "port": i(14330) })
+    converge(m, "mssql.tcp", tcp)?
+    psh(m, "agent restarted", "if((Get-Service SQLSERVERAGENT).Status -ne 'Running'){{throw 'SQL Server Agent was left stopped'}}")?
+
+    // Enabling HADR restarts the engine and the group is created in the same run.
+    let ag = Value::Map(#{
+        "name": s("cw_ag"),
+        "sql_user": s("sa"), "sql_password": s("Str0ng!Passw0rd")
+    })
+    converge(m, "mssql.availability_group", ag)?
 
     lab.log("install + configuration converged")
     Ok(true)
