@@ -15,10 +15,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
     common::require_path("path", p)?
     if !common::want_present(params)? {
-        // read_link probes a symlink itself (fs::exists follows it and lies
-        // about dangling links); the exists probe catches hard links, which
-        // are indistinguishable from plain files.
-        if fs::read_link(p).is_ok() || fs::exists(p) { return Ok(CheckResult::NotConfigured) }
+        // lexists sees a dangling symlink too; it also catches hard links,
+        // which are indistinguishable from plain files.
+        if common::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     let target = common::param_str(params, "target", "")
@@ -31,7 +30,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if fs::is_file(p) && same_inode(p, target) { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if !fs::exists(p) { return Ok(CheckResult::NotConfigured) }
+    // read_link, not fs::exists: a link whose target is missing (or not yet
+    // created) is still a link, and its target is what gets compared.
     if fs::read_link(p).unwrap_or("") == target { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
@@ -41,7 +41,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::want_present(params)? {
         // deletes the link itself, never its target (dropping a hard link
         // only removes one name/refcount)
-        if fs::read_link(p).is_ok() || fs::exists(p) { fs::delete(p)? }
+        if common::lexists(p) { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
     let target = common::param_str(params, "target", "")
@@ -49,13 +49,15 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if common::param_bool(params, "hard", false) {
         if !fs::is_file(target) { return Err("hard link target does not exist: " + target) }
         fs::mkdir(path::parent(p))?
-        if fs::read_link(p).is_ok() || fs::exists(p) { fs::delete(p)? }
-        let out = shell::bash("ln " + common::q(target) + " " + common::q(p), Value::Null)?
-        if !out.success { return Err(out.stderr.trim()) }
+        if common::lexists(p) { fs::delete(p)? }
+        common::run("ln " + p, "ln -- " + common::q(target) + " " + common::q(p))?
         return Ok(ApplyResult::Success)
     }
     fs::mkdir(path::parent(p))?
-    if fs::exists(p) { fs::delete(p)? }
+    if common::lexists(p) {
+        if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("a directory is in the way at " + p) }
+        fs::delete(p)?
+    }
     fs::symlink(target, p)?
     Ok(ApplyResult::Success)
 }

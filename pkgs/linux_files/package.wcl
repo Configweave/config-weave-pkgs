@@ -118,7 +118,7 @@ package "linux_files" {
     group = "files"
     // binary.txt starts as non-UTF-8 bytes, which fs::read cannot decode;
     // keep.txt has an owner and mode the playbook does not manage.
-    setup = "mkdir -p /tmp/cw-files && chmod 700 /tmp/cw-files && printf '\\377\\376\\n' > /tmp/cw-files/binary.txt && printf 'old\\n' > /tmp/cw-files/keep.txt && chown 65534:65534 /tmp/cw-files/keep.txt && chmod 604 /tmp/cw-files/keep.txt"
+    setup = "mkdir -p /tmp/cw-files && chmod 700 /tmp/cw-files && printf '\\377\\376\\n' > /tmp/cw-files/binary.txt && printf 'old\\n' > /tmp/cw-files/keep.txt && chown 65534:65534 /tmp/cw-files/keep.txt && chmod 604 /tmp/cw-files/keep.txt && ln -s /etc/hostname /tmp/cw-files/retarget.txt && ln -s /tmp/cw-files/gone /tmp/cw-files/dangling.txt"
     verify = "tests/files_verify.ws"
 
     step "dir" {
@@ -155,6 +155,29 @@ package "linux_files" {
       properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
     }
 
+    step "retarget" {
+      description = "Repoint an existing symlink at a new target"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/retarget.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    // The seeded link is dangling: fs::exists follows it, so the old code
+    // skipped the delete and fs::symlink failed with "File exists".
+    step "dangling" {
+      description = "Replace a dangling symlink"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/dangling.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    step "to_missing" {
+      description = "A symlink to a target that does not exist converges"
+      resource = "symlink"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/future.txt" target = "/tmp/cw-files/not-yet" }
+    }
+
     step "hardlink" {
       description = "Create a hard link"
       resource = "symlink"
@@ -189,7 +212,7 @@ TMPL
     description = "Removal and extraction resources converge"
     image = "debian:12"
     group = "files"
-    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
+    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
     verify = "tests/removals_verify.ws"
 
     gather "seed_stat" {
@@ -222,6 +245,18 @@ TMPL
       description = "Remove a symlink"
       resource = "symlink"
       properties { path = "/tmp/cw-oldlink" ensure = :absent }
+    }
+
+    step "rmhard" {
+      description = "Remove a hard link, leaving the other name and its content"
+      resource = "symlink"
+      properties { path = "/tmp/cw-hard-link.txt" ensure = :absent }
+    }
+
+    step "rmdangling" {
+      description = "Remove a symlink whose target does not exist"
+      resource = "symlink"
+      properties { path = "/tmp/cw-dangling-rm" ensure = :absent }
     }
 
     step "extract" {
