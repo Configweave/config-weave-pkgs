@@ -29,8 +29,22 @@ fn ps(m: Machine, script: string) -> Result[string, string] {
     Ok(r.stdout.trim())
 }
 
+// A freshly booted guest's vmlab agent can drop the channel on its first
+// execs while it settles (vmlab updates and restarts it), so the first
+// contact is retried until a trivial command answers.
+fn settle(m: Machine) -> Result[bool, string] {
+    for i in 0..30 {
+        if let Ok(r) = m.powershell("'ok'") {
+            if r.stdout.trim() == "ok" { return Ok(true) }
+        }
+        m.wait_ready(60)?
+    }
+    Err(m.name() + ": the guest agent never answered a command")
+}
+
 fn run(lab: Lab) -> Result[bool, string] {
     let m = lab.machine("net01")?
+    settle(m)?
 
     // --- static_ip over a DHCP lease of the same address ------------------
     let lease = ps(m, "for ($i = 0; $i -lt 60; $i++) {{ $a = Get-NetIPAddress -InterfaceAlias 'Ethernet 2' -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue; if ($a) {{ break }}; Start-Sleep 2 }}; $a.IPAddress")?
@@ -50,8 +64,10 @@ fn run(lab: Lab) -> Result[bool, string] {
         "servers": Value::List([s("10.75.0.53"), s("fd00:75::53"), s("10.75.0.54")])
     }))?
     let guid = ps(m, "(Get-NetAdapter -Name 'Ethernet 2').InterfaceGuid")?
-    let ns = ps(m, "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + guid + "').NameServer + '|' + " +
-        "(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\" + guid + "').NameServer")?
+    // The registry strings carry trailing padding, so they are re-split.
+    let ns_ps = "function NS($stack) {{ $v = [string](Get-ItemProperty ('HKLM:\\SYSTEM\\CurrentControlSet\\Services\\' + $stack + '\\Parameters\\Interfaces\\" + guid + "')).NameServer; " +
+        "(@($v -split '[^0-9A-Fa-f:.]+') | Where-Object {{ $_ }}) -join ',' }}; (NS 'Tcpip') + '|' + (NS 'Tcpip6')"
+    let ns = ps(m, ns_ps)?
     if ns != "10.75.0.53,10.75.0.54|fd00:75::53" { return Err("Ethernet 2 static DNS servers are '" + ns + "'") }
 
     // --- dns_servers: DHCP-assigned servers are not static ones -------------
@@ -70,8 +86,7 @@ fn run(lab: Lab) -> Result[bool, string] {
         "interface": s("Ethernet 2"),
         "servers": Value::List([])
     }))?
-    let left = ps(m, "[string](Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + guid + "').NameServer + '|' + " +
-        "[string](Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip6\\Parameters\\Interfaces\\" + guid + "').NameServer")?
+    let left = ps(m, ns_ps)?
     if left != "|" { return Err("static DNS servers left on Ethernet 2: '" + left + "'") }
     Ok(true)
 }
