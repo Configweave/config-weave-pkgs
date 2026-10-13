@@ -1309,7 +1309,9 @@ package "windows_powershell" {
   // Gatherers
   //
   // Every one returns its empty shape rather than failing when PowerShell is
-  // missing — a gatherer failure aborts the whole run before any step.
+  // missing — a gatherer failure aborts the whole run before any step. A
+  // PowerShell that is installed but whose query fails is an error, not an
+  // empty answer: an empty answer would make :absent steps look converged.
   // ---------------------------------------------------------------------
 
   gatherer "powershell_info" {
@@ -1334,7 +1336,7 @@ package "windows_powershell" {
       symbol "windows" { description = "Windows" }
       symbol "macos"   { description = "macOS" }
     }
-    returns "pwsh_installed" { description = "True when a pwsh binary is on PATH" type = "bool" }
+    returns "pwsh_installed" { description = "True when a pwsh binary is found — the MSI's root first, then any other root beside it, then PATH" type = "bool" }
     returns "pwsh_version" { description = "Version reported by pwsh; empty when it is not installed" type = "string" }
     returns "pwsh_home" { description = "$PSHOME of the pwsh install; empty when it is not installed" type = "string" }
     returns "windows_powershell_installed" { description = "True when Windows PowerShell 5.1 is present" type = "bool" }
@@ -1349,7 +1351,7 @@ package "windows_powershell" {
   }
 
   gatherer "execution_policies" {
-    description = "Report the execution policy of every scope and the effective policy that results (Get-ExecutionPolicy -List)"
+    description = "Report the execution policy of every scope and the effective policy that results (Get-ExecutionPolicy -List). PowerShell is run with -Command and no -ExecutionPolicy switch, so the Process scope reports what a new session inherits rather than the gatherer's own bypass"
     script = "gatherers/execution_policies.ws"
     param "edition" {
       description = "Which PowerShell is asked"
@@ -2562,6 +2564,18 @@ package "windows_powershell" {
       resource = "repository"
       expect = "already_configured"
       properties { name = "cw-no-such-repo" ensure = :absent edition = :windows_powershell }
+    }
+
+    // Windows Server's default is RemoteSigned. A probe that bypassed the
+    // policy itself would report bypass here.
+    gather "policies" {
+      description = "The effective execution policy, not the gatherer's own process override"
+      from = "execution_policies"
+      params { edition = :windows_powershell }
+      expect {
+        supported = true
+        effective = :remote_signed
+      }
     }
 
     gather "info" {
