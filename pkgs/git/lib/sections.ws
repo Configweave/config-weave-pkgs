@@ -11,13 +11,17 @@ use common
 // the docs list them.
 
 // A typed param as [text git stores, kind], where kind is "bool", "int" or
-// "text" (strings and symbols). None = the step omitted the param, which
-// means "leave this setting alone" — the only way a bool or int param can
-// express that, since a declared default would instead mean "set it to
-// false" / "set it to 0".
+// "text" (strings and symbols). None = leave this setting alone: either the
+// step omitted the param — the only way a bool or int param can say that,
+// since a declared default would instead mean "set it to false" / "set it
+// to 0" — or it passed an empty string, which means the same thing.
+// Removing a key is git.config_entry's job (ensure = :absent).
 fn to_cfg(params: Value, name: string) -> Option[List[string]] {
     if let Some(v) = params.get(name) {
-        if let Some(s) = v.as_string() { return Some([s, "text"]) }
+        if let Some(s) = v.as_string() {
+            if s == "" { return None }
+            return Some([s, "text"])
+        }
         if let Some(b) = v.as_bool() {
             if b { return Some(["true", "bool"]) }
             return Some(["false", "bool"])
@@ -77,8 +81,6 @@ fn matches(params: Value, triple: List[string]) -> Result[bool, string] {
     Ok(got == want)
 }
 
-// An explicit empty string reads back as "unset" and so is a no-op here;
-// use git.config_entry with ensure = :absent to remove a key.
 fn check(params: Value, section: string, keys: List[string], hyphenated: List[string]) -> Result[CheckResult, string] {
     for triple in desired(params, section, keys, hyphenated) {
         if !matches(params, triple)? { return Ok(CheckResult::NotConfigured) }

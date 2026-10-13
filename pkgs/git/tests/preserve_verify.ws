@@ -2,7 +2,8 @@ use value
 use json
 use shell
 
-// The step set core.editor and nothing else, so every other seeded key —
+// The steps set core.editor and nothing else (an empty pager is the same
+// as omitting it), so every other seeded key —
 // including two more in the same [core] section — must be untouched. This
 // is the contract that justifies section params carrying no default: an
 // omitted param is absent from the params map, and absence means "leave

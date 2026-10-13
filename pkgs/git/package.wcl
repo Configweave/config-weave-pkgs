@@ -7,8 +7,9 @@
 //     from the params map, and that absence means "leave this setting
 //     alone" — the only way a bool or int param can say that, since a
 //     declared default would instead mean "set it to false" / "set it to
-//     0". They therefore cannot *remove* a key; use git.config_entry with
-//     ensure = :absent for that.
+//     0". An empty string param means the same as omitting it. Section
+//     resources therefore cannot *remove* a key; use git.config_entry
+//     with ensure = :absent for that.
 //
 //   * Symbol params enumerate git's own values with `symbol` blocks, so
 //     config-weave validates them and the generated docs list them. WCL
@@ -38,7 +39,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "user" {
-    description = "Ensure git identity settings (user.*) in the global or system config"
+    description = "Ensure git identity settings (user.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/user.ws"
     // Every resource here read-modify-writes the one gitconfig, and
     // `exclusive` only serializes steps of the SAME resource type — so a
@@ -60,7 +61,7 @@ package "git" {
   }
 
   resource "core" {
-    description = "Ensure core git settings (core.*) in the global or system config"
+    description = "Ensure core git settings (core.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/core.ws"
     concurrency = "global"
     param "editor" { description = "core.editor: editor invoked for commit messages and interactive commands" type = "string" }
@@ -134,7 +135,7 @@ package "git" {
   }
 
   resource "init" {
-    description = "Ensure repository-creation defaults (init.*) in the global or system config"
+    description = "Ensure repository-creation defaults (init.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/init.ws"
     concurrency = "global"
     param "default_branch" { description = "init.defaultBranch: branch created by git init, such as main" type = "string" }
@@ -169,7 +170,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "commit" {
-    description = "Ensure commit settings (commit.*) in the global or system config"
+    description = "Ensure commit settings (commit.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/commit.ws"
     concurrency = "global"
     param "gpg_sign" { description = "commit.gpgSign: sign every commit" type = "bool" }
@@ -198,7 +199,7 @@ package "git" {
   }
 
   resource "push" {
-    description = "Ensure push settings (push.*) in the global or system config"
+    description = "Ensure push settings (push.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/push.ws"
     concurrency = "global"
     param "default" {
@@ -245,7 +246,7 @@ package "git" {
   }
 
   resource "pull" {
-    description = "Ensure pull settings (pull.*) in the global or system config"
+    description = "Ensure pull settings (pull.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/pull.ws"
     concurrency = "global"
     param "rebase" {
@@ -280,7 +281,7 @@ package "git" {
   }
 
   resource "fetch" {
-    description = "Ensure fetch settings (fetch.*) in the global or system config"
+    description = "Ensure fetch settings (fetch.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/fetch.ws"
     concurrency = "global"
     param "prune" { description = "fetch.prune: delete remote-tracking refs that no longer exist upstream" type = "bool" }
@@ -327,7 +328,7 @@ package "git" {
   }
 
   resource "merge" {
-    description = "Ensure merge settings (merge.*) in the global or system config"
+    description = "Ensure merge settings (merge.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/merge.ws"
     concurrency = "global"
     param "tool" { description = "merge.tool: merge tool used by git mergetool" type = "string" }
@@ -384,7 +385,7 @@ package "git" {
   }
 
   resource "rebase" {
-    description = "Ensure rebase settings (rebase.*) in the global or system config"
+    description = "Ensure rebase settings (rebase.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/rebase.ws"
     concurrency = "global"
     param "auto_squash" { description = "rebase.autoSquash: honour fixup! and squash! commits automatically" type = "bool" }
@@ -435,7 +436,7 @@ package "git" {
   // ---------------------------------------------------------------------
 
   resource "diff" {
-    description = "Ensure diff settings (diff.*) in the global or system config"
+    description = "Ensure diff settings (diff.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/diff.ws"
     concurrency = "global"
     param "tool" { description = "diff.tool: diff tool used by git difftool" type = "string" }
@@ -515,7 +516,7 @@ package "git" {
   }
 
   resource "status" {
-    description = "Ensure status settings (status.*) in the global or system config"
+    description = "Ensure status settings (status.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/status.ws"
     concurrency = "global"
     param "short" { description = "status.short: use short-format output by default" type = "bool" }
@@ -554,7 +555,7 @@ package "git" {
   }
 
   resource "log" {
-    description = "Ensure log settings (log.*) in the global or system config"
+    description = "Ensure log settings (log.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/log.ws"
     concurrency = "global"
     param "date" { description = "log.date: default date format, such as relative, iso or short" type = "string" }
@@ -598,7 +599,7 @@ package "git" {
   }
 
   resource "color" {
-    description = "Ensure colour switches (color.*) in the global or system config"
+    description = "Ensure colour switches (color.*) in the global or system config; an omitted or empty param leaves its key alone"
     script = "resources/color.ws"
     concurrency = "global"
     // Individual colour slots (color.diff.meta and friends) are not
@@ -1102,7 +1103,7 @@ package "git" {
   // The contract that justifies section params having no default: a param
   // the step omits must leave that setting exactly as it was.
   test "unset_params_are_left_alone" {
-    description = "A section resource touches only the parameters the step sets"
+    description = "A section resource touches only the non-empty parameters the step sets"
     image = "debian:12"
     group = "git"
     setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); mkdir -p /root/preserve && printf '[core]\\n\\tpager = less\\n\\tautocrlf = true\\n[user]\\n\\temail = seed@example.invalid\\n[alias]\\n\\tco = checkout\\n' > /root/preserve/.gitconfig"
@@ -1112,6 +1113,15 @@ package "git" {
       description = "Set core.editor and nothing else"
       resource = "core"
       properties { editor = "nano" home = "/root/preserve" }
+    }
+
+    // The seeded core.pager holds a value; an empty string must not
+    // overwrite it with an empty one.
+    step "empty_is_omitted" {
+      description = "An empty pager leaves the seeded core.pager alone"
+      resource = "core"
+      expect = "already_configured"
+      properties { pager = "" home = "/root/preserve" }
     }
   }
 
