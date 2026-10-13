@@ -20,13 +20,22 @@ package "linux_ssh" {
   }
 
   resource "known_host" {
-    description = "Ensure a known_hosts entry is present"
+    description = "Ensure a known_hosts entry is present or absent. Entries match on marker, host list, key type and key blob, so a different comment is rewritten rather than duplicated. Hashed host names (HashKnownHosts) are not matched by `name`. Without `path` the file is ~/.ssh/known_hosts in `home`, or in the home of the user config-weave runs as, read from its passwd entry (not $HOME). In a home, apply makes .ssh mode 700 and hands .ssh and the file to the home directory's owner, and check compares both; with an explicit `path` only the content is managed"
     script = "resources/known_host.ws"
+    // read-modify-write on a shared known_hosts file
     concurrency = "exclusive"
-    param "name" { description = "Host name the entry is for (informational)" type = "string" default = "" }
-    param "key" { description = "Full known_hosts line" type = "string" required = true }
-    param "home" { description = "Home directory owning ~/.ssh/known_hosts; defaults to the current user home" type = "string" default = "" }
-    param "path" { description = "Explicit known_hosts path override" type = "string" default = "" }
+    param "name" { description = "Host name whose entries this step owns. When :present, a plain entry for this host with the same marker and key type but another key is replaced (key rotation); other key types are kept. When :absent without `key`, every plain entry naming this host is removed" type = "string" default = "" }
+    param "key" { description = "Full known_hosts line: [@cert-authority|@revoked] hosts type base64 [comment]. Required when :present; when :absent, the entry with this host list and key is removed" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Add the entry, replacing a rotated-out key for `name`" }
+      symbol "absent"  { description = "Remove the entry given by `key`, or every entry for `name`" }
+    }
+    param "home" { description = "Home directory owning ~/.ssh/known_hosts; defaults to the home of the user config-weave runs as" type = "string" default = "" }
+    param "path" { description = "Explicit absolute known_hosts path, such as /etc/ssh/ssh_known_hosts; overrides `home`" type = "string" default = "" }
   }
 
   resource "ssh_config_setting" {
@@ -179,6 +188,59 @@ package "linux_ssh" {
       resource = "authorized_key"
       expect = "error"
       properties { user = "-froot" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonRootUserKey x" }
+    }
+  }
+
+  // No step sets `home` for root: the default must come from root's passwd
+  // entry, since the guest agent runs with HOME=/.
+  test "known_host_converges" {
+    description = "known_host adds, rotates and removes entries, in the right home and with the home owner's ownership"
+    image = "debian:12"
+    group = "ssh"
+    setup = "(id cwkh >/dev/null 2>&1 || useradd -m -g users cwkh) && mkdir -p /root/.ssh && printf 'cw-rot.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldRotatedHostKey\\ncw-rot.example ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABOtherTypeKey\\ncw-gone.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoneHostKeyBlob1\\ncw-gone.example,10.0.0.9 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABGoneRsaBlob1\\ncw-bykey.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRemoveByKeyBlob old comment\\n' > /root/.ssh/known_hosts"
+    verify = "tests/known_host_verify.ws"
+
+    step "default_home" {
+      description = "Without home or path the entry goes to the running user's home from its passwd entry"
+      resource = "known_host"
+      properties { key = "cw-default.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDefaultHomeKey" }
+    }
+
+    step "rotate" {
+      description = "A new key of the same type for a named host replaces the old one and keeps its other key types"
+      resource = "known_host"
+      properties { name = "cw-rot.example" key = "cw-rot.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINewRotatedHostKey" }
+    }
+
+    step "rm_name" {
+      description = "Removing by name drops every plain entry for the host"
+      resource = "known_host"
+      properties { name = "cw-gone.example" ensure = :absent }
+    }
+
+    step "rm_key" {
+      description = "Removing by key drops the entry whatever its comment"
+      resource = "known_host"
+      properties { key = "cw-bykey.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRemoveByKeyBlob" ensure = :absent }
+    }
+
+    step "non_root" {
+      description = "An entry in another user's home is owned by that user"
+      resource = "known_host"
+      properties { home = "/home/cwkh" key = "cw-user.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey" }
+    }
+
+    step "system_file" {
+      description = "An explicit path, such as the system-wide file"
+      resource = "known_host"
+      properties { path = "/etc/ssh/ssh_known_hosts" key = "@cert-authority *.cw.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICertAuthorityKey" }
+    }
+
+    step "multi_line" {
+      description = "A key with a line break is rejected"
+      resource = "known_host"
+      expect = "error"
+      properties { key = "a.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey\nb.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey" }
     }
   }
 }
