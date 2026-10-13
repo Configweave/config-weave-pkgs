@@ -78,11 +78,23 @@ package "linux_files" {
   }
 
   resource "archive_extracted" {
-    description = "Ensure a local archive has been extracted into a directory"
+    description = "Ensure a local archive has been extracted into a directory, or that the directory is absent. dest/.config-weave-archive records the SHA-256 of the archive last extracted: a dest without it (even a non-empty one) is extracted into, and a changed src is extracted again over the top. Re-extraction overwrites files the archive contains and leaves any others in place. src must still exist on later runs, since its digest is what is compared"
     script = "resources/archive_extracted.ws"
     concurrency = "parallel"
-    param "src" { description = "Local archive path (.zip, .tar.gz, .tgz)" type = "string" required = true }
-    param "dest" { description = "Destination directory" type = "string" required = true }
+    param "src" { description = "Absolute path of a local archive (.zip, .tar.gz, .tgz); required when ensure is :present" type = "string" default = "" }
+    param "dest" { description = "Absolute destination directory (no .. segments)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Extract the archive into dest" }
+      symbol "absent"  { description = "Delete dest and everything in it; refused for / and top-level directories" }
+    }
+    param "owner" { description = "Optional owner for dest and everything under it (chown -R, symlinks themselves included), as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional group for dest and everything under it, as a group name or numeric gid" type = "string" default = "" }
+    param "file_mode" { description = "Optional mode, as 3 or 4 octal digits, for every regular file under dest" type = "string" default = "" }
+    param "dir_mode" { description = "Optional mode, as 3 or 4 octal digits, for dest and every directory under it" type = "string" default = "" }
   }
 
   resource "permissions" {
@@ -234,7 +246,7 @@ TMPL
     description = "Removal and extraction resources converge"
     image = "debian:12"
     group = "files"
-    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
+    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; mkdir -p /tmp/cw-arch-src/sub; echo deep > /tmp/cw-arch-src/sub/deep.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt sub; mkdir -p /tmp/cw-prepop; echo mine > /tmp/cw-prepop/existing.txt; mkdir -p /tmp/cw-changed; echo stale > /tmp/cw-changed/inside.txt; echo 0000 > /tmp/cw-changed/.config-weave-archive; mkdir -p /tmp/cw-arch-rm/x; echo y > /tmp/cw-arch-rm/x/y.txt; useradd -u 1234 -U -M cwuser"
     verify = "tests/removals_verify.ws"
 
     gather "seed_stat" {
@@ -296,9 +308,42 @@ TMPL
     }
 
     step "extract" {
-      description = "Extract an archive"
+      description = "Extract an archive with an owner and modes applied to the whole tree"
       resource = "archive_extracted"
-      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" }
+      properties {
+        src = "/tmp/cw-arch.tar.gz"
+        dest = "/tmp/cw-extracted"
+        owner = "cwuser"
+        group = "1234"
+        file_mode = "0640"
+        dir_mode = "0750"
+      }
+    }
+
+    // The old "dest is non-empty" test treated both of these as done.
+    step "prepopulated" {
+      description = "Extract into a dest that already holds other files"
+      resource = "archive_extracted"
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-prepop" }
+    }
+
+    step "changed_src" {
+      description = "Re-extract when the recorded archive digest differs"
+      resource = "archive_extracted"
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-changed" }
+    }
+
+    step "rm_extracted" {
+      description = "Remove an extracted tree"
+      resource = "archive_extracted"
+      properties { dest = "/tmp/cw-arch-rm" ensure = :absent }
+    }
+
+    step "rm_arch_top" {
+      description = "Removing a top-level directory as dest is refused"
+      resource = "archive_extracted"
+      expect = "error"
+      properties { dest = "/opt" ensure = :absent }
     }
   }
 
