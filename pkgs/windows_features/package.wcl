@@ -1,69 +1,116 @@
 package "windows_features" {
   description = "Manage Windows optional features, capabilities and Server roles"
 
+  // Every name is one exact feature: the cmdlets behind these resources
+  // match names as wildcard patterns, so '*?[]' are rejected and a name
+  // that matches no feature, or several, is an error.
+  //
+  // A change that needs a reboot to finish is reported as reboot_required,
+  // both by the apply that made it and by every check until the reboot, so
+  // a pending enable or removal is neither mistaken for converged nor
+  // redone on every run.
   resource "windows_optional_feature" {
-    description = "Enable or disable a Windows optional feature (DISM)"
+    description = "Enable or disable a Windows optional feature (DISM). Enabling also enables the features it depends on (-All); disabling leaves those dependencies enabled and keeps the payload on disk"
     script = "resources/windows_optional_feature.ws"
     concurrency = "exclusive"
-    param "name" { description = "Feature name such as Microsoft-Hyper-V or NetFx3" type = "string" required = true }
+    param "name" { description = "Exact feature name such as Microsoft-Hyper-V or NetFx3 (see Get-WindowsOptionalFeature -Online)" type = "string" required = true }
     param "ensure" {
-      description = "Desired state: :present (enabled) or :absent (disabled)"
+      description = "Desired state: :present (enabled) or :absent (disabled). EnablePending and DisablePending report reboot_required"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Enable the feature" }
-      symbol "absent"  { description = "Disable the feature" }
+      symbol "present" { description = "Enable the feature and the features it depends on" }
+      symbol "absent"  { description = "Disable the feature; its dependencies stay enabled and its payload stays on disk" }
     }
+    param "source" {
+      description = "Where DISM finds a payload that is not in the local component store: a mounted install.wim (wim:D:\\sources\\install.wim:1) or a sources\\sxs folder. Needed for features shipped with their payload removed, such as NetFx3 on Server. Empty uses the component store and Windows Update"
+      type = "string"
+      default = ""
+    }
+    param "limit_access" { description = "Do not contact Windows Update for the payload (DISM -LimitAccess); use with source on an offline host" type = "bool" default = false }
   }
 
   resource "windows_capability" {
     description = "Add or remove a Windows capability (Feature on Demand)"
     script = "resources/windows_capability.ws"
     concurrency = "exclusive"
-    param "name" { description = "Capability name such as OpenSSH.Client~~~~0.0.1.0" type = "string" required = true }
+    param "name" { description = "Exact capability name including its version suffix, such as OpenSSH.Client~~~~0.0.1.0 (see Get-WindowsCapability -Online). An unknown name reads as NotPresent, since Windows reports it that way" type = "string" required = true }
     param "ensure" {
-      description = "Desired state: :present or :absent"
+      description = "Desired state: :present (Installed) or :absent (NotPresent or Staged). InstallPending and UninstallPending report reboot_required"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Add the capability" }
       symbol "absent"  { description = "Remove the capability" }
     }
+    param "source" { description = "Where to find the capability payload, such as a Features on Demand ISO folder. Empty uses Windows Update, which can take many minutes" type = "string" default = "" }
+    param "limit_access" { description = "Do not contact Windows Update for the payload (-LimitAccess); use with source on an offline host" type = "bool" default = false }
   }
 
   resource "windows_server_feature" {
-    description = "Install or remove a Windows Server role/feature"
+    description = "Install or remove a Windows Server role, role service or feature (ServerManager). Windows Server only: on client Windows use windows_optional_feature"
     script = "resources/windows_server_feature.ws"
     concurrency = "exclusive"
-    param "name" { description = "Feature name such as Web-Server or DNS" type = "string" required = true }
+    param "name" { description = "Exact feature name such as Web-Server or DNS (see Get-WindowsFeature)" type = "string" required = true }
     param "ensure" {
-      description = "Desired state: :present or :absent"
+      description = "Desired state: :present or :absent. InstallPending and UninstallPending report reboot_required"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Install the role or feature" }
       symbol "absent"  { description = "Remove the role or feature" }
     }
-    param "include_management_tools" { description = "Also install the feature's management tools" type = "bool" default = false }
+    param "include_management_tools" {
+      description = "Also manage the feature's management tools, in both directions: :present installs any that are missing, :absent removes them with the feature. Which tools belong to the feature is ServerManager's own -IncludeManagementTools list"
+      type = "bool"
+      default = false
+    }
+    param "source" { description = "Where to find a payload that is not in the local component store (Install-WindowsFeature -Source), such as wim:D:\\sources\\install.wim:4 for NET-Framework-Core. Empty uses the component store and Windows Update" type = "string" default = "" }
   }
 
-  // Telnet-Client installs offline from the local component store with no
-  // reboot, so it gets real converge coverage. Enabling a disabled optional
-  // feature or adding a capability on Server generally pulls payload from
-  // Windows Update / source media (slow, network-bound), so those two
-  // resources assert their detection path instead, against state that ships
-  // enabled on Server 2025: the .NET Framework 4.x server features and the
-  // preinstalled OpenSSH Server capability.
-  test "features_converge_and_detect" {
-    description = "Server feature converges; optional feature and capability detection work"
+  // Everything here works offline from the local component store on Server
+  // 2025 with no reboot, except removing SNMP-Service, which is its own test
+  // and runs last in the group because a pending reboot changes what every
+  // later DISM call reports. Adding a capability is not converged: Server
+  // pulls capability payload from Windows Update, which took over ten
+  // minutes in the lab, so only capability removal is exercised.
+  //
+  // Setup seeds SNMP-Service without its tools and SimpleTCP enabled.
+  test "features_converge" {
+    description = "Server features (with tools), optional features and capabilities converge in both directions"
     template = "x86_64/windows-server-2025"
     group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $null = Install-WindowsFeature -Name SNMP-Service; $null = Enable-WindowsOptionalFeature -Online -FeatureName SimpleTCP -All -NoRestart"
     verify = "tests/features_verify.ws"
 
     step "telnet_client" {
-      description = "Install the Telnet-Client feature (offline, no reboot)"
+      description = "Install the Telnet-Client feature"
       resource = "windows_server_feature"
       properties { name = "Telnet-Client" }
+    }
+
+    step "snmp_with_tools" {
+      description = "SNMP-Service is installed but its management tools are not, which check must see"
+      resource = "windows_server_feature"
+      properties { name = "SNMP-Service" include_management_tools = true }
+    }
+
+    step "tftp_enabled" {
+      description = "Enable the TFTP client optional feature"
+      resource = "windows_optional_feature"
+      properties { name = "TFTP" }
+    }
+
+    step "simple_tcp_disabled" {
+      description = "Disable the SimpleTCP optional feature that setup enabled"
+      resource = "windows_optional_feature"
+      properties { name = "SimpleTCP" ensure = :absent }
+    }
+
+    step "openssh_server_removed" {
+      description = "Remove the preinstalled OpenSSH Server capability"
+      resource = "windows_capability"
+      properties { name = "OpenSSH.Server~~~~0.0.1.0" ensure = :absent }
     }
 
     step "netfx_enabled" {
@@ -73,11 +120,55 @@ package "windows_features" {
       properties { name = "NetFx4ServerFeatures" }
     }
 
-    step "openssh_server_capability" {
-      description = "The OpenSSH Server capability is preinstalled on Server 2025"
+    step "openssh_client_capability" {
+      description = "The OpenSSH Client capability ships installed"
       resource = "windows_capability"
       expect = "already_configured"
-      properties { name = "OpenSSH.Server~~~~0.0.1.0" }
+      properties { name = "OpenSSH.Client~~~~0.0.1.0" }
+    }
+
+    step "wildcard_rejected" {
+      description = "A wildcard name is an error, not a match on any of 50 IIS features"
+      resource = "windows_optional_feature"
+      expect = "error"
+      properties { name = "IIS-*" }
+    }
+
+    step "unknown_feature_errors" {
+      description = "A server feature name that matches nothing is an error"
+      resource = "windows_server_feature"
+      expect = "error"
+      properties { name = "CW-No-Such-Feature" }
+    }
+  }
+
+  test "server_feature_removed" {
+    description = "Removing a server feature converges"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $null = Install-WindowsFeature -Name Telnet-Client"
+    verify = "tests/feature_removed_verify.ws"
+
+    step "telnet_client_absent" {
+      description = "Remove the Telnet-Client feature"
+      resource = "windows_server_feature"
+      properties { name = "Telnet-Client" ensure = :absent }
+    }
+  }
+
+  // Must stay the last test in the group: it leaves a reboot pending.
+  test "server_feature_removed_with_tools" {
+    description = "Removing a feature with include_management_tools removes its tools too, and reports the reboot it needs"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $null = Install-WindowsFeature -Name SNMP-Service -IncludeManagementTools"
+    verify = "tests/tools_removed_verify.ws"
+
+    step "snmp_absent_with_tools" {
+      description = "Remove SNMP-Service and RSAT-SNMP; Windows finishes the removal at the next reboot"
+      resource = "windows_server_feature"
+      expect = "reboot_required"
+      properties { name = "SNMP-Service" include_management_tools = true ensure = :absent }
     }
   }
 }
