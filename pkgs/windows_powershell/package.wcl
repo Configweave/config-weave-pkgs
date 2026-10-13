@@ -2710,7 +2710,9 @@ package "windows_powershell" {
     memory = "4GiB"
     // Two endpoints to converge away from: one registered for remote access
     // that the step wants local-only, and one the :absent step removes.
-    setup = "powershell -NoProfile -NonInteractive -Command \"Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart | Out-Null; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart | Out-Null\""
+    // No double quotes in a Windows setup: they reach PowerShell escaped,
+    // and it reads the whole command as one string literal.
+    setup = "powershell -NoProfile -NonInteractive -Command Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart"
     verify = "tests/pwsh7_session_verify.ws"
 
     // Not :remote_signed — the PowerShell 7 MSI already leaves the machine
@@ -2783,7 +2785,8 @@ package "windows_powershell" {
     template = "x86_64/windows-server-2025"
     group = "win2025ps7"
     memory = "4GiB"
-    setup = "powershell -NoProfile -NonInteractive -Command \"$ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile C:\\cw-pwsh.zip; Expand-Archive C:\\cw-pwsh.zip -DestinationPath 'C:\\Program Files\\PowerShell\\7.4.6' -Force }\""
+    // No double quotes in a Windows setup: they reach PowerShell escaped.
+    setup = "powershell -NoProfile -NonInteractive -Command $ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7.4.6\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.4.6/PowerShell-7.4.6-win-x64.zip -OutFile C:\\cw-pwsh.zip; Expand-Archive C:\\cw-pwsh.zip -DestinationPath 'C:\\Program Files\\PowerShell\\7.4.6' -Force }"
     verify = "tests/pwsh7_removed_verify.ws"
 
     step "preview_absent" {

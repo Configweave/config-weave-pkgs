@@ -56,7 +56,9 @@ fn verify(facts: Value) -> Result[bool, string] {
         let found = if fs::is_dir(base) { fs::list_dir(base)?.join(", ") } else { "the directory does not exist" }
         return Err("expected the profile at " + all_hosts + " — that folder holds: " + found)
     }
-    if fs::read(all_hosts)? != "# managed by config-weave\n" { return Err("the all-hosts profile content is not the one the step declared") }
+    // Windows PowerShell 5.1 reads a BOM-less script as ANSI, so its
+    // profiles are written with a UTF-8 BOM.
+    if fs::read(all_hosts)? != "\u{FEFF}# managed by config-weave\n" { return Err("the all-hosts profile is not the declared content behind a UTF-8 BOM") }
 
     let host_profile = base + "Microsoft.PowerShell_profile.ps1"
     if !fs::is_file(host_profile) { return Err("the block-writing resources did not create the current-host profile") }

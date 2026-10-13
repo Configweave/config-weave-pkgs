@@ -22,7 +22,7 @@ fn installed_versions(params: Value, kind: string) -> Result[List[string], strin
         let root = if all_users {
             "$(if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path $env:ProgramFiles 'WindowsPowerShell\\Scripts' }} elseif ($IsWindows) {{ Join-Path $env:ProgramFiles 'PowerShell\\Scripts' }} else {{ '/usr/local/share/powershell/Scripts' }})"
         } else {
-            "$(if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\\Scripts' }} elseif ($IsWindows) {{ Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell\\Scripts' }} else {{ Join-Path $HOME '.local/share/powershell/Scripts' }})"
+            "$(if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'WindowsPowerShell\\Scripts' }} elseif ($IsWindows) {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'PowerShell\\Scripts' }} else {{ Join-Path $HOME '.local/share/powershell/Scripts' }})"
         }
         "$prefix = (" + root + ") + [IO.Path]::DirectorySeparatorChar\n@(Get-InstalledScript -Name " + n + " -ErrorAction SilentlyContinue | Where-Object {{ ($_.InstalledLocation + [IO.Path]::DirectorySeparatorChar).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }} | ForEach-Object {{ [string]$_.Version }}) -join \"`n\""
     }
