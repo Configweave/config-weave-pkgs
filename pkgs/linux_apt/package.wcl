@@ -19,7 +19,7 @@ package "linux_apt" {
   }
 
   resource "cache_updated" {
-    description = "Run apt-get update when the index is older than max_age"
+    description = "Run apt-get update when the last refresh this resource made is older than max_age, or when anything under /etc/apt/sources.list, sources.list.d, keyrings or trusted.gpg.d changed since then, so a repository or key added after the last refresh is indexed on the next run. The refresh time is the mtime of /var/lib/config-weave/apt-cache-updated; a refresh run outside config-weave does not count"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
@@ -247,9 +247,46 @@ SETUP
     }
   }
 
-  // Untested by design: cache_updated hits the network (apt-get update),
-  // which does not converge honestly in an offline container.
-  //
+  // cache_updated runs a real apt-get update over the container's NAT.
+  test "cache_updated_refreshes" {
+    description = "cache_updated refreshes when no refresh has been recorded"
+    image = "debian:12"
+    group = "debian"
+    setup = "rm -f /var/lib/config-weave/apt-cache-updated"
+    verify = "tests/apt_cache_verify.ws"
+
+    step "refresh" {
+      description = "Refresh the package index"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated refreshes when a source changed after a recent refresh"
+    image = "debian:12"
+    group = "debian"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /var/lib/config-weave && touch -d '-1 hour' /var/lib/config-weave/apt-cache-updated && touch /etc/apt/sources.list.d/debian.sources"
+    verify = "tests/apt_cache_verify.ws"
+
+    step "refresh" {
+      description = "A sources file newer than the stamp forces a refresh inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_fresh" {
+    description = "cache_updated leaves a recent refresh with unchanged sources alone"
+    image = "debian:12"
+    group = "debian"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /var/lib/config-weave && find /etc/apt/sources.list.d /etc/apt/keyrings /etc/apt/trusted.gpg.d -exec touch -d '-2 hours' {} + && touch /var/lib/config-weave/apt-cache-updated"
+
+    step "fresh" {
+      description = "Nothing to do inside max_age"
+      resource = "cache_updated"
+      expect = "already_configured"
+    }
+  }
+
   // The apt steps are chained with `requires`: `exclusive` only serializes
   // steps of the SAME resource type, but package/hold/debconf all contend
   // for the one dpkg lock, so mixing them concurrently fails.
