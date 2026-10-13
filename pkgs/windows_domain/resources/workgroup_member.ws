@@ -1,59 +1,52 @@
 use value
-use shell
 use log
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[string, string] {
+    let wg = common::param_str(params, "workgroup_name", "")
+    common::domain_name("workgroup_name", wg)?
+    if wg.len() > 15 || wg.contains(".") { return Err("'workgroup_name' must be a NetBIOS name of at most 15 characters, got '" + wg + "'") }
+    common::credential(params)?
+    Ok(wg)
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// PowerShell that binds $cred to a PSCredential for the given account.
-fn ps_cred(user: string, pw: string) -> string {
-    "$cp = ConvertTo-SecureString " + ps_q(pw) + " -AsPlainText -Force; " +
-    "$cred = New-Object System.Management.Automation.PSCredential(" + ps_q(user) + ", $cp); "
-}
-
-// "DOMAIN" when this machine is domain-joined, otherwise "WG:<name>".
+// 'REBOOT', 'DOMAIN' when domain-joined, otherwise 'WG:<name>'.
 fn membership() -> Result[string, string] {
-    let script = "$ErrorActionPreference='Stop'; $c = Get-CimInstance Win32_ComputerSystem; " +
-        "if ($c.PartOfDomain) {{ 'DOMAIN' }} else {{ 'WG:' + $c.Workgroup }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
+    common::ps("reading this machine's membership",
+        common::pending_ps("workgroup_member") +
+        "$c = Get-CimInstance Win32_ComputerSystem; " +
+        "if ($pending) {{ 'REBOOT' }} elseif ($c.PartOfDomain) {{ 'DOMAIN' }} else {{ 'WG:' + $c.Workgroup }}")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let wg = param_str(params, "workgroup_name", "")
-    if wg == "" { return Err("missing 'workgroup_name' parameter") }
-    if membership()? == "WG:" + wg { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let wg = validate(params)?
+    let st = membership()?
+    if st == "REBOOT" { return Ok(CheckResult::RebootRequired) }
+    // NetBIOS names, workgroups included, are case-insensitive.
+    if st.to_upper() == ("WG:" + wg).to_upper() { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let wg = param_str(params, "workgroup_name", "")
-    if wg == "" { return Err("missing 'workgroup_name' parameter") }
-
-    let user = param_str(params, "credential_user", "")
-    let cpw = param_str(params, "credential_password", "")
-    let in_domain = membership()? == "DOMAIN"
+    let wg = validate(params)?
+    let st = membership()?
+    if st == "REBOOT" { return Ok(ApplyResult::RebootRequired) }
+    let in_domain = st == "DOMAIN"
 
     // Leaving a domain needs an account allowed to unjoin; a plain
     // workgroup-to-workgroup move does not.
-    let creds = if user != "" && cpw != "" { ps_cred(user, cpw) } else { "" }
-    let o_unjoin = if in_domain && creds != "" { " -UnjoinDomainCredential $cred" } else { "" }
-    if in_domain && creds == "" {
+    let cred = common::credential(params)?
+    let creds = if let Some(c) = cred { if in_domain { common::cred_ps(c[0]) + "$o = @{{ UnjoinDomainCredential = $cred }}; " } else { "$o = @{{}}; " } } else { "$o = @{{}}; " }
+    if in_domain && cred.is_none() {
         log::info("leaving the domain without explicit credentials — the current account must have unjoin rights")
     }
-
     if in_domain {
         log::info("leaving the domain and joining workgroup " + wg)
     } else {
         log::info("moving to workgroup " + wg)
     }
-    let script = "$ErrorActionPreference='Stop'; " + creds +
-        "Add-Computer -WorkgroupName " + ps_q(wg) + o_unjoin + " -Force | Out-Null"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err("workgroup join failed: " + out.stderr.trim()) }
+    common::ps_env("joining workgroup " + wg,
+        creds + "Add-Computer -WorkgroupName " + common::ps_q(wg) + " @o -Force -WarningAction SilentlyContinue | Out-Null; " +
+        common::mark_ps("workgroup_member"),
+        #{ "CW_CRED_PW": Value::String(common::param_str(params, "credential_password", "")) })?
     Ok(ApplyResult::RebootRequired)   // membership changes require a reboot to finish
 }

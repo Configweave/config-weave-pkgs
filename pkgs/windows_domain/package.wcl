@@ -11,55 +11,88 @@ package "windows_domain" {
     returns "part_of_domain" { description = "True when domain-joined" type = "bool" }
     returns "domain" { description = "Domain FQDN when joined; empty in a workgroup" type = "string" }
     returns "workgroup" { description = "Workgroup name when not joined; empty in a domain" type = "string" }
-    returns "netbios_name" { description = "NetBIOS domain name (resolved on DCs; empty otherwise)" type = "string" }
+    returns "netbios_name" { description = "NetBIOS name of the domain when joined; empty in a workgroup" type = "string" }
     returns "role" { description = "standalone_workstation | member_workstation | standalone_server | member_server | backup_dc | primary_dc" type = "string" }
     returns "is_dc" { description = "True when this machine is a domain controller" type = "bool" }
-    returns "fsmo_roles" { description = "FSMO roles this DC holds (PDCEmulator, RIDMaster, InfrastructureMaster, SchemaMaster, DomainNamingMaster); empty on non-DCs" type = "list" }
+    returns "fsmo_roles" { description = "FSMO roles this DC holds (PDCEmulator, RIDMaster, InfrastructureMaster, SchemaMaster, DomainNamingMaster), read over LDAP from the DC itself; empty on non-DCs" type = "list" }
+    returns "fsmo_known" { description = "False when this is a DC but its FSMO roles could not be read (fsmo_roles is then empty, not authoritative); true otherwise" type = "bool" }
+    returns "fsmo_error" { description = "Why the FSMO roles could not be read, when fsmo_known is false; empty otherwise" type = "string" }
   }
 
-  // One resource for the whole DC lifecycle: promotion discovers whether the
-  // domain already answers (nltest locator) — undiscoverable creates the
-  // forest (first DC), discoverable joins as an additional DC — and
-  // ensure = :absent demotes. DNS must already point at an existing DC when
-  // one exists, or a same-named second forest results.
+  // Prerequisites for every resource here:
+  //   - promotion needs the AD-Domain-Services feature with its management
+  //     tools installed first (windows_features.windows_server_feature);
+  //   - joining a domain, or promoting into an existing one, needs this
+  //     machine's DNS client pointed at a DC of that domain
+  //     (windows_network.dns_servers), since the DC locator finds it
+  //     through DNS.
+  // Passwords are passed to PowerShell through environment variables, never
+  // in the script text, so they do not appear on a command line or in an
+  // error message. Keep them out of the playbook source as well: write each
+  // one as secret("...").
+  //
+  // Every resource that asks for a reboot records the boot it asked from,
+  // and reports RebootRequired, rather than the half-applied state, until
+  // the machine has rebooted. A domain join or computer rename that Windows
+  // itself has pending counts too.
   resource "domain_controller" {
-    description = "Ensure this server is (or is not) a domain controller — creates the forest when the domain does not exist yet, joins it as an additional DC when it does, and demotes with ensure = :absent"
+    description = "Ensure this server is (or is not) a domain controller of the given domain — creates a forest, joins an existing domain as an additional DC, or demotes with ensure = :absent"
     script = "resources/domain_controller.ws"
     concurrency = "global"
-    param "domain_name"         { description = "Domain FQDN, e.g. corp.example.com" type = "string" required = true }
+    param "domain_name"         { description = "Domain FQDN, e.g. corp.example.com (the NetBIOS name also matches an existing DC)" type = "string" required = true }
     param "ensure" {
       description = ":present promotes, :absent demotes"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Promote this server to a domain controller" }
-      symbol "absent"  { description = "Demote this domain controller" }
+      symbol "present" { description = "Promote this server to a domain controller of domain_name" }
+      symbol "absent"  { description = "Demote this server if it is a domain controller of domain_name; a DC of any other domain is left alone" }
     }
-    param "safe_mode_password"  { description = "DSRM (Directory Services Restore Mode) password — required for promotion; plaintext in the playbook" type = "string" default = "" }
-    param "credential_user"     { description = "Domain admin (UPN or DOMAIN\\user) — required when joining an existing domain; optional for demotion" type = "string" default = "" }
-    param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" default = "" }
-    param "local_admin_password" { description = "Local Administrator password after demotion — required with ensure = :absent" type = "string" default = "" }
+    // A failed DC lookup used to be read as "no such domain", which built a
+    // second forest of the same name. :auto now only creates a forest when
+    // nothing about the name exists.
+    param "mode" {
+      description = "How promotion decides between creating a forest and joining an existing domain"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"       { description = "With credential_user set, join the existing domain (an error if no DC for it can be found). Without, create the forest, but only when no DC answers for the domain and its name does not resolve in DNS; otherwise fail rather than guess" }
+      symbol "new_forest" { description = "Create the forest; fails if a DC for the domain already answers" }
+      symbol "additional" { description = "Join the existing domain as an additional DC; needs credential_user and fails if no DC for the domain can be found" }
+    }
+    param "safe_mode_password"  { description = "DSRM (Directory Services Restore Mode) password; required for promotion. Use secret(\"...\")" type = "string" default = "" }
+    param "credential_user"     { description = "Domain admin (UPN or DOMAIN\\user): required to join an existing domain, optional for demotion. Set together with credential_password" type = "string" default = "" }
+    param "credential_password" { description = "Password for credential_user; use secret(\"...\")" type = "string" default = "" }
+    param "local_admin_password" { description = "Local Administrator password after demotion; required with ensure = :absent. Use secret(\"...\")" type = "string" default = "" }
     param "last_dc_in_domain"   { description = "Demotion only: this is the domain's last DC — remove the domain, its partitions and DNS zone with it" type = "bool" default = false }
     param "force_removal"       { description = "Demotion only: force removal even when the DC cannot reach the domain (leaves stale metadata to clean up)" type = "bool" default = false }
-    param "install_dns"         { description = "Install and configure the DNS Server role" type = "bool" default = true }
-    param "netbios_name"        { description = "Forest creation only: NetBIOS domain name; empty = derived from the first label" type = "string" default = "" }
-    param "forest_mode"         { description = "Forest creation only: forest functional level (e.g. WinThreshold); empty = cmdlet default" type = "string" default = "" }
-    param "domain_mode"         { description = "Forest creation only: domain functional level; empty = cmdlet default" type = "string" default = "" }
-    param "site_name"           { description = "Joining only: AD site to place the DC in; empty = default" type = "string" default = "" }
-    param "database_path"       { description = "NTDS database path; empty = default" type = "string" default = "" }
-    param "log_path"            { description = "NTDS log path; empty = default" type = "string" default = "" }
-    param "sysvol_path"         { description = "SYSVOL path; empty = default" type = "string" default = "" }
+    param "install_dns"         { description = "Install and configure the DNS Server role. Fixed at promotion: a DC that no longer matches is reported as an error" type = "bool" default = true }
+    param "netbios_name"        { description = "Forest creation only: NetBIOS domain name; empty = derived from the first label. A promoted DC of another NetBIOS name is reported as an error" type = "string" default = "" }
+    param "forest_mode"         { description = "Forest creation only: forest functional level (e.g. WinThreshold, Win2025, or the number); empty = cmdlet default. A differing level is reported as an error, since raising one is irreversible and left to the operator" type = "string" default = "" }
+    param "domain_mode"         { description = "Forest creation only: domain functional level, as forest_mode; empty = cmdlet default" type = "string" default = "" }
+    param "site_name"           { description = "AD site to place the DC in; an additional DC is promoted into it, and a DC in another site is moved (Move-ADDirectoryServer). Empty leaves the site alone" type = "string" default = "" }
+    param "database_path"       { description = "NTDS database folder; empty = default. Fixed at promotion: a DC whose database is elsewhere is reported as an error" type = "string" default = "" }
+    param "log_path"            { description = "NTDS log folder; empty = default. Fixed at promotion, as database_path" type = "string" default = "" }
+    param "sysvol_path"         { description = "SYSVOL root folder; empty = default. Fixed at promotion, as database_path" type = "string" default = "" }
   }
 
   resource "domain_member" {
-    description = "Join this computer to an existing Active Directory domain"
+    description = "Ensure this computer is (or is not) a member of an Active Directory domain, under the given name and in the given OU"
     script = "resources/domain_member.ws"
     concurrency = "global"
-    param "domain_name"         { description = "Domain FQDN to join" type = "string" required = true }
-    param "credential_user"     { description = "Account with join rights (UPN or DOMAIN\\user)" type = "string" required = true }
-    param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" required = true }
-    param "ou_path"             { description = "Distinguished name of the OU to place the computer; empty = default Computers container" type = "string" default = "" }
-    param "new_name"            { description = "Rename the computer as part of the join; empty = keep current name" type = "string" default = "" }
+    param "domain_name"         { description = "Domain to join: its FQDN, or its NetBIOS name (an existing membership matches either)" type = "string" required = true }
+    param "ensure" {
+      description = ":present joins, :absent leaves"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Join the domain (and rename and move the computer account as asked)" }
+      symbol "absent"  { description = "Leave the domain for the workgroup WORKGROUP; use workgroup_member to land in another one" }
+    }
+    param "credential_user"     { description = "Account with join rights (UPN or DOMAIN\\user); required to join, rename or move, optional to leave. Set together with credential_password" type = "string" default = "" }
+    param "credential_password" { description = "Password for credential_user; use secret(\"...\")" type = "string" default = "" }
+    param "ou_path"             { description = "Distinguished name of the OU the computer account belongs in; a joined computer elsewhere is moved there with the credential (which then needs rights on both OUs). Empty = the default Computers container, and placement is unmanaged" type = "string" default = "" }
+    param "new_name"            { description = "Computer name to have once joined: used for the join, and a joined computer under another name is renamed (Rename-Computer, then a reboot). Empty = keep the current name" type = "string" default = "" }
   }
 
   // The inverse of domain_member: being in workgroup X is a state of its own,
@@ -68,9 +101,9 @@ package "windows_domain" {
     description = "Ensure this computer is in the given workgroup — leaves its current domain or workgroup and joins it instead"
     script = "resources/workgroup_member.ws"
     concurrency = "global"
-    param "workgroup_name"      { description = "Workgroup to be a member of, e.g. WORKGROUP" type = "string" required = true }
-    param "credential_user"     { description = "Account allowed to unjoin the current domain (UPN or DOMAIN\\user); empty = the current account must have unjoin rights. Ignored for workgroup-to-workgroup moves" type = "string" default = "" }
-    param "credential_password" { description = "Password for credential_user — plaintext in the playbook" type = "string" default = "" }
+    param "workgroup_name"      { description = "Workgroup to be a member of, e.g. WORKGROUP; compared case-insensitively, as NetBIOS names are" type = "string" required = true }
+    param "credential_user"     { description = "Account allowed to unjoin the current domain (UPN or DOMAIN\\user); empty = the current account must have unjoin rights. Ignored for workgroup-to-workgroup moves. Set together with credential_password" type = "string" default = "" }
+    param "credential_password" { description = "Password for credential_user; use secret(\"...\")" type = "string" default = "" }
   }
 
   // Single-VM coverage for the parts that need no domain: the membership
