@@ -6,26 +6,26 @@ package "linux_openrc" {
   // :unmanaged so this can install a script without also deciding those, or
   // manage an existing service without supplying a script.
   resource "service" {
-    description = "Ensure an OpenRC service's init script, runlevel membership and running state"
+    description = "Ensure an OpenRC service's init script, runlevel membership and running state. The script must be executable by everyone (a missing exec bit is restored with chmod a+x). When `script` is set and `state` is :running, a service started before its script last changed (the script is newer than /run/openrc/started/<name>) is restarted"
     script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name, and the basename of its script under /etc/init.d" type = "string" required = true }
+    param "name" { description = "Service name, and the basename of its script under /etc/init.d: no '/', '\\', whitespace or glob characters, and no leading '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Whether the service is installed"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "The init script exists" }
-      symbol "absent"  { description = "Stop the service, drop it from the runlevel and delete its init script" }
+      symbol "absent"  { description = "Stop the service (or zap it if it crashed), drop it from every runlevel, not only `runlevel`, and delete its init script. `state`, `enabled` and `runlevel` are ignored" }
     }
     param "script" { description = "Init script body; empty manages an existing script under /etc/init.d without rewriting it" type = "string" default = "" }
     param "state" {
-      description = "Runtime state to enforce"
+      description = "Runtime state to enforce, read from rc-service status"
       type = "symbol"
       default = :unmanaged
 
-      symbol "running"   { description = "Start the service" }
-      symbol "stopped"   { description = "Stop the service" }
+      symbol "running"   { description = "Start the service. A crashed service (status 32) is zapped and started again; a stale one is restarted" }
+      symbol "stopped"   { description = "Stop the service. A crashed one is zapped, so OpenRC no longer counts it as started" }
       symbol "unmanaged" { description = "Leave the runtime state alone" }
     }
     param "enabled" {
@@ -37,7 +37,7 @@ package "linux_openrc" {
       symbol "disabled"  { description = "Remove the service from the runlevel" }
       symbol "unmanaged" { description = "Leave runlevel membership alone" }
     }
-    param "runlevel" { description = "Runlevel this service's enablement is managed in" type = "string" default = "default" }
+    param "runlevel" { description = "Runlevel this service's enablement is managed in, a directory name under /etc/runlevels" type = "string" default = "default" }
   }
 
   // OpenRC is Alpine's init, so the test runs in an Alpine VM — the rc
@@ -91,6 +91,114 @@ RC
       expect = "already_configured"
       requires = ["remove"]
       properties { name = "acpid" state = :running }
+    }
+  }
+
+  // The same rc commands without a booted OpenRC: the Alpine container
+  // installs openrc and marks a softlevel, which is all rc-service and
+  // rc-update need, so the edge cases run without a VM. Installing openrc
+  // needs network access.
+  test "service_edges_converge" {
+    description = "Crashed, stopped, changed, non-executable, disabled and running-then-removed services converge"
+    image = "alpine:3.23"
+    setup = <<'SH'
+apk add -q openrc >/dev/null 2>&1 || exit 1
+mkdir -p /run/openrc && touch /run/openrc/softlevel
+mk() {
+printf '#!/sbin/openrc-run\ncommand=/bin/sleep\ncommand_args=%s\ncommand_background=true\npidfile=/run/%s.pid\n' 3600 $1 > /etc/init.d/$1
+chmod +x /etc/init.d/$1
+}
+for s in cw-crash cw-crashstop cw-stopme cw-change cw-stale cw-noexec cw-dis cw-gone; do mk $s; done
+for s in cw-crash cw-crashstop cw-stopme cw-change cw-stale cw-gone; do rc-service $s start >/dev/null 2>&1 || exit 1; done
+kill $(cat /run/cw-crash.pid) $(cat /run/cw-crashstop.pid)
+chmod a-x /etc/init.d/cw-noexec
+rc-update add cw-dis default >/dev/null
+rc-update add cw-gone default >/dev/null && rc-update add cw-gone boot >/dev/null
+cp /run/cw-gone.pid /run/cw-gone.seeded
+cp /run/cw-stale.pid /run/cw-stale.seeded
+# The script changes after the start, with the content the step wants.
+sleep 2 && touch /etc/init.d/cw-stale
+SH
+    verify = "tests/service_edges_verify.ws"
+
+    // Status 32: `start` alone answers "already started" and changes nothing.
+    step "crashed_running" {
+      description = "Start a crashed service again"
+      resource = "service"
+      properties { name = "cw-crash" state = :running }
+    }
+
+    step "crashed_stopped" {
+      description = "Stop a crashed service"
+      resource = "service"
+      properties { name = "cw-crashstop" state = :stopped }
+    }
+
+    step "stopped" {
+      description = "Stop a running service"
+      resource = "service"
+      properties { name = "cw-stopme" state = :stopped }
+    }
+
+    // Running `sleep 3600`; the new script runs `sleep 7200`.
+    step "changed" {
+      description = "Rewrite a running service's script and restart it"
+      resource = "service"
+      properties {
+        name = "cw-change"
+        state = :running
+        script = <<'RC'
+#!/sbin/openrc-run
+command=/bin/sleep
+command_args=7200
+command_background=true
+pidfile=/run/cw-change.pid
+RC
+      }
+    }
+
+    // Content already matches, but the script is newer than the start.
+    step "stale" {
+      description = "Restart a service started before its script last changed"
+      resource = "service"
+      properties {
+        name = "cw-stale"
+        state = :running
+        script = "#!/sbin/openrc-run\ncommand=/bin/sleep\ncommand_args=3600\ncommand_background=true\npidfile=/run/cw-stale.pid\n"
+      }
+    }
+
+    step "exec_bit" {
+      description = "Restore a missing exec bit on an existing script"
+      resource = "service"
+      properties { name = "cw-noexec" }
+    }
+
+    step "disabled" {
+      description = "Drop a service from the default runlevel"
+      resource = "service"
+      properties { name = "cw-dis" enabled = :disabled }
+    }
+
+    // Running, and in both the default and boot runlevels.
+    step "remove_running" {
+      description = "Remove a running service that is in two runlevels"
+      resource = "service"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "bad_name" {
+      description = "A name of '.' would delete /etc/init.d itself"
+      resource = "service"
+      expect = "error"
+      properties { name = "." ensure = :absent }
+    }
+
+    step "bad_runlevel" {
+      description = "A runlevel that walks out of /etc/runlevels"
+      resource = "service"
+      expect = "error"
+      properties { name = "cw-dis" runlevel = "../init.d" enabled = :enabled }
     }
   }
 }
