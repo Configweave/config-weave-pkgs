@@ -1,42 +1,45 @@
 use value
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+// `name` may name its bucket ("extras/vscode"); scoop installs the app
+// under its bare name, which is what the probe and uninstall use.
+fn app_name(name: string) -> string {
+    let parts = name.split("/")
+    parts.get(parts.len() - 1).unwrap_or("")
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    if name == "" { return Err("missing 'name' parameter") }
+    let parts = name.split("/")
+    if parts.len() > 2 { return Err("'name' must be app or bucket/app, got '" + name + "'") }
+    for part in parts { common::validate_name("name", part)? }
+    common::want_present(params)?
+    Ok(name)
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-// A scoop app is installed when its current junction exists under the
-// scoop root (per-user, so SCOOP env var wins, else ~\scoop).
-fn installed(name: string) -> Result[bool, string] {
-    let script = "$root = if ($env:SCOOP) {{ $env:SCOOP }} else {{ \"$env:USERPROFILE\\scoop\" }}; if (Test-Path \"$root\\apps\\" + name + "\\current\") {{ 'YES' }} else {{ 'NO' }}"
-    Ok(shell::powershell(script, Value::Null)?.stdout.trim() == "YES")
+// Installed when the app's `current` junction exists under the scoop root
+// (per-user: SCOOP wins, else ~\scoop). The app name travels in the
+// environment, never into the script text.
+fn installed(app: string) -> Result[bool, string] {
+    let script = common::scoop_root_ps() +
+        "if (Test-Path -LiteralPath (Join-Path $scoopRoot ('apps\\' + $env:CW_APP + '\\current'))) {{ 'YES' }} else {{ 'NO' }}\n"
+    let out = common::query(script, #{ "CW_APP": Value::String(app) })?
+    if !out.success { return Err(common::failure("probing scoop app " + app, out)) }
+    Ok(out.stdout.trim() == "YES")
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if installed(name)? == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let name = validate(params)?
+    if installed(app_name(name))? == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmd = if want_present(params)? {
-        "scoop install " + ps_q(name) + "; exit $LASTEXITCODE"
-    } else {
-        "scoop uninstall " + ps_q(name) + "; exit $LASTEXITCODE"
-    }
-    let out = shell::powershell(cmd, Value::Null)?
-    if !out.success { return Err(out.stdout.trim() + " " + out.stderr.trim()) }
+    let name = validate(params)?
+    let present = common::want_present(params)?
+    let verb = if present { "install" } else { "uninstall" }
+    let script = common::scoop_ps() + "& $scoop " + verb + " $env:CW_NAME\nexit $LASTEXITCODE\n"
+    let out = common::action(script, #{ "CW_NAME": Value::String(if present { name } else { app_name(name) }) })?
+    if !out.success { return Err(common::failure("scoop " + verb + " " + name, out)) }
     Ok(ApplyResult::Success)
 }

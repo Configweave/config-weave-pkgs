@@ -1,79 +1,188 @@
 package "windows_service" {
   description = "Manage Windows service installation, state and startup"
 
-  // One resource for the whole service: its SCM registration, its startup
-  // type and whether it is running. `state` and `startup` default to
-  // :unmanaged so this can register a service without also deciding those,
-  // or manage an existing service without supplying a binary path.
+  // One resource for the whole service: its SCM registration, its
+  // configuration, its startup type and whether it is running. Every field
+  // is reconciled on an existing service, not only at creation. String
+  // fields left empty and the :unmanaged symbols mean "leave this alone", so
+  // the resource can manage the state of an existing service (the Print
+  // Spooler, say) without restating its binary or account.
   resource "service" {
-    description = "Ensure a Windows service's SCM registration, startup type and running state"
+    description = "Ensure a Windows service's SCM registration, configuration, startup type and running state"
     script = "resources/service.ws"
     concurrency = "exclusive"
-    param "name" { description = "Service name (the SCM key, not the display name)" type = "string" required = true }
+    param "name" {
+      description = "Service name: the SCM key, matched exactly and case-insensitively (never the display name, never a wildcard). Must not contain '/', '\\' or '*?[]'"
+      type = "string"
+      required = true
+    }
     param "ensure" {
       description = "Whether the service is registered with the SCM"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Register the service with the SCM" }
-      symbol "absent"  { description = "Stop the service and delete it" }
+      symbol "absent"  { description = "Stop the service, wait until it has stopped, then delete it. A service already marked for deletion (error 1072) and stopped counts as absent: the SCM removes it once the last open handle closes" }
     }
-    param "path" { description = "Binary path the service runs (may include arguments); required when :present, create-only" type = "string" default = "" }
-    param "display_name" { description = "Display name shown in the services console; create-only, empty defaults to the service name" type = "string" default = "" }
-    param "description" { description = "Service description; create-only" type = "string" default = "" }
-    param "user" { description = "Account the service runs as; create-only, empty uses LocalSystem" type = "string" default = "" }
-    param "password" { description = "Password for the service account; create-only, leave empty for built-in accounts" type = "string" default = "" }
+    param "path" {
+      description = "Executable the service runs, without quotes or arguments; required to create the service. The resource always registers it quoted (\"C:\\Program Files\\x.exe\"), so an unquoted ImagePath with a space is rewritten. Compared case-insensitively after expanding environment variables. Empty leaves an existing service's path alone"
+      type = "string"
+      default = ""
+    }
+    param "arguments" {
+      description = "Arguments appended after the quoted path in the ImagePath, verbatim and compared exactly. Only used when path is set"
+      type = "string"
+      default = ""
+    }
+    param "display_name" { description = "Display name shown in the services console; empty leaves it alone (a new service then shows its name)" type = "string" default = "" }
+    param "description" { description = "Service description; empty leaves it alone (so a description cannot be cleared through this resource)" type = "string" default = "" }
+    param "user" {
+      description = "Account the service runs as: LocalSystem, NT AUTHORITY\\LocalService, NT AUTHORITY\\NetworkService, NT SERVICE\\<name>, .\\<local user>, DOMAIN\\<user> or DOMAIN\\<gMSA>$. Compared by SID, so LocalSystem and NT AUTHORITY\\SYSTEM, or .\\x and COMPUTER\\x, are the same account. Any account other than the built-in and virtual ones is granted SeServiceLogonRight. Empty leaves the account alone (a new service runs as LocalSystem)"
+      type = "string"
+      default = ""
+    }
+    param "password" {
+      description = "Password for user; leave empty for built-in, virtual and gMSA accounts. Passed to PowerShell through the environment, never on a command line. The SCM cannot report a password back, so it is pushed only when the service is created, when user changes, or when password_revision changes"
+      type = "string"
+      default = ""
+    }
+    param "password_revision" {
+      description = "Any string naming the current password (\"1\", \"2024-06\"). Change it whenever password changes and the next run pushes the new password. The last pushed revision is recorded in HKLM\\SOFTWARE\\ConfigWeave\\windows_service\\<name>. Empty means the password is never re-pushed to an existing service"
+      type = "string"
+      default = ""
+    }
     param "state" {
-      description = "Runtime state to enforce"
+      description = "Runtime state to enforce. A paused service is resumed for :running, and pending states are waited out. When path or user changes on a service that should be :running it is restarted onto the new configuration"
       type = "symbol"
       default = :unmanaged
 
-      symbol "running"   { description = "Start the service" }
-      symbol "stopped"   { description = "Stop the service" }
+      symbol "running"   { description = "Start (or resume) the service and wait until it is running" }
+      symbol "stopped"   { description = "Stop the service and wait until it is stopped" }
       symbol "unmanaged" { description = "Leave the runtime state alone" }
     }
     param "startup" {
-      description = "Startup type to enforce; unlike the create-only fields this is reconciled on every run"
+      description = "Startup type to enforce. :running with :disabled is rejected, since a disabled service cannot be started"
       type = "symbol"
       default = :unmanaged
 
-      symbol "automatic" { description = "Start at boot" }
-      symbol "manual"    { description = "Start on demand" }
-      symbol "disabled"  { description = "Cannot be started" }
-      symbol "unmanaged" { description = "Leave the startup type alone (a newly created service is made Automatic)" }
+      symbol "automatic"         { description = "Start at boot" }
+      symbol "automatic_delayed" { description = "Start shortly after boot (Automatic (Delayed Start))" }
+      symbol "manual"            { description = "Start on demand" }
+      symbol "disabled"          { description = "Cannot be started" }
+      symbol "unmanaged"         { description = "Leave the startup type alone (a newly created service is made Automatic)" }
+    }
+    param "timeout" {
+      description = "How long to wait for each start, stop, resume or pending state to finish before failing with the last observed state"
+      type = "duration"
+      default = 60s
     }
   }
 
-  // Registration converges by creating a service that never has to start
-  // (svchost with a real group is a valid, inert BinaryPathName), so no
-  // extra payload is needed. State/startup coverage uses the Print Spooler,
-  // which ships running with automatic startup on Server 2025 — stopping it
-  // and switching it to manual are both real converges that stay put.
+  // Setup builds a tiny real service binary (a C# ServiceBase that supports
+  // pause) under a path with a space, then seeds the drift each step
+  // converges away from:
+  //   weave-drift   unquoted ImagePath, old display name and description, Manual
+  //   weave-paused  running then paused, delayed-auto start
+  //   weave-gone    running (removal must stop it and wait first)
+  //   weave-marked  running and already marked for deletion (sc delete)
+  //   weave-rotate  runs as .\weavesvc2 with revision 1 recorded; the
+  //                 account's password is then changed behind its back
+  //   weavesvc      a local user with no SeServiceLogonRight
+  // Windows setups run under `cmd /C`, so the PowerShell holds no double
+  // quotes, pipes or redirections ([char]34 builds the one quoted path).
   test "service_management_converges" {
-    description = "Service registration, state and startup type converge"
+    description = "Service registration, reconcile of every field, state transitions, accounts and removal converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave svc'; $e=$d+'\\weave-svc.exe'; $q=[char]34+$e+[char]34; if (-not (Test-Path $e)) { $null = New-Item -ItemType Directory -Force -Path $d; Add-Type -TypeDefinition 'using System.ServiceProcess; public class S : ServiceBase { public S() { ServiceName = typeof(S).Name; CanPauseAndContinue = true; } public static void Main() { ServiceBase.Run(new S()); } }' -OutputAssembly $e -OutputType ConsoleApplication -ReferencedAssemblies System.ServiceProcess }; function Mk($n) { if (-not (Get-Service -Name $n -ErrorAction SilentlyContinue)) { $null = New-Service -Name $n -BinaryPathName $q -StartupType Manual; Start-Service -Name $n } }; if (-not (Get-Service -Name weave-drift -ErrorAction SilentlyContinue)) { $null = New-Service -Name weave-drift -BinaryPathName $e -DisplayName 'Old Name' -Description 'old' -StartupType Manual }; Mk weave-paused; $null = sc.exe pause weave-paused; $null = sc.exe config weave-paused start= delayed-auto; Mk weave-gone; Mk weave-marked; $null = sc.exe delete weave-marked; $null = net user weavesvc Wv-Pa55w0rd1 /add; $null = net user weavesvc2 Wv-Old-Pa55w1 /add; if (-not (Get-Service -Name weave-rotate -ErrorAction SilentlyContinue)) { $c = New-Object System.Management.Automation.PSCredential('.\\weavesvc2', (ConvertTo-SecureString 'Wv-Old-Pa55w1' -AsPlainText -Force)); $null = New-Service -Name weave-rotate -BinaryPathName $q -StartupType Manual -Credential $c; $k='HKLM:\\SOFTWARE\\ConfigWeave\\windows_service\\weave-rotate'; $null = New-Item -Force -Path $k; Set-ItemProperty -Path $k -Name PasswordRevision -Value '1'; $null = net user weavesvc2 Wv-New-Pa55w2 }"
     verify = "tests/service_verify.ws"
 
-    step "register_test_service" {
-      description = "Register the weave-testsvc service"
+    step "create_service" {
+      description = "Create a service with a quoted path, arguments, a built-in account, automatic startup, and start it"
       resource = "service"
       properties {
-        name = "weave-testsvc"
-        path = "C:\\Windows\\System32\\svchost.exe -k netsvcs"
-        display_name = "Weave Test Service"
-        description = "config-weave testlab service"
-        startup = :manual
+        name = "weave-new"
+        path = "C:\\weave svc\\weave-svc.exe"
+        arguments = "--cw new"
+        display_name = "Weave New Service"
+        description = "created by config-weave"
+        user = "NT AUTHORITY\\LocalService"
+        startup = :automatic
+        state = :running
       }
     }
 
-    // One step now covers what service_state and service_startup did
-    // separately. No `path`: it is only needed to create a service, and the
-    // Spooler already exists.
-    step "spooler" {
-      description = "Stop the Print Spooler and switch it to manual startup"
+    step "reconcile_existing" {
+      description = "Rewrite an existing service's unquoted path, display name, description and startup type, and start it"
       resource = "service"
-      properties { name = "Spooler" state = :stopped startup = :manual }
+      properties {
+        name = "weave-drift"
+        path = "C:\\weave svc\\weave-svc.exe"
+        arguments = "--cw drift"
+        display_name = "Weave Drift Service"
+        description = "reconciled by config-weave"
+        startup = :automatic_delayed
+        state = :running
+      }
+    }
+
+    step "resume_paused" {
+      description = "Resume a paused service and clear its delayed start"
+      resource = "service"
+      properties { name = "weave-paused" startup = :automatic state = :running }
+    }
+
+    step "custom_account" {
+      description = "Run a new service as a local user, which needs SeServiceLogonRight granted to start"
+      resource = "service"
+      properties {
+        name = "weave-acct"
+        path = "C:\\weave svc\\weave-svc.exe"
+        user = ".\\weavesvc"
+        password = "Wv-Pa55w0rd1"
+        password_revision = "1"
+        startup = :manual
+        state = :running
+      }
+    }
+
+    // The account's password changed after the service was registered, so
+    // the service can only start if the new revision pushes the password.
+    step "rotate_password" {
+      description = "A new password_revision pushes the new password to an existing service"
+      resource = "service"
+      properties {
+        name = "weave-rotate"
+        user = ".\\weavesvc2"
+        password = "Wv-New-Pa55w2"
+        password_revision = "2"
+        state = :running
+      }
+    }
+
+    step "remove_running" {
+      description = "Remove a running service: stop it, wait, delete it"
+      resource = "service"
+      properties { name = "weave-gone" ensure = :absent }
+    }
+
+    step "remove_marked" {
+      description = "Remove a running service already marked for deletion: stopping it completes the deletion"
+      resource = "service"
+      properties { name = "weave-marked" ensure = :absent }
+    }
+
+    step "spooler" {
+      description = "Stop the Print Spooler and disable it"
+      resource = "service"
+      properties { name = "Spooler" state = :stopped startup = :disabled }
+    }
+
+    step "running_disabled_rejected" {
+      description = "state = :running with startup = :disabled is an error"
+      resource = "service"
+      expect = "error"
+      properties { name = "weave-new" state = :running startup = :disabled }
     }
 
     step "ghost_service_absent" {

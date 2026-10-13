@@ -577,6 +577,146 @@ rather than encryption, so the file is also restricted to SYSTEM and
 Administrators on Windows and mode 0600 elsewhere. Pass passwords with
 `secret()`. `architecture` defaults to the machine running the step; set it
 when generating a file for an image of another architecture.
+### `windows_service`
+
+One `service` resource covers a Windows service's whole SCM registration:
+existence (`ensure`), the executable and its `arguments`, `display_name`,
+`description`, the account (`user`, `password`, `password_revision`), the
+startup type and the running state. Every field is reconciled on an existing
+service, not only at creation. An empty string or `:unmanaged` leaves that
+field alone, so the resource can stop the Print Spooler without restating its
+binary or account.
+
+- The service is matched by its exact name, never by display name or
+  wildcard.
+- `path` is the bare executable and is always registered quoted, which closes
+  the unquoted-service-path hole. Arguments go in `arguments`.
+- `user` is compared by SID, so `LocalSystem` and `NT AUTHORITY\SYSTEM`, or
+  `.\svc` and `HOST\svc`, are the same account. Any account other than the
+  built-in and `NT SERVICE\…` ones is granted `SeServiceLogonRight`, which
+  neither `New-Service` nor `Win32_Service.Change` does.
+- Passwords reach PowerShell through the environment, never a command line.
+  The SCM cannot report a password back, so it is pushed when the service is
+  created, when `user` changes, or when `password_revision` changes. Bump
+  the revision whenever the password changes.
+- `startup` includes `:automatic_delayed`.
+- Start, stop and resume wait for the target state, up to `timeout` (60s).
+  Pending states are waited out, and a paused service is resumed. A service
+  whose `path` or account changed while it should be `:running` is restarted
+  so the change takes effect.
+- `ensure = :absent` stops the service and waits before deleting it. A
+  service that is already marked for deletion and stopped counts as absent,
+  because the SCM removes it when its last handle closes.
+
+**Migrating from the old `path`:** `path` used to hold the executable and
+its arguments in one unquoted string. Split it:
+`path = "C:\\svc\\app.exe"` and `arguments = "-k foo"`. A `path` that does
+not exist and contains ` -` or ` /` is rejected with that hint.
+
+### `windows_features`
+
+Three resources, one per Windows mechanism for optional components:
+
+- `windows_optional_feature`: DISM optional features. Enabling also enables
+  the features it depends on (`-All`). Disabling leaves those dependencies
+  enabled and keeps the payload on disk.
+- `windows_capability`: Features on Demand. Adding one usually pulls its
+  payload from Windows Update, which can take many minutes. Windows reports
+  an unknown capability name as `NotPresent`, so a typo with
+  `ensure = :absent` reads as converged.
+- `windows_server_feature`: ServerManager roles and features. It needs
+  Windows Server; on client Windows, use `windows_optional_feature`.
+  `include_management_tools` works in both directions: it installs any
+  missing tools, and it removes them with the feature. The tool list is
+  whatever ServerManager's `-IncludeManagementTools` adds.
+
+Every name must match exactly one component. Wildcards are rejected, and a
+name that matches nothing is an error. The DISM resources take `source` and
+`limit_access` for payloads that are not in the component store, such as
+`NetFx3` on an offline Server. `windows_server_feature` takes `source`.
+
+A change that needs a reboot to finish reports `reboot_required`. The apply
+that made the change reports it, and so does every later check until the
+reboot. A pending change is therefore never mistaken for converged, and it
+is not redone on every run.
+
+### `windows_installers`
+
+- `msi_package` installs, upgrades or removes an MSI identified by its
+  ProductCode. Before msiexec runs, the package's own ProductCode and
+  ProductVersion are checked against `product_id` and `version`.
+  - When the same ProductCode is installed at another version, the package
+    is applied as a minor upgrade (`REINSTALL=ALL REINSTALLMODE=vomus`).
+  - A major upgrade changes the ProductCode, so a new major version needs a
+    new `product_id`.
+  - `alt_product_id` (formerly `package_code`) is a second GUID to look for
+    under the Uninstall key. `ensure = :absent` removes whichever GUID it
+    finds.
+  - Failures quote the error lines from msiexec's verbose log, which is
+    kept under `C:\ProgramData\config-weave\installers\logs`.
+- `exe_installer` runs an EXE installer. It detects the installation by
+  `install_path`, `install_reg` or both. `version` compares `DisplayVersion`
+  under `install_reg`, so `version` requires `install_reg`. Removal runs the
+  first of these that is set:
+  1. `uninstall_path` with `uninstall_args`.
+  2. The `QuietUninstallString` or `UninstallString` under the
+     `install_reg` key. An `MsiExec /I{…}` entry is made a silent `/X`.
+  3. The installer itself, with `uninstall_args`.
+
+  After the installer exits, the resource waits up to two minutes for the
+  install markers to appear or disappear, because many uninstallers return
+  before they finish.
+
+Both resources take a local path or an `http://` or `https://` URL, plus an
+optional `sha256` that is checked before anything runs. Downloaded files
+are kept under `C:\ProgramData\config-weave\installers`, one directory per
+URL. Windows Installer needs an MSI's original file again for repair and
+minor upgrades, so it must not stay in a temp directory.
+
+**Migrating:** rename `package_code` to `alt_product_id`. `exe_installer`
+no longer runs `path` with `args` to uninstall. It now uses `uninstall_path`
+or the registered uninstall command, or `path` with `uninstall_args`.
+
+### `windows_packages`
+
+Chocolatey, Scoop and winget, one set of resources per manager:
+
+- Chocolatey: `chocolatey_package` (with a `version` hold),
+  `chocolatey_source` (URL and `enabled`), `chocolatey_updated` and the
+  `chocolatey_packages` gatherer. A package installed at another version is
+  moved with `choco upgrade --version --allow-downgrade`, so the hold works
+  in both directions. Chocolatey 1.x and 2.x are both supported: 1.x gets
+  `--local-only` on every listing.
+- Scoop: `scoop_package` (accepts `bucket/app`), `scoop_bucket` (compares
+  the clone's origin with `url`), `scoop_cache_updated` and the
+  `scoop_packages` gatherer. Scoop is per-user, so everything happens under
+  the scoop root (`SCOOP`, else `~\scoop`) of the account config-weave runs
+  as. The refresh stamp is kept there too. For SYSTEM that root is under
+  `System32`, where scoop's shim executables cannot start, so the resources
+  put scoop's own git first on `PATH` (every bucket operation needs git).
+  Apps installed for SYSTEM still have broken shims, so prefer Chocolatey
+  or winget there.
+- winget: `winget_package` (with a `version` hold), `winget_source` (URL
+  and `type`), `winget_cache_updated` and the `winget_packages` gatherer.
+  Detection uses the `Microsoft.WinGet.Client` module if it is installed,
+  else `winget export`. The `winget list` table is never parsed, because
+  its headers are localized and its columns are truncated. When winget is
+  not on `PATH` (it never is for SYSTEM), the newest App Installer copy
+  under `WindowsApps` is used. That copy starts for SYSTEM only after the
+  Visual C++ 2015-2022 x64 runtime is installed machine-wide.
+
+Every source and bucket resource takes `ensure`. Names compare
+case-insensitively, as the managers compare them. Every script forces UTF-8
+output, so a non-ASCII package name cannot blank a listing. Chocolatey and
+Scoop are found on `PATH` first and then in their default locations, so a
+manager installed earlier in the same run is usable at once. A missing
+manager makes a removal converged, makes a gatherer return the empty shape,
+and makes an install fail with a clear error.
+
+`concurrency = "exclusive"` serialises steps of one resource type only. Two
+steps for the same manager but of different types, such as a source and a
+package, can run at once. Chain them with `requires` when one depends on
+the other.
 
 ### `mssql`
 

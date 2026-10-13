@@ -1,45 +1,58 @@
 use value
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
+// The capability's state. The name must match exactly one capability:
+// Get-WindowsCapability matches -Name as a wildcard pattern.
 fn state(name: string) -> Result[string, string] {
-    let script = "$ErrorActionPreference='Stop'; (Get-WindowsCapability -Online -Name " + ps_q(name) + ").State"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    let script = "$c = @(Get-WindowsCapability -Online -Name $env:CW_NAME -ErrorAction SilentlyContinue)\n" +
+        "if ($c.Count -ne 1) {{ throw ('expected exactly one capability named ' + $env:CW_NAME + ', found ' + $c.Count) }}\n" +
+        "$c[0].State.ToString()\n"
+    let out = common::run_ps(script, #{ "CW_NAME": Value::String(name) })?
+    if !out.success { return Err(common::failure("reading capability '" + name + "'", out)) }
     Ok(out.stdout.trim())
 }
 
+fn validate(params: Value) -> Result[string, string] {
+    let name = common::param_str(params, "name", "")
+    common::validate_name(name)?
+    common::single_line("source", common::param_str(params, "source", ""))?
+    common::want_present(params)?
+    Ok(name)
+}
+
+// InstallPending and UninstallPending mean the change is made but needs a
+// reboot; reporting that (rather than "not configured") stops every run
+// from adding or removing the capability again.
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let installed = state(name)? == "Installed"
-    if installed == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let name = validate(params)?
+    let st = state(name)?
+    if common::want_present(params)? {
+        if st == "Installed" { return Ok(CheckResult::AlreadyConfigured) }
+        if st == "InstallPending" { return Ok(CheckResult::RebootRequired) }
+        return Ok(CheckResult::NotConfigured)
+    }
+    if st == "NotPresent" || st == "Staged" || st == "Removed" { return Ok(CheckResult::AlreadyConfigured) }
+    if st == "UninstallPending" { return Ok(CheckResult::RebootRequired) }
+    Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmdlet = if want_present(params)? {
-        "Add-WindowsCapability -Online -Name " + ps_q(name)
+    let name = validate(params)?
+    let present = common::want_present(params)?
+    let cmdlet = if present {
+        "$a = @{{ Online = $true; Name = $env:CW_NAME }}\n" +
+        "if ([string]$env:CW_SOURCE -ne '') {{ $a.Source = $env:CW_SOURCE }}\n" +
+        "if ($env:CW_LIMIT -eq '1') {{ $a.LimitAccess = $true }}\n" +
+        "$r = Add-WindowsCapability @a\n"
     } else {
-        "Remove-WindowsCapability -Online -Name " + ps_q(name)
+        "$r = Remove-WindowsCapability -Online -Name $env:CW_NAME\n"
     }
-    let script = "$ErrorActionPreference='Stop'; $r = " + cmdlet + "; if ($r.RestartNeeded) {{ exit 3010 }} else {{ exit 0 }}"
-    let out = shell::powershell(script, Value::Null)?
+    let out = common::run_ps(cmdlet + "if ($r.RestartNeeded) {{ exit 3010 }}\n", #{
+        "CW_NAME": Value::String(name),
+        "CW_SOURCE": Value::String(common::param_str(params, "source", "")),
+        "CW_LIMIT": Value::String(if common::param_bool(params, "limit_access", false) { "1" } else { "0" })
+    })?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err(out.stderr.trim()) }
+    if !out.success { return Err(common::failure((if present { "adding" } else { "removing" }) + " capability '" + name + "'", out)) }
     Ok(ApplyResult::Success)
 }

@@ -1,5 +1,5 @@
 use value
-use shell
+use common
 
 fn empty_result() -> Value {
     let none: List[Value] = []
@@ -7,11 +7,12 @@ fn empty_result() -> Value {
 }
 
 // `choco list --limit-output` prints one "name|version" line per installed
-// package. A machine without Chocolatey gathers the empty shape.
+// package (Chocolatey 1.x needs --local-only for that). A machine without
+// Chocolatey gathers the empty shape; a listing that fails is an error.
 fn gather(params: Value) -> Result[Value, string] {
-    let script = "if (Get-Command choco -ErrorAction SilentlyContinue) {{ choco list --limit-output; exit $LASTEXITCODE }} else {{ exit 9009 }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Ok(empty_result()) }
+    let out = common::query(common::choco_ps() + "& $choco list --limit-output @chocoLocal\nexit $LASTEXITCODE\n", #{})?
+    if out.code == common::missing_code() { return Ok(empty_result()) }
+    if !out.success { return Err(common::failure("choco list", out)) }
 
     let entries = []
     for line in out.stdout.split("\n") {
