@@ -125,7 +125,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
 // PowerShell binding $exists (a DC for the domain answers the locator, the
 // way a join would ask) and $resolves (the name resolves in DNS at all).
 fn discover_ps(domain: string) -> string {
-    "$null = & nltest.exe ('/dsgetdc:' + " + common::ps_q(domain) + ") 2>&1; $exists = ($LASTEXITCODE -eq 0); " +
+    // Through cmd, so nltest's stderr never reaches PowerShell, which turns
+    // a native command's stderr into a terminating error under Stop.
+    "& cmd.exe /c " + common::ps_q("nltest /dsgetdc:" + domain + " >nul 2>&1") + "; $exists = ($LASTEXITCODE -eq 0); " +
     "$resolves = [bool](Resolve-DnsName -Name " + common::ps_q(domain) + " -ErrorAction SilentlyContinue); "
 }
 
