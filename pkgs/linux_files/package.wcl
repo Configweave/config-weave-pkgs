@@ -23,11 +23,19 @@ package "linux_files" {
   }
 
   resource "template" {
-    description = "Render a Tera template to a file with exact content"
+    description = "Render a Tera template to a file with exact content, or ensure the file is absent. Rendered content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Existing content that differs, or is not valid UTF-8, is drift"
     script = "resources/template.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
-    param "template" { description = "Tera template body (author as a raw heredoc)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Render the template to path" }
+      symbol "absent"  { description = "Delete the file; template and vars are not needed" }
+    }
+    param "template" { description = "Tera template body (author as a raw heredoc); required when ensure is :present" type = "string" default = "" }
     param "vars" { description = "Variables exposed to the template" type = "map" }
     param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
     param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
@@ -187,9 +195,10 @@ package "linux_files" {
   }
 
   test "template_renders" {
-    description = "Tera template resource renders and converges"
+    description = "Tera template resource renders over drifted content and removes a rendered file"
     image = "debian:12"
     group = "files"
+    setup = "mkdir -p /tmp/cw-tmpl && printf '# stale\\n' > /tmp/cw-tmpl/app.conf && chmod 600 /tmp/cw-tmpl/app.conf && echo old > /tmp/cw-tmpl/old.conf"
     verify = "tests/template_verify.ws"
 
     step "tmpl" {
@@ -205,6 +214,19 @@ servers={{ hosts | join(sep=",") }}
 {% if enabled %}enabled=yes{% endif %}
 TMPL
       }
+    }
+
+    step "rm_tmpl" {
+      description = "Remove a file a template once rendered"
+      resource = "template"
+      properties { path = "/tmp/cw-tmpl/old.conf" ensure = :absent }
+    }
+
+    step "no_body" {
+      description = "A present template without a body is rejected"
+      resource = "template"
+      expect = "error"
+      properties { path = "/tmp/cw-tmpl/empty.conf" }
     }
   }
 
