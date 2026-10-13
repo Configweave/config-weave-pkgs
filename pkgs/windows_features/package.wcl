@@ -23,7 +23,7 @@ package "windows_features" {
       symbol "absent"  { description = "Disable the feature; its dependencies stay enabled and its payload stays on disk" }
     }
     param "source" {
-      description = "Where DISM finds a payload that is not in the local component store: a mounted install.wim (wim:D:\\sources\\install.wim:1) or a sources\\sxs folder. Needed for features shipped with their payload removed, such as NetFx3 on Server. Empty uses the component store and Windows Update"
+      description = "Where DISM finds a payload that is not in the local component store: a mounted install.wim (wim:D:\\sources\\install.wim:1) or a sources\\sxs folder. Needed for features shipped with their payload removed, such as NetFx3 on Server. Empty uses the component store and Windows Update. Only used while enabling"
       type = "string"
       default = ""
     }

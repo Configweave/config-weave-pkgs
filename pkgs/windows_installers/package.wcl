@@ -24,7 +24,7 @@ package "windows_installers" {
     param "sha256" { description = "Expected SHA-256 of the .msi (64 hex digits). Checked before msiexec runs; a mismatch is an error" type = "string" default = "" }
     param "transforms" { description = "MST transform paths or http(s) URLs, applied in order via TRANSFORMS= at first install. Windows Installer caches them, so a minor upgrade reuses them and they cannot be changed later" type = "list" }
     param "properties" {
-      description = "Public property assignments appended to the msiexec command line, one NAME=value per entry. Values are passed verbatim, so a value with spaces carries its own double quotes: INSTALLDIR=\"C:\\Program Files\\App\". They are visible on the msiexec command line, so do not put secrets here"
+      description = "Public property assignments appended to the msiexec command line, one NAME=value per entry. Values are passed verbatim, so a value with spaces carries its own double quotes: INSTALLDIR=\"C:\\Program Files\\App\". They are visible on the msiexec command line, so do not put secrets here. Install-time only: Windows Installer does not record them, so they are not compared once the product is installed"
       type = "list"
     }
     param "version" {
@@ -40,7 +40,7 @@ package "windows_installers" {
     script = "resources/exe_installer.ws"
     concurrency = "exclusive"
     param "path" { description = "Local path or http(s) URL of the installer .exe; required when :present" type = "string" default = "" }
-    param "args" { description = "Arguments for the installer (its silent-install switches), passed verbatim" type = "string" default = "" }
+    param "args" { description = "Arguments for the installer (its silent-install switches), passed verbatim. Install-time only: nothing records them, so they are not compared once the markers exist" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of the installer (64 hex digits). Checked before it runs; a mismatch is an error" type = "string" default = "" }
     param "ensure" {
       description = "Desired state: :present or :absent"
