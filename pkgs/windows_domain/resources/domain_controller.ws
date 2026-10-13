@@ -85,7 +85,10 @@ fn probe(params: Value, domain: string, present: bool) -> Result[string, string]
         common::dsrole_ps() + common::pending_ps("domain_controller") +
         "$ds = Get-CwDsRole; " +
         "if ($pending -or $ds.role_reboot) {{ 'REBOOT' }} " +
-        "elseif ($ds.role -lt 4 -or ($ds.dns -ine " + common::ps_q(domain) + " -and $ds.netbios -ine " + common::ps_q(domain) + ")) {{ 'OTHER' }} " +
+        "elseif ($ds.role -lt 4 -or ($ds.dns -ine " + common::ps_q(domain) + " -and $ds.netbios -ine " + common::ps_q(domain) + ")) {{ " +
+        // Promotion refuses to start while a servicing reboot is pending
+        // (an AD-DS feature install can leave one).
+        (if present { "if (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') {{ 'REBOOT' }} else {{ 'OTHER' }} }} " } else { "'OTHER' }} " }) +
         "else {{ " + drift + "ConvertTo-Json -InputObject @($drift) -Compress }}")
 }
 

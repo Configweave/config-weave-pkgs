@@ -125,6 +125,12 @@ fn install_role(m: Machine) -> Result[bool, string] {
     if !r.ok {
         return Err("AD-DS role install failed: " + r.status + " (" + r.message + ")")
     }
+    // The feature can ask for a restart, and promotion refuses to start
+    // until it has had one.
+    if r.status == "reboot_required" {
+        m.reboot()?
+        let _ready = settle(m)?
+    }
     Ok(true)
 }
 
