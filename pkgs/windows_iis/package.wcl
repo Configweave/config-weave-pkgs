@@ -2079,8 +2079,17 @@ package "windows_iis" {
       symbol "web_config" { description = "The web.config at site and path" }
     }
     param "filter" { description = "The section or element the attribute lives on, such as system.webServer/asp or system.applicationHost/sites/siteDefaults/logFile" type = "string" required = true }
-    param "name" { description = "Attribute name; dotted names reach a child element, such as processModel.identityType" type = "string" required = true }
-    param "value" { description = "The value to set, written as text. Durations are IIS's own \"HH:MM:SS\" spelling" type = "string" required = true }
+    param "name" { description = "Attribute name; dotted names reach a child element, such as processModel.identityType. Letters, digits, '_' and '.' only" type = "string" required = true }
+    param "value" { description = "The value to set, written as text; empty writes an empty string. Durations are IIS's own \"HH:MM:SS\" spelling" type = "string" default = "" }
+    param "secret" { description = "Keep the value out of the log and off the PowerShell command line. Implied for any attribute whose name contains \"password\"" type = "bool" default = false }
+    param "ensure" {
+      description = "Desired state: :present sets the attribute; :absent deletes it at this level (site, path and store), so the inherited value applies again"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The attribute has the value at this level" }
+      symbol "absent"  { description = "The attribute is not written at this level" }
+    }
     param "value_type" {
       description = "How `value` is converted before it is written; IIS's schema rejects a string where it wants a number or a flag"
       type = "symbol"
