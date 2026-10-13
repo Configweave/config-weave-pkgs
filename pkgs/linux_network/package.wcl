@@ -39,7 +39,7 @@ package "linux_network" {
   }
 
   resource "ufw_rule" {
-    description = "Ensure a ufw rule is present or absent"
+    description = "Ensure a ufw rule is recorded or deleted. Presence is read from ufw show added, so it works while ufw is inactive; enabling the firewall is not managed here. ufw needs a working iptables backend"
     script = "resources/ufw_rule.ws"
     concurrency = "global"
     param "ensure" {
@@ -50,9 +50,18 @@ package "linux_network" {
       symbol "present" { description = "Add the rule" }
       symbol "absent"  { description = "Delete the rule" }
     }
-    param "action" { description = "Rule action: allow, deny, reject or limit" type = "string" default = "allow" }
-    param "port" { description = "Port (with optional protocol) such as 22/tcp, or an application profile name" type = "string" required = true }
-    param "from" { description = "Optional source address or CIDR" type = "string" default = "" }
+    param "action" {
+      description = "Rule action"
+      type = "symbol"
+      default = :allow
+
+      symbol "allow"  { description = "Accept matching traffic" }
+      symbol "deny"   { description = "Drop matching traffic silently" }
+      symbol "reject" { description = "Refuse matching traffic with an error to the sender" }
+      symbol "limit"  { description = "Accept, but deny a source that opens 6 or more connections in 30 seconds" }
+    }
+    param "port" { description = "Port spec such as 22, 22/tcp, 6000:6007/tcp or 80,443/tcp, or an application profile name such as OpenSSH or 'WWW Full' (anything not starting with a digit is a profile; ufw app list shows them)" type = "string" required = true }
+    param "from" { description = "Optional source address or CIDR; empty or any means every source" type = "string" default = "" }
   }
 
   resource "nftables_table" {
@@ -203,18 +212,59 @@ package "linux_network" {
       expect = "already_configured"
       properties { family = "inet" name = "cw-never-created" ensure = :absent }
     }
+  }
 
-    step "ufw" {
-      description = "Record a ufw rule"
+  // ufw only needs an iptables backend, and the container kernel has the
+  // legacy tables but no nf_tables, so setup switches the alternatives.
+  test "ufw_converges" {
+    description = "ufw rules for ports, sources and application profiles are added and deleted"
+    image = "debian:12"
+    group = "network"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin; command -v ufw >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ufw >/dev/null) && update-alternatives --set iptables /usr/sbin/iptables-legacy >/dev/null && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >/dev/null && ufw allow 7070/tcp >/dev/null 2>&1 && ufw deny from 10.1.0.0/16 to any app SSH >/dev/null 2>&1; ufw show added 2>/dev/null | grep -q 'ufw allow 7070/tcp'"
+    verify = "tests/ufw_verify.ws"
+
+    step "port" {
+      description = "Allow a port"
       resource = "ufw_rule"
-      properties { action = "allow" port = "9090/tcp" ensure = :present }
+      properties { port = "9090/tcp" }
     }
 
-    step "ufw_from_source" {
-      description = "Record a source-scoped ufw rule"
+    step "from_source" {
+      description = "Allow a port from a source"
       resource = "ufw_rule"
-      requires = ["ufw"]
-      properties { action = "allow" port = "9091/tcp" from = "10.0.0.0/8" ensure = :present }
+      properties { action = :limit port = "9091/tcp" from = "10.0.0.0/8" }
+    }
+
+    step "app_from_source" {
+      description = "Allow an application profile whose name has a space, from a source"
+      resource = "ufw_rule"
+      properties { port = "WWW Full" from = "192.168.0.0/16" }
+    }
+
+    step "remove_port" {
+      description = "Delete a seeded port rule"
+      resource = "ufw_rule"
+      properties { port = "7070/tcp" ensure = :absent }
+    }
+
+    step "remove_app" {
+      description = "Delete a seeded application rule with a source"
+      resource = "ufw_rule"
+      properties { action = :deny port = "SSH" from = "10.1.0.0/16" ensure = :absent }
+    }
+
+    step "injection" {
+      description = "A port that would run a second command is rejected"
+      resource = "ufw_rule"
+      expect = "error"
+      properties { port = "22; touch /tmp/cw-pwned" }
+    }
+
+    step "bad_source" {
+      description = "A source that is not an address is rejected"
+      resource = "ufw_rule"
+      expect = "error"
+      properties { port = "22" from = "10.0.0.0/8 to any port 1" }
     }
   }
 
