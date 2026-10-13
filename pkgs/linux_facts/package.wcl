@@ -31,8 +31,17 @@ package "linux_facts" {
   gatherer "network" {
     description = "Enumerate network interfaces and detect the network management system"
     script = "gatherers/network.ws"
-    returns "interfaces" { description = "One { name, mac, state, ipv4, ipv6 } map per interface" type = "list" }
-    returns "network_system" { description = "Detected network manager (netplan, NetworkManager, systemd-networkd, wicked, ifupdown, unknown)" type = "string" }
+    returns "interfaces" { description = "One { name, mac, state, ipv4, ipv6 } map per interface; the address lists need iproute2 (ip) and are empty without it" type = "list" }
+    returns "network_system" {
+      description = "Detected network management system. A daemon counts when systemd reports it active or, under any other init, when its process is running"
+      type = "symbol"
+      symbol "netplan"          { description = "/etc/netplan/*.yaml exists; netplan wins over the renderer it drives" }
+      symbol "network_manager"  { description = "NetworkManager is running" }
+      symbol "systemd_networkd" { description = "systemd-networkd is running" }
+      symbol "wicked"           { description = "wicked is running" }
+      symbol "ifupdown"         { description = "/etc/network/interfaces exists and none of the above is running" }
+      symbol "unknown"          { description = "None of the above" }
+    }
   }
 
   gatherer "services" {
@@ -77,6 +86,9 @@ package "linux_facts" {
     gather "net" {
       description = "Interfaces and the network manager"
       from = "network"
+      expect {
+        network_system = :netplan
+      }
     }
 
     gather "mnt" {
@@ -90,14 +102,16 @@ package "linux_facts" {
     }
   }
 
-  // /etc/os-release becomes a copy whose PRETTY_NAME is single-quoted, and
-  // a mount point with a space shows up in /proc/mounts as \040.
+  // /etc/os-release becomes a copy whose PRETTY_NAME is single-quoted, a
+  // mount point with a space shows up in /proc/mounts as \040, and a copy
+  // of sleep runs under the name NetworkManager.
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"
     setup = <<'SH'
 sed "s/^PRETTY_NAME=.*/PRETTY_NAME='Debian 12 (cw)'/" /usr/lib/os-release > /tmp/os-release && rm /etc/os-release && mv /tmp/os-release /etc/os-release
 mkdir -p "/mnt/cw space" && mount -t tmpfs tmpfs "/mnt/cw space"
+cp /bin/sleep /usr/local/bin/NetworkManager && (nohup NetworkManager 3600 >/dev/null 2>&1 &)
 SH
     verify = "tests/facts_verify.ws"
 
@@ -122,9 +136,14 @@ SH
       }
     }
 
+    // The stand-in NetworkManager process from setup: without systemd,
+    // only a process scan can see it.
     gather "net" {
-      description = "Interfaces enumerate and a network system is reported"
+      description = "Interfaces enumerate, and NetworkManager is found without systemd"
       from = "network"
+      expect {
+        network_system = :network_manager
+      }
     }
 
     gather "mnt" {

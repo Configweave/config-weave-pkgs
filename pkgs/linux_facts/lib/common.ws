@@ -1,4 +1,5 @@
 use value
+use fs
 use shell
 
 // Helpers shared by linux_facts' gatherers. Imported with `use common`;
@@ -29,4 +30,14 @@ fn run_ok(cmd: string) -> bool {
 // escaped backslash is never re-read as the start of another escape.
 fn unescape_octal(f: string) -> string {
     f.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+}
+
+// Whether a process with this /proc/<pid>/comm is running. Works under
+// any init system, unlike `systemctl is-active`. comm is truncated to 15
+// characters, so pass names as the kernel stores them.
+fn process_running(comm: string) -> bool {
+    for p in fs::glob("/proc/[0-9]*/comm").unwrap_or([]) {
+        if fs::read(p).unwrap_or("").trim() == comm { return true }
+    }
+    false
 }

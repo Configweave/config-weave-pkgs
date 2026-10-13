@@ -23,13 +23,20 @@ fn addr_records() -> List[List[string]] {
     recs
 }
 
+// Under systemd, ask it; elsewhere (OpenRC, runit, containers) look for
+// the daemon's process. The bare token is returned without a leading
+// colon; the engine promotes it to a WCL symbol.
+fn active(unit: string, comm: string) -> bool {
+    common::run_ok("systemctl is-active --quiet " + unit + " 2>/dev/null") || common::process_running(comm)
+}
+
 fn detect_network_system() -> string {
     // netplan first: on netplan hosts networkd/NetworkManager is just the
     // renderer — netplan is the layer the operator edits.
     if !fs::glob("/etc/netplan/*.yaml").unwrap_or([]).is_empty() { return "netplan" }
-    if common::run_ok("systemctl is-active --quiet NetworkManager 2>/dev/null") { return "NetworkManager" }
-    if common::run_ok("systemctl is-active --quiet systemd-networkd 2>/dev/null") { return "systemd-networkd" }
-    if common::run_ok("systemctl is-active --quiet wicked 2>/dev/null") { return "wicked" }
+    if active("NetworkManager", "NetworkManager") { return "network_manager" }
+    if active("systemd-networkd", "systemd-network") { return "systemd_networkd" }
+    if active("wicked", "wickedd") { return "wicked" }
     if fs::is_file("/etc/network/interfaces") { return "ifupdown" }
     "unknown"
 }
