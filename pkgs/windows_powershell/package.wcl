@@ -2711,8 +2711,9 @@ package "windows_powershell" {
     // Two endpoints to converge away from: one registered for remote access
     // that the step wants local-only, and one the :absent step removes.
     // No double quotes in a Windows setup: they reach PowerShell escaped,
-    // and it reads the whole command as one string literal.
-    setup = "powershell -NoProfile -NonInteractive -Command Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart"
+    // and it reads the whole command as one string literal. Clearing the
+    // cwtest.* endpoints first keeps the setup repeatable on a shared VM.
+    setup = "powershell -NoProfile -NonInteractive -Command Unregister-PSSessionConfiguration -Name cwtest.* -Force -NoServiceRestart -ErrorAction SilentlyContinue; Register-PSSessionConfiguration -Name cwtest.drift -AccessMode Remote -Force -NoServiceRestart; Register-PSSessionConfiguration -Name cwtest.gone -Force -NoServiceRestart"
     verify = "tests/pwsh7_session_verify.ws"
 
     // Not :remote_signed — the PowerShell 7 MSI already leaves the machine
