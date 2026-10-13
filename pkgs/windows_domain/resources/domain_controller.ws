@@ -68,7 +68,13 @@ fn drift_ps(params: Value) -> string {
     }
     let fm = common::param_str(params, "forest_mode", "")
     let dm = common::param_str(params, "domain_mode", "")
-    if fm != "" || dm != "" { out = out + level_ps() + "$root = [ADSI]'LDAP://RootDSE'; " }
+    // Right after the promotion reboot the directory may not answer yet, and
+    // an unanswered read is not a level of 0, so it is retried, then an error.
+    if fm != "" || dm != "" {
+        out = out + level_ps() +
+            "$root = $null; for ($i = 0; $i -lt 36; $i++) {{ try {{ $root = [ADSI]'LDAP://localhost/RootDSE'; if ($null -ne $root.forestFunctionality.Value) {{ break }} }} catch {{ }}; Start-Sleep -Seconds 5 }}; " +
+            "if ($null -eq $root -or $null -eq $root.forestFunctionality.Value) {{ throw 'cannot read the functional levels from this DC (the directory does not answer yet)' }}; "
+    }
     if fm != "" { out = out + "if ([int]$root.forestFunctionality.Value -ne (Level " + common::ps_q(fm) + ")) {{ $drift += 'forest_mode' }}; " }
     if dm != "" { out = out + "if ([int]$root.domainFunctionality.Value -ne (Level " + common::ps_q(dm) + ")) {{ $drift += 'domain_mode' }}; " }
     let dns = common::param_bool(params, "install_dns", true)
