@@ -152,9 +152,10 @@ package "windows_account" {
   // The win2025 instance is a plain workgroup server, so the local account
   // resources get real converge coverage while the AD resources assert their
   // module guard: without RSAT the ActiveDirectory module is absent, so both
-  // check and apply raise the documented error.
+  // check and apply raise the documented error. The AD resources converge
+  // against a real domain controller in the ad_accounts scenario.
   test "local_accounts_converge" {
-    description = "Local user, group and membership converge; ad_user guards on the missing AD module"
+    description = "Local user, group and membership converge; the AD resources guard on the missing AD module"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/accounts_verify.ws"
@@ -171,7 +172,13 @@ package "windows_account" {
     step "svc_user" {
       description = "Create the weave-svc local user"
       resource = "local_user"
-      properties { name = "weave-svc" password = "Qx7!vTr9pLm2#Zk4" full_name = "Weave Service" description = "config-weave test account" }
+      properties {
+        name = "weave-svc"
+        password = "Qx7!vTr9pLm2#Zk4"
+        full_name = "Weave Service"
+        description = "config-weave test account"
+        password_never_expires = true
+      }
     }
 
     step "svc_in_ops" {
@@ -188,11 +195,101 @@ package "windows_account" {
       properties { name = "weave-ghost" ensure = :absent }
     }
 
-    step "ad_needs_module" {
+    step "wildcard_name_refused" {
+      description = "A name holding a wildcard is refused rather than matched"
+      resource = "local_user"
+      expect = "error"
+      properties { name = "weave-*" ensure = :absent }
+    }
+
+    step "ad_user_needs_module" {
       description = "ad_user errors when the ActiveDirectory module is unavailable"
       resource = "ad_user"
       expect = "error"
       properties { name = "weave-ad-user" password = "Qx7!vTr9pLm2#Zk4" }
+    }
+
+    step "ad_group_needs_module" {
+      description = "ad_group errors when the ActiveDirectory module is unavailable"
+      resource = "ad_group"
+      expect = "error"
+      properties { name = "weave-ad-group" }
+    }
+
+    step "ad_group_member_needs_module" {
+      description = "ad_group_member errors when the ActiveDirectory module is unavailable"
+      resource = "ad_group_member"
+      expect = "error"
+      properties { group = "weave-ad-group" member = "weave-ad-user" }
+    }
+  }
+
+  // Setup seeds a user and a group that drift in every managed attribute,
+  // the password included, and puts NT AUTHORITY\NETWORK SERVICE in the
+  // group. The bare name "NETWORK SERVICE" means COMPUTERNAME\NETWORK SERVICE,
+  // which does not exist, so its :absent step must leave the built-in
+  // account in place. Setup runs under cmd /C: no double quotes.
+  test "local_accounts_drift" {
+    description = "Password, full name, description, disabled and never-expires drift is corrected; a bare member name never matches a qualified one"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command New-LocalUser -Name weave-drift -Password (ConvertTo-SecureString 'Old-Pw-55aa!x' -AsPlainText -Force) -FullName 'Wrong Name' -Description wrong; New-LocalGroup -Name weave-drift-grp -Description wrong; Add-LocalGroupMember -Group weave-drift-grp -Member 'NT AUTHORITY\\NETWORK SERVICE'"
+    verify = "tests/accounts_drift_verify.ws"
+
+    step "drift_user" {
+      description = "Every attribute of weave-drift, and its password, is brought back"
+      resource = "local_user"
+      properties {
+        name = "weave-drift"
+        password = "Qx7!vTr9pLm2#Zk4"
+        full_name = "Drift Fixed"
+        description = "fixed"
+        disabled = true
+        password_never_expires = true
+      }
+    }
+
+    step "drift_group" {
+      description = "The group description is brought back"
+      resource = "local_group"
+      properties { name = "weave-drift-grp" description = "fixed" }
+    }
+
+    step "bare_name_absent" {
+      description = "A bare NETWORK SERVICE is the (missing) local account, so nothing is removed"
+      resource = "local_group_member"
+      expect = "already_configured"
+      properties { group = "weave-drift-grp" member = "NETWORK SERVICE" ensure = :absent }
+    }
+  }
+
+  // Setup creates a user, a group and the membership; each :absent step
+  // then has something real to remove. Setup runs under cmd /C.
+  test "local_accounts_absent" {
+    description = "ensure = :absent removes a real membership, user and group"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command New-LocalUser -Name weave-rm -NoPassword; New-LocalGroup -Name weave-rm-grp; Add-LocalGroupMember -Group weave-rm-grp -Member weave-rm"
+    verify = "tests/accounts_absent_verify.ws"
+
+    step "rm_member" {
+      description = "Take weave-rm out of weave-rm-grp"
+      resource = "local_group_member"
+      properties { group = "weave-rm-grp" member = "weave-rm" ensure = :absent }
+    }
+
+    step "rm_user" {
+      description = "Delete weave-rm"
+      resource = "local_user"
+      requires = ["rm_member"]
+      properties { name = "weave-rm" ensure = :absent }
+    }
+
+    step "rm_group" {
+      description = "Delete weave-rm-grp"
+      resource = "local_group"
+      requires = ["rm_member"]
+      properties { name = "weave-rm-grp" ensure = :absent }
     }
   }
 }
