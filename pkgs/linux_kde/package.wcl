@@ -24,7 +24,9 @@ package "linux_kde" {
   resource "kconfig_entry" {
     description = "Ensure a KConfig key is present in or absent from a KDE configuration file"
     script = "resources/kconfig_entry.ws"
-    concurrency = "parallel"
+    // read-modify-write on one config file — parallel steps on the same file
+    // lose writes
+    concurrency = "exclusive"
     param "home" { description = "Target home directory; defaults to the current user home" type = "string" default = "" }
     param "file" { description = "KDE config filename under ~/.config, such as kdeglobals or kwinrc" type = "string" required = true }
     param "group" { description = "KConfig group name" type = "string" required = true }
