@@ -1,120 +1,144 @@
 use value
-use shell
-use json
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+struct Spec {
+    iface: string,
+    ip: string,
+    family: string,
+    prefix: int,
+    gateway: string,
 }
 
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
+fn spec(params: Value) -> Result[Spec, string] {
+    let iface = common::param_str(params, "interface", "")
+    common::no_wildcards("interface", iface)?
+    let ip = common::param_str(params, "ip", "")
+    if ip == "" { return Err("missing 'ip' parameter") }
+    let family = common::family_of("ip", ip)?
+    let prefix = common::param_int(params, "prefix_length", 0)
+    let max = if family == "IPv4" { 32 } else { 128 }
+    if prefix < 1 || prefix > max { return Err("'prefix_length' must be between 1 and {max} for an " + family + " address") }
+    let gateway = common::param_str(params, "gateway", "")
+    if gateway != "" && common::family_of("gateway", gateway)? != family {
+        return Err("'gateway' " + gateway + " is not an " + family + " address like 'ip'")
+    }
+    Ok(Spec { iface: iface, ip: ip, family: family, prefix: prefix, gateway: gateway })
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
+fn default_prefix(family: string) -> string { if family == "IPv4" { "0.0.0.0/0" } else { "::/0" } }
+
+// PowerShell binding, for the interface and the address family of 'ip':
+//   $want    the canonical address; $mine its entry on the interface, if any
+//   $others  every other manually configured address of the family
+//   $routes  the interface's active default routes; $hops their next hops,
+//            leaving out router-advertised IPv6 ones
+//   $phops   the next hops of its persistent (manually added) default routes,
+//            which Windows re-activates later, at reboot or when an address
+//            in their subnet comes back
+//   $dhcp    the interface's Dhcp state for the family
+//   $gw      the canonical gateway, or '' when 'gateway' is unset
+// Addresses are compared in [ipaddress] canonical form, without any %scope.
+fn load(s: Spec) -> string {
+    "function Canon($a) {{ ([ipaddress](([string]$a) -replace '%.*$', '')).ToString() }}; " +
+    common::iface_ps(s.iface) +
+    "$fam = '" + s.family + "'; $dr = '" + default_prefix(s.family) + "'; " +
+    "$want = Canon " + common::ps_q(s.ip) + "; " +
+    "$gw = " + (if s.gateway != "" { "Canon " + common::ps_q(s.gateway) } else { "''" }) + "; " +
+    "$all = @(Get-NetIPAddress -InterfaceIndex $ifx -AddressFamily $fam -ErrorAction SilentlyContinue); " +
+    "$mine = @($all | Where-Object {{ (Canon $_.IPAddress) -eq $want }}) | Select-Object -First 1; " +
+    "$others = @($all | Where-Object {{ [string]$_.PrefixOrigin -eq 'Manual' -and (Canon $_.IPAddress) -ne $want }}); " +
+    "function DefRoutes($store) {{ @(Get-NetRoute -InterfaceIndex $ifx -AddressFamily $fam -DestinationPrefix $dr -PolicyStore $store -ErrorAction SilentlyContinue) }}; " +
+    // A manually added route is the one kept in the persistent store; an
+    // active route from DHCP is reported with the same NetMgmt protocol, so
+    // the protocol cannot tell them apart. DropRoutes removes the manual
+    // default routes not through $keep, and with a gateway to keep, every
+    // other active one except router-advertised IPv6 routes.
+    "function DropRoutes($keep) {{ " +
+    "$p = @(DefRoutes 'PersistentStore'); $static = @($p | ForEach-Object {{ Canon $_.NextHop }}); " +
+    "$p | Where-Object {{ (Canon $_.NextHop) -ne $keep }} | Remove-NetRoute -Confirm:$false; " +
+    "DefRoutes 'ActiveStore' | Where-Object {{ $h = Canon $_.NextHop; $h -ne $keep -and ($static -contains $h -or ($keep -ne '' -and [string]$_.Protocol -ne 'RouterAdvertisement')) }} | Remove-NetRoute -Confirm:$false }}; " +
+    "$routes = DefRoutes 'ActiveStore'; " +
+    "$hops = @($routes | Where-Object {{ [string]$_.Protocol -ne 'RouterAdvertisement' }} | ForEach-Object {{ Canon $_.NextHop }}); " +
+    "$phops = @(DefRoutes 'PersistentStore' | ForEach-Object {{ Canon $_.NextHop }}); " +
+    "$dhcp = [string](Get-NetIPInterface -InterfaceIndex $ifx -AddressFamily $fam).Dhcp; "
 }
 
-fn ps_q(s: string) -> string { "'" + s.replace("'", "''") + "'" }
-
-fn ps_out(script: string) -> Result[string, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(out.stdout.trim())
-}
-
-fn ps_run(script: string) -> Result[unit, string] {
-    let out = shell::powershell("$ErrorActionPreference='Stop'; " + script, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
-    Ok(())
-}
-
-fn get_int(m: Value, key: string) -> int {
-    if let Some(v) = m.get(key) { if let Some(n) = v.as_int() { return n } }
-    0
-}
-
-fn get_str(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
-    ""
-}
-
-// 'ABSENT:<dhcp>' or a JSON object { prefix, gateway }. <dhcp> is the
-// interface's IPv4 Dhcp state (Enabled/Disabled), which :absent also owns;
-// gateway is the interface's current IPv4 default-route next hop ('' when it
-// has none).
-fn probe(iface: string, ip: string) -> Result[string, string] {
-    let qi = ps_q(iface)
-    ps_out(
-        "$a = Get-NetIPAddress -InterfaceAlias " + qi + " -IPAddress " + ps_q(ip) +
-        " -AddressFamily IPv4 -ErrorAction SilentlyContinue; " +
-        "if ($null -eq $a) {{ " +
-        "'ABSENT:' + (Get-NetIPInterface -InterfaceAlias " + qi + " -AddressFamily IPv4).Dhcp }} else {{ " +
-        "$gw = ''; $r = @(Get-NetRoute -InterfaceAlias " + qi + " -AddressFamily IPv4 " +
-        "-DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue); " +
-        "if ($r.Count -gt 0) {{ $gw = $r[0].NextHop }}; " +
-        "[pscustomobject]@{{ prefix = [int]($a | Select-Object -First 1).PrefixLength; gateway = \"$gw\" }} " +
-        "| ConvertTo-Json -Compress }}"
-    )
+// A JSON object { origin, prefix, others, gw_ok, static_hops, dhcp }.
+fn probe(s: Spec) -> Result[Value, string] {
+    let out = common::ps("reading " + s.family + " addresses on '" + s.iface + "'",
+        load(s) +
+        "[pscustomobject]@{{ " +
+        "origin = $(if ($mine) {{ [string]$mine.PrefixOrigin }} else {{ '' }}); " +
+        "prefix = $(if ($mine) {{ [int]$mine.PrefixLength }} else {{ 0 }}); " +
+        "others = @($others | ForEach-Object {{ Canon $_.IPAddress }}); " +
+        // Exactly one default route on this interface, through the gateway.
+        // and the same route, and no other, kept in the persistent store.
+        "gw_ok = ($gw -eq '' -or (($hops -join ',') -eq $gw -and (@($phops | Sort-Object -Unique) -join ',') -eq $gw)); " +
+        "static_hops = $phops; " +
+        "dhcp = $dhcp }} | ConvertTo-Json -Compress")?
+    common::parse(out)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let iface = param_str(params, "interface", "")
-    if iface == "" { return Err("missing 'interface' parameter") }
-    let ip = param_str(params, "ip", "")
-    if ip == "" { return Err("missing 'ip' parameter") }
-    let st = probe(iface, ip)?
-    if !want_present(params)? {
-        // Absent means the address is gone *and* the interface is back on DHCP.
-        if st == "ABSENT:Enabled" { return Ok(CheckResult::AlreadyConfigured) }
-        return Ok(CheckResult::NotConfigured)
+    let s = spec(params)?
+    let m = probe(s)?
+    let manual = common::get_str(m, "origin") == "Manual"
+    let others = common::get_list(m, "others")
+    if !common::want_present(params)? {
+        if manual { return Ok(CheckResult::NotConfigured) }
+        // The last manual address gone means the interface is back on
+        // automatic configuration, with no static default route left over.
+        // While other manual addresses remain (another static_ip step owns
+        // them), the interface's DHCP state is theirs to decide.
+        if others.is_empty() {
+            if s.family == "IPv4" && common::get_str(m, "dhcp") != "Enabled" { return Ok(CheckResult::NotConfigured) }
+            if !common::get_list(m, "static_hops").is_empty() { return Ok(CheckResult::NotConfigured) }
+        }
+        return Ok(CheckResult::AlreadyConfigured)
     }
-    if st.starts_with("ABSENT") { return Ok(CheckResult::NotConfigured) }
-    let m = json::parse(st)?
-    if get_int(m, "prefix") != param_int(params, "prefix_length", 0) { return Ok(CheckResult::NotConfigured) }
-    let gw = param_str(params, "gateway", "")
-    if gw != "" && get_str(m, "gateway") != gw { return Ok(CheckResult::NotConfigured) }
+    // A DHCP lease of the same address is not a static address.
+    if !manual { return Ok(CheckResult::NotConfigured) }
+    if common::get_int(m, "prefix") != s.prefix { return Ok(CheckResult::NotConfigured) }
+    if s.family == "IPv4" && common::get_str(m, "dhcp") != "Disabled" { return Ok(CheckResult::NotConfigured) }
+    if common::param_bool(params, "exclusive", false) && !others.is_empty() { return Ok(CheckResult::NotConfigured) }
+    if !common::get_bool(m, "gw_ok") { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let iface = param_str(params, "interface", "")
-    if iface == "" { return Err("missing 'interface' parameter") }
-    let ip = param_str(params, "ip", "")
-    if ip == "" { return Err("missing 'ip' parameter") }
-    let qi = ps_q(iface)
-    if !want_present(params)? {
-        // Drop the address and hand the interface back to DHCP.
-        ps_run(
-            "$a = Get-NetIPAddress -InterfaceAlias " + qi + " -IPAddress " + ps_q(ip) +
-            " -AddressFamily IPv4 -ErrorAction SilentlyContinue; " +
-            "if ($a) {{ $a | Remove-NetIPAddress -Confirm:$false }}; " +
-            "Set-NetIPInterface -InterfaceAlias " + qi + " -AddressFamily IPv4 -Dhcp Enabled"
-        )?
+    let s = spec(params)?
+    if !common::want_present(params)? {
+        common::ps("removing " + s.ip + " from '" + s.iface + "'",
+            load(s) +
+            // Static routes go first, while they are still active: once the
+            // last address in their subnet is gone Windows only hides an
+            // active route, and brings it back with the next address there.
+            "if ($others.Count -eq 0) {{ DropRoutes '' }}; " +
+            "if ($mine -and [string]$mine.PrefixOrigin -eq 'Manual') {{ Remove-NetIPAddress -InterfaceIndex $ifx -IPAddress $want -Confirm:$false }}; " +
+            "if ($others.Count -eq 0 -and $fam -eq 'IPv4' -and $dhcp -ne 'Enabled') {{ Set-NetIPInterface -InterfaceIndex $ifx -AddressFamily IPv4 -Dhcp Enabled }}")?
         return Ok(ApplyResult::Success)
     }
-    let prefix = param_int(params, "prefix_length", 0)
-    if prefix <= 0 || prefix > 32 { return Err("'prefix_length' must be between 1 and 32") }
-    let prefix_s = "{prefix}"
-    let gw = param_str(params, "gateway", "")
-    // Clear the interface's existing IPv4 addresses (keeping automatic
-    // link-local ones) and default routes, then lay down the desired address.
-    ps_run(
-        "$old = @(Get-NetIPAddress -InterfaceAlias " + qi + " -AddressFamily IPv4 -ErrorAction SilentlyContinue | " +
-        "Where-Object {{ $_.PrefixOrigin -ne 'WellKnown' }}); " +
-        "foreach ($a in $old) {{ $a | Remove-NetIPAddress -Confirm:$false }}; " +
-        "$routes = @(Get-NetRoute -InterfaceAlias " + qi + " -AddressFamily IPv4 " +
-        "-DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue); " +
-        "foreach ($r in $routes) {{ $r | Remove-NetRoute -Confirm:$false }}; " +
-        "Set-NetIPInterface -InterfaceAlias " + qi + " -AddressFamily IPv4 -Dhcp Disabled; " +
-        "New-NetIPAddress -InterfaceAlias " + qi + " -IPAddress " + ps_q(ip) +
-        " -PrefixLength " + prefix_s +
-        (if gw != "" { " -DefaultGateway " + ps_q(gw) } else { "" }) +
-        " | Out-Null"
-    )?
+    // Only what differs is changed: the address is added (or re-added with
+    // the right prefix) on its own, other addresses stay unless 'exclusive',
+    // and routes are only touched when 'gateway' is set.
+    let exclusive = if common::param_bool(params, "exclusive", false) {
+        "foreach ($o in $others) {{ Remove-NetIPAddress -InterfaceIndex $ifx -IPAddress $o.IPAddress -Confirm:$false }}; "
+    } else { "" }
+    let route = if s.gateway != "" {
+        "DropRoutes $gw; " +
+        "if ($hops -notcontains $gw -or $phops -notcontains $gw) {{ " +
+        "foreach ($st in 'ActiveStore', 'PersistentStore') {{ DefRoutes $st | Remove-NetRoute -Confirm:$false }}; " +
+        "New-NetRoute -InterfaceIndex $ifx -AddressFamily $fam -DestinationPrefix $dr -NextHop $gw | Out-Null }}; "
+    } else { "" }
+    common::ps("setting " + s.ip + "/{s.prefix} on '" + s.iface + "'",
+        load(s) +
+        // A manual IPv4 address needs DHCP off; turning it off drops a leased
+        // address, so the address is looked up again afterwards.
+        "if ($fam -eq 'IPv4' -and $dhcp -ne 'Disabled') {{ Set-NetIPInterface -InterfaceIndex $ifx -AddressFamily IPv4 -Dhcp Disabled; " +
+        "$mine = @(Get-NetIPAddress -InterfaceIndex $ifx -AddressFamily $fam -ErrorAction SilentlyContinue | Where-Object {{ (Canon $_.IPAddress) -eq $want }}) | Select-Object -First 1 }}; " +
+        "if ($mine -and ([string]$mine.PrefixOrigin -ne 'Manual' -or [int]$mine.PrefixLength -ne {s.prefix})) {{ " +
+        "Remove-NetIPAddress -InterfaceIndex $ifx -IPAddress $want -Confirm:$false; $mine = $null }}; " +
+        "if (-not $mine) {{ New-NetIPAddress -InterfaceIndex $ifx -AddressFamily $fam -IPAddress $want -PrefixLength {s.prefix} | Out-Null }}; " +
+        exclusive + route)?
     Ok(ApplyResult::Success)
 }

@@ -1,37 +1,45 @@
 package "windows_network" {
   description = "Manage Windows network configuration and firewall rules"
 
+  // IPv4 and IPv6 are both supported; the family is taken from 'ip'. Only
+  // what differs is changed, so a converged step never drops the address a
+  // remote session uses. Several static_ip steps may share one interface,
+  // each owning its own address.
   resource "static_ip" {
-    description = "Ensure an interface has a static IPv4 address (absent removes it and returns the interface to DHCP; it is converged only once DHCP is enabled)"
+    description = "Ensure an interface holds a static (manual) IPv4 or IPv6 address, or does not. Removing the last manual IPv4 address returns the interface to DHCP"
     script = "resources/static_ip.ws"
     concurrency = "exclusive"
-    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
-    param "ip" { description = "IPv4 address the interface should hold" type = "string" required = true }
-    param "prefix_length" { description = "Subnet prefix length, e.g. 24" type = "int" required = true }
-    param "gateway" { description = "Default gateway; empty leaves the default route unmanaged" type = "string" default = "" }
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0; wildcards (*?[]) are refused" type = "string" required = true }
+    param "ip" { description = "IPv4 or IPv6 address the interface should hold. A DHCP lease of the same address does not count: it is replaced by a manual one" type = "string" required = true }
+    param "prefix_length" { description = "Subnet prefix length: 1-32 for IPv4, 1-128 for IPv6" type = "int" required = true }
+    param "gateway" { description = "Default gateway of the same family. When set, the interface's default routes are exactly this one (others on the interface are removed, in the active and persistent stores). Empty leaves the routes alone" type = "string" default = "" }
+    param "exclusive" { description = "Also remove every other manual address of the same family from the interface, and count one as drift" type = "bool" default = false }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Set the static address" }
-      symbol "absent"  { description = "Remove the address and return the interface to DHCP" }
+      symbol "present" { description = "The address is set manually on the interface (for IPv4, with DHCP off)" }
+      symbol "absent"  { description = "The manual address is gone. When no other manual address of the family remains, the manually added default routes go too and an IPv4 interface is back on DHCP; while others remain, routes and DHCP are theirs" }
     }
   }
 
+  // The static servers are read from the per-interface NameServer registry
+  // values (Tcpip and Tcpip6), not the effective list, which also holds
+  // servers DHCP handed out.
   resource "dns_servers" {
-    description = "Ensure an interface uses exactly the given IPv4 DNS servers (an empty list resets to DHCP-assigned)"
+    description = "Ensure an interface's static DNS servers are exactly the given IPv4 and IPv6 addresses; an empty list removes them, leaving DHCP-assigned servers"
     script = "resources/dns_servers.ws"
     concurrency = "exclusive"
-    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0" type = "string" required = true }
-    param "servers" { description = "DNS server addresses in preference order; compared order-sensitively" type = "list" required = true }
+    param "interface" { description = "InterfaceAlias of the adapter, e.g. Ethernet0; wildcards (*?[]) are refused" type = "string" required = true }
+    param "servers" { description = "DNS server addresses (IPv4 and IPv6 may be mixed) in preference order; order is compared within each family. Empty is the removal of every static server" type = "list" required = true }
   }
 
   resource "firewall_rule" {
     description = "Ensure a Windows Firewall rule exists and matches every param: enabled state, direction, action, protocol, profile, local port and remote address are all probed for drift"
     script = "resources/firewall_rule.ws"
     concurrency = "exclusive"
-    param "name" { description = "Rule Name (also used as DisplayName at create time)" type = "string" required = true }
+    param "name" { description = "Rule Name (also used as DisplayName at create time); wildcards (*?[]) are refused, since the cmdlets would expand them to other rules" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -85,8 +93,8 @@ package "windows_network" {
     }
     // Addresses and ports stay strings: they carry ranges and CIDR, which a
     // closed symbol set cannot express.
-    param "local_port" { description = "Local port or range, e.g. 443 or 8000-8010; empty means any. Only applied and compared for :tcp and :udp" type = "string" default = "" }
-    param "remote_address" { description = "Remote address filter, e.g. 10.0.0.0/8; empty means any" type = "string" default = "" }
+    param "local_port" { description = "Local ports, comma-separated, each a port or range, e.g. 443 or 80,8000-8010; empty means any. Only applied and compared for :tcp and :udp; other protocols get Any" type = "string" default = "" }
+    param "remote_address" { description = "Remote addresses, comma-separated: addresses, ranges, CIDR subnets or keywords such as LocalSubnet, e.g. 10.0.0.0/8; empty means any. Compared the way Windows stores them (a /32 or /128 is a bare address, host bits are cleared)" type = "string" default = "" }
     param "enabled" { description = "Whether the rule is enabled" type = "bool" default = true }
   }
 
