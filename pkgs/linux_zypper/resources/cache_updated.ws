@@ -3,20 +3,16 @@ use fs
 use path
 use shell
 use time
-
-fn param_int(params: Value, key: string, fallback: int) -> int {
-    if let Some(v) = params.get(key) { if let Some(n) = v.as_int() { return n } }
-    fallback
-}
+use common
 
 // The stamp file's mtime records the last refresh this resource performed.
-// It is per manager: one machine may run more than one, and a refresh of
-// zypper's index says nothing about anyone else's.
+// Each package manager package keeps its own: zypper's index says nothing
+// about any other manager's.
 fn stamp_path() -> string { "/var/lib/config-weave/zypper-cache-updated" }
 
 // A `duration` param arrives as base nanoseconds.
 fn max_age_secs(params: Value) -> int {
-    param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
+    common::param_int(params, "max_age", 24 * 3600 * 1000000000) / 1000000000
 }
 
 fn last_refresh() -> Result[int, string] {
@@ -29,17 +25,29 @@ fn last_refresh() -> Result[int, string] {
     Ok(0)
 }
 
+// Repository definitions. A file added, changed or removed here after the
+// last refresh means the cache is out of date whatever its age.
+fn sources() -> string { "/etc/zypp/repos.d" }
+
+fn sources_changed() -> Result[bool, string] {
+    let out = shell::bash("find " + sources() + " -newer " + common::q(stamp_path()) + " -print 2>/dev/null | head -n 1", Value::Null)?
+    Ok(out.stdout.trim() != "")
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     if !fs::is_file(stamp_path()) { return Ok(CheckResult::NotConfigured) }
     if time::now_millis() / 1000 - last_refresh()? > max_age_secs(params) {
         return Ok(CheckResult::NotConfigured)
     }
+    if sources_changed()? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let out = shell::bash("zypper --non-interactive refresh", Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    // A repository that failed to refresh (exit 106) leaves the cache stale,
+    // so it is an error here rather than the success it is for install.
+    let global = if common::param_bool(params, "gpg_auto_import_keys", false) { "--gpg-auto-import-keys " } else { "" }
+    common::zypper("zypper refresh", global + "refresh", false)?
     let stamp = stamp_path()
     fs::mkdir(path::parent(stamp))?
     // Rewriting the stamp truncates it and so refreshes its mtime, which is

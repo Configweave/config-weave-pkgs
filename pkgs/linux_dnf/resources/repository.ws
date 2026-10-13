@@ -1,45 +1,40 @@
 use value
 use fs
 use path
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
+use common
 
 fn repo_path(name: string) -> string {
     "/etc/yum.repos.d/" + name + ".repo"
 }
 
+// A file that cannot be read as text holds something other than content.
+fn holds(p: string, content: string) -> bool {
+    if !fs::is_file(p) { return false }
+    if let Ok(text) = fs::read(p) { text == content } else { false }
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
+    let name = common::param_str(params, "name", "")
+    common::file_name("name", name)?
     let p = repo_path(name)
-    if !want_present(params)? {
+    if !common::want_present(params)? {
         if fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let content = param_str(params, "content", "")
+    let content = common::param_str(params, "content", "")
     if content == "" { return Err("missing 'content' parameter") }
-    if fs::is_file(p) && fs::read(p)? == content { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    if holds(p, content) { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
+    let name = common::param_str(params, "name", "")
+    common::file_name("name", name)?
     let p = repo_path(name)
-    if !want_present(params)? {
+    if !common::want_present(params)? {
         if fs::is_file(p) { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
-    let content = param_str(params, "content", "")
+    let content = common::param_str(params, "content", "")
     if content == "" { return Err("missing 'content' parameter") }
     fs::mkdir(path::parent(p))?
     fs::write(p, content)?

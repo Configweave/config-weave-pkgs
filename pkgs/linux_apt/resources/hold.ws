@@ -1,35 +1,16 @@
 use value
-use shell
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn is_held(name: string) -> Result[bool, string] {
-    Ok(shell::bash("apt-mark showhold | grep -Fxq " + q(name), Value::Null)?.success)
-}
+use common
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if is_held(name)? == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let name = common::param_str(params, "name", "")
+    common::operand("name", name)?
+    if common::held(name)? == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmd = if want_present(params)? { "apt-mark hold " + q(name) } else { "apt-mark unhold " + q(name) }
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    let name = common::param_str(params, "name", "")
+    common::operand("name", name)?
+    let verb = if common::want_present(params)? { "hold" } else { "unhold" }
+    common::run("apt-mark " + verb + " " + name, "apt-mark " + verb + " " + common::q(name))?
     Ok(ApplyResult::Success)
 }

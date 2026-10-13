@@ -2,23 +2,24 @@ package "linux_apt" {
   description = "Manage packages on apt/dpkg systems"
 
   resource "package" {
-    description = "Ensure an apt package is installed or absent"
+    description = "Ensure an apt package is installed, at an exact version if one is given, or absent. Installed means dpkg reports it installed: a removed package whose conffiles remain (the \"rc\" state) counts as absent. A package held with apt-mark is an error to change, version or removal alike; release the hold first with linux_apt.hold. apt-get waits up to five minutes for the dpkg lock, but different linux_apt resource types can still run at the same time, so order package, hold, debconf_selection and cache_updated steps with requires"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "Package name, optionally with :arch; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "absent"  { description = "Remove the package with apt-get remove; its conffiles stay (the rc state). Refused when apt would also remove packages that depend on it, unless remove_dependents is true" }
     }
-    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+    param "version" { description = "Exact version to install when present, the full Debian version as apt-cache policy shows it including any epoch (1:2.38-1); empty means any version. A version below the installed one is a downgrade, which is allowed. This installs a version once; it does not stop later upgrades, which is what linux_apt.hold is for" type = "string" default = "" }
+    param "remove_dependents" { description = "When :absent, let apt-get remove every installed package that depends on this one as well. false simulates the removal first and fails, naming them, if anything besides this package would go" type = "bool" default = false }
   }
 
   resource "cache_updated" {
-    description = "Run apt-get update when the index is older than max_age"
+    description = "Run apt-get update when the last refresh this resource made is older than max_age, or when anything under /etc/apt/sources.list, sources.list.d, keyrings or trusted.gpg.d changed since then, so a repository or key added after the last refresh is indexed on the next run. The refresh time is the mtime of /var/lib/config-weave/apt-cache-updated; a refresh run outside config-weave does not count"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
@@ -29,26 +30,34 @@ package "linux_apt" {
   }
 
   resource "repository" {
-    description = "Ensure an apt sources.list.d file exists or is absent"
+    description = "Ensure an apt source file under /etc/apt/sources.list.d holds exactly content, or is absent. format picks the file: one-line entries in <name>.list, or deb822 stanzas in <name>.sources (the default on Debian 12+ and Ubuntu 24.04). The other format's file for the same name is removed, so switching format never leaves apt reading both. Run cache_updated afterwards to index it"
     script = "resources/repository.ws"
     concurrency = "exclusive"
-    param "name" { description = "Repository file basename without .list" type = "string" required = true }
+    param "name" { description = "File basename without extension: letters, digits, '_', '-' and '.', not starting with '.' or '-' (apt ignores other names)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Write the sources.list.d file" }
-      symbol "absent"  { description = "Remove the sources.list.d file" }
+      symbol "present" { description = "Write the source file" }
+      symbol "absent"  { description = "Remove the source file, both <name>.list and <name>.sources" }
     }
-    param "content" { description = "Repository file content (required when present)" type = "string" default = "" }
+    param "format" {
+      description = "Source file format, which also sets the file extension"
+      type = "symbol"
+      default = :list
+
+      symbol "list"   { description = "One-line format (deb [options] uri suite components) in <name>.list" }
+      symbol "deb822" { description = "deb822 stanzas (Types:, URIs:, Suites:, Components:, Signed-By:) in <name>.sources" }
+    }
+    param "content" { description = "Exact file content, in the chosen format (required when present)" type = "string" default = "" }
   }
 
   resource "signing_key" {
-    description = "Ensure an apt signing key under /etc/apt/keyrings exists or is absent"
+    description = "Ensure an apt signing key under /etc/apt/keyrings exists or is absent. The ASCII-armored key is written to <name>.asc, which apt reads directly through signed-by (apt 1.4+). With dearmor = true a binary <name>.gpg keyring is also kept in step with it, for older apt or tools that need one; that needs gpg installed"
     script = "resources/signing_key.ws"
     concurrency = "exclusive"
-    param "name" { description = "Keyring basename" type = "string" required = true }
+    param "name" { description = "Keyring basename: letters, digits, '_', '-' and '.', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent (removes both .asc and .gpg)"
       type = "symbol"
@@ -58,7 +67,7 @@ package "linux_apt" {
       symbol "absent"  { description = "Remove the key, both .asc and .gpg" }
     }
     param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
-    param "dearmor" { description = "Also produce a binary .gpg keyring via gpg --dearmor" type = "bool" default = true }
+    param "dearmor" { description = "Also keep a binary <name>.gpg keyring, made with gpg --dearmor and checked against the .asc on every run. Needs gpg (the gpg package), which minimal images lack. false leaves any existing .gpg alone" type = "bool" default = false }
   }
 
   resource "hold" {
@@ -77,13 +86,35 @@ package "linux_apt" {
   }
 
   resource "debconf_selection" {
-    description = "Pre-seed a debconf answer"
+    description = "Pre-seed a debconf answer, or remove it. Present compares both the answer and its type with what debconf holds. Every value reaches debconf through the environment, so a password answer never appears on a command line or in an error"
     script = "resources/debconf_selection.ws"
     concurrency = "exclusive"
     param "package" { description = "Owning package name" type = "string" required = true }
     param "question" { description = "debconf question name" type = "string" required = true }
-    param "vtype" { description = "Answer type (string, boolean, select, ...)" type = "string" default = "string" }
-    param "value" { description = "Answer value" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the answer with debconf-set-selections" }
+      symbol "absent"  { description = "Unregister the question for package; debconf deletes it once no package owns it. A question another package also owns cannot be removed, and is an error" }
+    }
+    param "vtype" {
+      description = "Answer type"
+      type = "symbol"
+      default = :string
+
+      symbol "string"      { description = "Free text" }
+      symbol "boolean"     { description = "true or false" }
+      symbol "select"      { description = "One of the template's choices" }
+      symbol "multiselect" { description = "Comma-separated choices" }
+      symbol "note"        { description = "A note" }
+      symbol "text"        { description = "Text shown to the user" }
+      symbol "password"    { description = "A password; the value is never shown" }
+      symbol "title"       { description = "A title" }
+      symbol "error"       { description = "An error message" }
+    }
+    param "value" { description = "Answer value, on one line (when present)" type = "string" default = "" }
   }
 
   test "existing_package" {
@@ -124,17 +155,98 @@ package "linux_apt" {
     }
   }
 
-  // The absent steps converge on files seeded during setup (run 1 checks
-  // every step before any apply).
-  test "repositories_and_keys_converge" {
-    description = "repository and signing_key add and remove converge"
+  // Versions, removal and holds against a local file repository of tiny
+  // packages that setup builds with dpkg-deb, so every version exists and
+  // stays put. Setup is idempotent: the group shares one container.
+  test "package_versions" {
+    description = "package pins versions (downgrades included), treats the rc state as absent, removes for real and guards dependents and holds"
     image = "debian:12"
     group = "debian"
-    setup = "mkdir -p /etc/apt/sources.list.d /etc/apt/keyrings && echo 'deb http://stale.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-stale.list && echo stale-key > /etc/apt/keyrings/cw-stale.asc"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+d=/srv/cw-repo
+rm -rf "$d" && mkdir -p "$d"
+mk() {
+  b=$(mktemp -d) && mkdir -p "$b/DEBIAN"
+  { printf 'Package: %s\nVersion: %s\nArchitecture: all\nMaintainer: cw <cw@config-weave.invalid>\n' "$1" "$2"; [ -z "$3" ] || echo "Depends: $3"; echo 'Description: config-weave test package'; } > "$b/DEBIAN/control"
+  if [ "$1" = cw-rc ]; then mkdir -p "$b/etc" && echo x > "$b/etc/cw-rc.conf" && echo /etc/cw-rc.conf > "$b/DEBIAN/conffiles"; fi
+  dpkg-deb -Zgzip --build "$b" "$d/$1_$2_all.deb" >/dev/null && rm -rf "$b"
+}
+mk cw-pin 1.0 ''; mk cw-pin 2.0 ''; mk cw-held 1.0 ''; mk cw-held 2.0 ''
+mk cw-rc 1.0 ''; mk cw-gone 1.0 ''
+mk cw-base 1.0 ''; mk cw-dep 1.0 cw-base
+mk cw-base2 1.0 ''; mk cw-dep2 1.0 cw-base2
+cd "$d" && for f in *.deb; do dpkg-deb -f "$f"; printf 'Filename: ./%s\nSize: %s\nSHA256: %s\n\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"; done > Packages
+echo 'deb [trusted=yes] file:/srv/cw-repo ./' > /etc/apt/sources.list.d/cw-local.list
+apt-get update -qq
+apt-mark unhold cw-held >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades cw-pin=2.0 cw-held=2.0 cw-rc cw-gone cw-dep cw-dep2 >/dev/null
+apt-mark hold cw-held >/dev/null
+dpkg -r cw-rc >/dev/null
+SETUP
+    verify = "tests/apt_versions_verify.ws"
+
+    step "rc_state_pin" {
+      description = "A removed package whose conffiles remain is not installed, even at the pinned version"
+      resource = "package"
+      properties { name = "cw-rc" version = "1.0" }
+    }
+
+    step "downgrade" {
+      description = "Pin below the installed version"
+      resource = "package"
+      requires = ["rc_state_pin"]
+      properties { name = "cw-pin" version = "1.0" }
+    }
+
+    step "remove" {
+      description = "Remove an installed package"
+      resource = "package"
+      requires = ["downgrade"]
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "held_pin" {
+      description = "A held package is not silently re-versioned"
+      resource = "package"
+      expect = "error"
+      requires = ["remove"]
+      properties { name = "cw-held" version = "1.0" }
+    }
+
+    step "guarded" {
+      description = "Removing a package another installed package depends on is refused"
+      resource = "package"
+      expect = "error"
+      properties { name = "cw-base" ensure = :absent }
+    }
+
+    step "with_dependents" {
+      description = "remove_dependents = true removes the package and what depends on it"
+      resource = "package"
+      properties { name = "cw-base2" ensure = :absent remove_dependents = true }
+    }
+
+    step "option_name" {
+      description = "A name apt would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--purge" }
+    }
+  }
+
+  // The absent and switch steps converge on files seeded during setup (run 1
+  // checks every step before any apply).
+  test "repositories_converge" {
+    description = "repository writes both formats, fixes drift, switches format and removes"
+    image = "debian:12"
+    group = "debian"
+    setup = "mkdir -p /etc/apt/sources.list.d && echo 'deb http://stale.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-stale.list && echo 'Types: deb' > /etc/apt/sources.list.d/cw-stale.sources && echo 'deb http://drift.invalid/debian bookworm main' > /etc/apt/sources.list.d/config-weave-test.list && echo 'deb http://old.invalid/debian bookworm main' > /etc/apt/sources.list.d/cw-switch.list && rm -f /etc/apt/sources.list.d/cw-switch.sources"
     verify = "tests/apt_repository_verify.ws"
 
     step "repo" {
-      description = "Write repository file"
+      description = "Rewrite a one-line source file whose content drifted"
       resource = "repository"
       properties {
         name = "config-weave-test"
@@ -142,32 +254,144 @@ package "linux_apt" {
       }
     }
 
+    step "deb822" {
+      description = "Write a deb822 .sources file"
+      resource = "repository"
+      properties {
+        name = "cw-deb822"
+        format = :deb822
+        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm\nComponents: contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+      }
+    }
+
+    step "switch" {
+      description = "Switching a source to deb822 removes its .list file"
+      resource = "repository"
+      properties {
+        name = "cw-switch"
+        format = :deb822
+        content = "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: bookworm-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
+      }
+    }
+
     step "rm_repo" {
-      description = "Remove the seeded stale repository"
+      description = "Remove the seeded stale source in both formats"
       resource = "repository"
       properties { name = "cw-stale" ensure = :absent }
     }
 
+    step "traversal" {
+      description = "A name that leaves sources.list.d is rejected"
+      resource = "repository"
+      expect = "error"
+      properties { name = "../../cw-evil" content = "deb http://evil.invalid/ x main\n" }
+    }
+  }
+
+  // A real key, so gpg --dearmor has something to decode. Setup installs
+  // gpg over the container's NAT and seeds a stale .gpg beside a current
+  // .asc: only the dearmored keyring has drifted.
+  test "signing_keys_converge" {
+    description = "signing_key writes armored keys, keeps a dearmored keyring current and removes both"
+    image = "debian:12"
+    group = "debian"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+command -v gpg >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gpg >/dev/null; }
+mkdir -p /etc/apt/keyrings
+rm -f /etc/apt/keyrings/cw-plain.gpg
+echo stale-key > /etc/apt/keyrings/cw-stale.asc
+echo stale-keyring > /etc/apt/keyrings/cw-stale.gpg
+cat > /etc/apt/keyrings/cw-dearmor.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+echo stale-keyring > /etc/apt/keyrings/cw-dearmor.gpg
+SETUP
+    verify = "tests/apt_key_verify.ws"
+
     step "key" {
-      description = "Install an apt signing key (armored, no dearmor)"
+      description = "Install an armored key; dearmor defaults to false"
       resource = "signing_key"
       properties {
-        name = "cw-test"
-        dearmor = false
-        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        name = "cw-plain"
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG\nFK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh\ndmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0\nAhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU\nw2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO\nY0X6rHp4dyxEoO/QAw==\n=n4ju\n-----END PGP PUBLIC KEY BLOCK-----\n"
+      }
+    }
+
+    step "dearmor" {
+      description = "A .gpg keyring that does not match the .asc is rebuilt"
+      resource = "signing_key"
+      properties {
+        name = "cw-dearmor"
+        dearmor = true
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd\nzWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu\naW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD\nBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7\nHNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F\newM6ysPM6bWFBw==\n=9OGa\n-----END PGP PUBLIC KEY BLOCK-----\n"
       }
     }
 
     step "rm_key" {
-      description = "Remove the seeded stale key"
+      description = "Remove the seeded stale key, .asc and .gpg"
       resource = "signing_key"
       properties { name = "cw-stale" ensure = :absent }
     }
+
+    step "traversal" {
+      description = "A name that leaves /etc/apt/keyrings is rejected"
+      resource = "signing_key"
+      expect = "error"
+      properties { name = "../trusted.gpg.d/cw-evil" content = "x" }
+    }
   }
 
-  // Untested by design: cache_updated hits the network (apt-get update),
-  // which does not converge honestly in an offline container.
-  //
+  // cache_updated runs a real apt-get update over the container's NAT.
+  test "cache_updated_refreshes" {
+    description = "cache_updated refreshes when no refresh has been recorded"
+    image = "debian:12"
+    group = "debian"
+    setup = "rm -f /var/lib/config-weave/apt-cache-updated"
+    verify = "tests/apt_cache_verify.ws"
+
+    step "refresh" {
+      description = "Refresh the package index"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated refreshes when a source changed after a recent refresh"
+    image = "debian:12"
+    group = "debian"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /var/lib/config-weave && touch -d '-1 hour' /var/lib/config-weave/apt-cache-updated && touch /etc/apt/sources.list.d/debian.sources"
+    verify = "tests/apt_cache_verify.ws"
+
+    step "refresh" {
+      description = "A sources file newer than the stamp forces a refresh inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_fresh" {
+    description = "cache_updated leaves a recent refresh with unchanged sources alone"
+    image = "debian:12"
+    group = "debian"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /var/lib/config-weave && find /etc/apt/sources.list.d /etc/apt/keyrings /etc/apt/trusted.gpg.d -exec touch -d '-2 hours' {} + && touch /var/lib/config-weave/apt-cache-updated"
+
+    step "fresh" {
+      description = "Nothing to do inside max_age"
+      resource = "cache_updated"
+      expect = "already_configured"
+    }
+  }
+
   // The apt steps are chained with `requires`: `exclusive` only serializes
   // steps of the SAME resource type, but package/hold/debconf all contend
   // for the one dpkg lock, so mixing them concurrently fails.
@@ -176,7 +400,7 @@ package "linux_apt" {
     description = "Removal, holds and debconf selections converge offline on Debian"
     image = "debian:12"
     group = "debian"
-    setup = "apt-mark hold gzip >/dev/null"
+    setup = "apt-mark hold gzip >/dev/null && printf 'cw-test cw-test/typed string true\\ncw-test cw-test/gone string x\\n' | debconf-set-selections"
     verify = "tests/apt_state_verify.ws"
 
     step "remove" {
@@ -203,7 +427,35 @@ package "linux_apt" {
       description = "Pre-seed a debconf answer"
       resource = "debconf_selection"
       requires = ["unhold"]
-      properties { package = "cw-test" question = "cw-test/enable" vtype = "boolean" value = "true" }
+      properties { package = "cw-test" question = "cw-test/enable" vtype = :boolean value = "true" }
+    }
+
+    step "debconf_type" {
+      description = "An answer with the right value but the wrong type is drift"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/typed" vtype = :boolean value = "true" }
+    }
+
+    step "debconf_password" {
+      description = "A password answer with spaces and quotes reaches debconf intact"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/secret" vtype = :password value = "it's a s3cret; $HOME" }
+    }
+
+    step "debconf_absent" {
+      description = "Remove a seeded question"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/gone" ensure = :absent }
+    }
+
+    step "hold_option_name" {
+      description = "A name apt-mark would read as an option is rejected"
+      resource = "hold"
+      expect = "error"
+      properties { name = "--version" }
     }
   }
 }

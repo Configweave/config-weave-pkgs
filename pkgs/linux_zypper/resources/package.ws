@@ -1,58 +1,51 @@
 use value
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
+fn validate(params: Value) -> Result[unit, string] {
+    common::operand("name", common::param_str(params, "name", ""))?
+    let version = common::param_str(params, "version", "")
+    if version != "" { common::operand("version", version)? }
+    Ok(())
 }
 
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn installed(name: string) -> Result[bool, string] {
-    Ok(shell::bash("rpm -q " + q(name) + " >/dev/null 2>&1", Value::Null)?.success)
-}
-
-// The installed version string, or "" when not installed.
-fn installed_version(name: string) -> Result[string, string] {
-    let out = shell::bash("rpm -q --qf '%{{VERSION}}' " + q(name) + " 2>/dev/null", Value::Null)?
-    if !out.success { return Ok("") }
-    Ok(out.stdout.trim())
+fn converged(params: Value) -> Result[bool, string] {
+    let version = common::param_str(params, "version", "")
+    let found = common::providers(common::param_str(params, "name", ""))?
+    if !common::want_present(params)? { return Ok(found.is_empty()) }
+    Ok(found.any(|p| version == "" || common::version_matches(p, version)))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    let version = param_str(params, "version", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    if !want_present(params)? {
-        // existence probe only: any installed version means work to do
-        if installed(name)? { return Ok(CheckResult::NotConfigured) }
-        return Ok(CheckResult::AlreadyConfigured)
-    }
-    if version == "" {
-        if installed(name)? { return Ok(CheckResult::AlreadyConfigured) }
-        return Ok(CheckResult::NotConfigured)
-    }
-    if installed_version(name)? == version { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    validate(params)?
+    if converged(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+}
+
+// Accepting unknown repository keys weakens trust, so it is opt-in.
+fn global(params: Value) -> string {
+    if common::param_bool(params, "gpg_auto_import_keys", false) { "--gpg-auto-import-keys " } else { "" }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    let version = param_str(params, "version", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let cmd = if want_present(params)? {
-        let target = if version != "" { name + "=" + version } else { name }
-        "zypper --non-interactive install " + q(target)
+    validate(params)?
+    let name = common::param_str(params, "name", "")
+    let version = common::param_str(params, "version", "")
+    let code = if common::want_present(params)? {
+        // name=version matches that version with any release, and
+        // --oldpackage lets it be older than the installed one.
+        let args = if version != "" {
+            "install --auto-agree-with-licenses --oldpackage " + common::q(name + "=" + version)
+        } else {
+            "install --auto-agree-with-licenses " + common::q(name)
+        }
+        common::zypper("zypper install " + name, global(params) + args, true)?
     } else {
-        "zypper --non-interactive remove " + q(name)
+        // Remove what name resolved to, by package name. Removal needs no
+        // repository metadata, so none is loaded or refreshed.
+        let names = common::provider_names(common::providers(name)?)
+        if names.is_empty() { return Ok(ApplyResult::Success) }
+        if !common::param_bool(params, "remove_dependents", false) { common::guard_dependents(names)? }
+        common::zypper("zypper remove " + names.join(" "), "--disable-repositories remove " + common::quoted(names), true)?
     }
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    if code == 102 { return Ok(ApplyResult::RebootRequired) }
     Ok(ApplyResult::Success)
 }

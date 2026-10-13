@@ -1,50 +1,56 @@
 use value
-use fs
-use shell
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-// versionlock is a plugin for dnf5/dnf/yum; microdnf has no equivalent.
-fn dnf_bin() -> Result[string, string] {
-    if fs::exists("/usr/bin/dnf5") { return Ok("dnf5") }
-    if fs::exists("/usr/bin/dnf") { return Ok("dnf") }
-    if fs::exists("/usr/bin/yum") { return Ok("yum") }
-    Err("hold requires dnf5, dnf or yum with the versionlock plugin")
+// dnf4 and yum print one lock per line as a NEVRA pattern: dnf4 as
+// name-epoch:version-release.arch ("hello-0:2.10-14.fc38.*"), yum as
+// epoch:name-version-release.arch ("0:hello-2.10-1.el7.*"). A leading '!'
+// marks an exclude, which is not a hold. Returns "" for anything else,
+// such as dnf's "Last metadata expiration check" line.
+fn nevra_name(line: string, bin: string) -> string {
+    let l = line.trim()
+    if l == "" || l.starts_with("!") || l.starts_with("#") || l.contains(" ") { return "" }
+    if bin == "yum" {
+        // drop the epoch, then the version and release
+        let rest = if let Some(i) = l.find(":") { l.slice(i + 1, l.len()) } else { l }
+        let parts = rest.split("-")
+        if parts.len() < 3 { return "" }
+        return parts.slice(0, parts.len() - 2).join("-")
+    }
+    // dnf4: the name is everything before the '-' that precedes the epoch
+    if let Some(i) = l.find(":") {
+        let head = l.slice(0, i)
+        let parts = head.split("-")
+        if parts.len() < 2 { return "" }
+        return parts.slice(0, parts.len() - 1).join("-")
+    }
+    ""
 }
 
 fn is_held(name: string, bin: string) -> Result[bool, string] {
-    Ok(shell::bash(bin + " versionlock list 2>/dev/null | grep -Fq " + q(name), Value::Null)?.success)
+    let out = common::output(bin + " versionlock list (is the versionlock plugin installed? python3-dnf-plugin-versionlock, dnf5-plugins or yum-plugin-versionlock)", bin + " versionlock list")?
+    for l in out.stdout.split("\n") {
+        // dnf5 prints a block per lock, headed "Package name: <name>"
+        if bin == "dnf5" {
+            if l.trim() == "Package name: " + name { return Ok(true) }
+        } else if nevra_name(l, bin) == name {
+            return Ok(true)
+        }
+    }
+    Ok(false)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let held = is_held(name, dnf_bin()?)?
-    if held == want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
+    let name = common::param_str(params, "name", "")
+    common::operand("name", name)?
+    let held = is_held(name, common::lock_bin()?)?
+    if held == common::want_present(params)? { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let name = param_str(params, "name", "")
-    if name == "" { return Err("missing 'name' parameter") }
-    let bin = dnf_bin()?
-    let cmd = if want_present(params)? {
-        bin + " versionlock add " + q(name)
-    } else {
-        bin + " versionlock delete " + q(name)
-    }
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Err(out.stderr.trim()) }
+    let name = common::param_str(params, "name", "")
+    common::operand("name", name)?
+    let bin = common::lock_bin()?
+    let verb = if common::want_present(params)? { "add" } else { "delete" }
+    common::run(bin + " versionlock " + verb + " " + name, bin + " versionlock " + verb + " " + common::q(name))?
     Ok(ApplyResult::Success)
 }
