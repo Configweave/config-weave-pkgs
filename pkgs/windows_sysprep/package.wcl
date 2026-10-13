@@ -1,6 +1,31 @@
 package "windows_sysprep" {
   description = "Generate the unattend.xml answer file that prepares a Windows installation for sysprep"
 
+  // Writes the answer file only; it never runs sysprep (see the note at the
+  // end of this file).
+  //
+  // Passwords are written the way Windows System Image Manager hides them:
+  // `<PlainText>false</PlainText>` and a Value of
+  // base64(UTF-16LE(password + element name)). That is obfuscation, not
+  // encryption — anyone who can read the file can decode it — so the file is
+  // locked down too: a protected DACL granting only SYSTEM and Administrators
+  // on Windows, mode 0600 on Linux, both set before the content is written.
+  // Pass passwords with `secret()` so they stay out of the playbook.
+  //
+  // `admin_password` sets the built-in Administrator's password, which
+  // enables that account. `skip_oobe_screens` hides the local-account screen
+  // only when `admin_password` is set: with no account defined, hiding it
+  // would leave OOBE with nothing to sign in to. AutoLogon signs in as the
+  // built-in Administrator with `admin_password` unless `autologon_password`
+  // is given; any other `autologon_user` needs `autologon_password`, and the
+  // account must already exist (this file creates none).
+  //
+  // `processorArchitecture` must match the image or Windows Setup ignores the
+  // component, so `architecture` defaults to the machine running the step.
+  // Set it when the file is generated for an image of another architecture.
+  //
+  // An existing file that differs, including one that is not UTF-8 (Windows
+  // SIM saves UTF-16), is rewritten.
   resource "unattend_file" {
     description = "Ensure an unattend.xml answer file exists with the given oobeSystem settings (or verbatim content), or is absent"
     script = "resources/unattend_file.ws"
@@ -14,13 +39,24 @@ package "windows_sysprep" {
       symbol "present" { description = "Write the answer file" }
       symbol "absent"  { description = "Delete the answer file" }
     }
-    param "content" { description = "Raw XML written verbatim; mutually exclusive with the structured params (skip_oobe_screens excepted — it is ignored in content mode)" type = "string" default = "" }
-    param "skip_oobe_screens" { description = "Emit the OOBE block that hides the EULA, local-account, OEM, online-account and wireless screens and sets ProtectYourPC=3" type = "bool" default = true }
-    param "admin_password" { description = "Local Administrator password — stored in PLAINTEXT in the generated XML" type = "string" default = "" }
-    param "autologon" { description = "Emit an AutoLogon block (requires admin_password)" type = "bool" default = false }
-    param "autologon_count" { description = "Number of automatic logons (AutoLogon LogonCount)" type = "int" default = 1 }
-    param "autologon_user" { description = "Account AutoLogon signs in as" type = "string" default = "Administrator" }
-    param "first_logon_commands" { description = "Command lines emitted as ordered FirstLogonCommands SynchronousCommand entries" type = "list" }
+    param "content" { description = "Raw XML written verbatim; mutually exclusive with the structured params (skip_oobe_screens and architecture excepted — they are ignored in content mode)" type = "string" default = "" }
+    param "architecture" {
+      description = "processorArchitecture of every component; it must match the image"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"  { description = "The architecture of the machine the step runs on" }
+      symbol "amd64" { description = "64-bit x86 images" }
+      symbol "arm64" { description = "64-bit Arm images" }
+      symbol "x86"   { description = "32-bit x86 images" }
+    }
+    param "skip_oobe_screens" { description = "Emit the OOBE block that hides the EULA, OEM, online-account and wireless screens (and the local-account screen when admin_password is set) and sets ProtectYourPC=3" type = "bool" default = true }
+    param "admin_password" { description = "Built-in Administrator password, which enables that account; written hidden (base64, not encrypted) — pass it with secret()" type = "string" default = "" }
+    param "autologon" { description = "Emit an AutoLogon block (needs admin_password or autologon_password)" type = "bool" default = false }
+    param "autologon_count" { description = "Number of automatic logons (AutoLogon LogonCount), at least 1" type = "int" default = 1 }
+    param "autologon_user" { description = "Account AutoLogon signs in as; it must already exist" type = "string" default = "Administrator" }
+    param "autologon_password" { description = "Password AutoLogon uses; empty uses admin_password, which only works for the Administrator account — pass it with secret()" type = "string" default = "" }
+    param "first_logon_commands" { description = "Command lines emitted as ordered FirstLogonCommands SynchronousCommand entries" type = "list" default = [] }
     param "input_locale" { description = "InputLocale, such as 0409:00000409; empty omits" type = "string" default = "" }
     param "system_locale" { description = "SystemLocale, such as en-US; empty omits" type = "string" default = "" }
     param "user_locale" { description = "UserLocale, such as en-US; empty omits" type = "string" default = "" }
@@ -28,12 +64,13 @@ package "windows_sysprep" {
     param "timezone" { description = "Windows time zone name, such as AUS Eastern Standard Time; empty omits" type = "string" default = "" }
   }
 
-
-  // The XML builder is OS-independent, so it converges in a Linux container
-  // against a /tmp path — this is the part of the package that can run today.
+  // The XML builder is OS-independent, so most of it converges in a Linux
+  // container against /tmp paths. The setup seeds a UTF-16 file to rewrite
+  // and an existing file to remove.
   test "unattend_generates" {
-    description = "unattend_file renders escaped oobeSystem XML, honors the content escape hatch, and converges"
+    description = "unattend_file renders escaped oobeSystem XML with hidden passwords, honors the content escape hatch, and converges"
     image = "debian:12"
+    setup = "mkdir -p /tmp/cw-unattend && printf '\\377\\376<\\000u\\000/\\000>\\000' > /tmp/cw-unattend/drift.xml && echo old > /tmp/cw-unattend/old.xml"
     verify = "tests/unattend_verify.ws"
 
     step "full" {
@@ -53,6 +90,37 @@ package "windows_sysprep" {
       }
     }
 
+    step "other_user" {
+      description = "AutoLogon as another account uses its own password; arm64; no OOBE block"
+      resource = "unattend_file"
+      properties {
+        path = "/tmp/cw-unattend/other.xml"
+        architecture = :arm64
+        skip_oobe_screens = false
+        autologon = true
+        autologon_user = "deploy"
+        autologon_password = "Auto😀pw"
+      }
+    }
+
+    step "no_account" {
+      description = "Skipping OOBE with no account keeps the local-account screen"
+      resource = "unattend_file"
+      properties { path = "/tmp/cw-unattend/noaccount.xml" timezone = "UTC" }
+    }
+
+    step "drift" {
+      description = "A UTF-16 file at the path is rewritten"
+      resource = "unattend_file"
+      properties { path = "/tmp/cw-unattend/drift.xml" timezone = "UTC" }
+    }
+
+    step "remove" {
+      description = "An existing file is deleted"
+      resource = "unattend_file"
+      properties { path = "/tmp/cw-unattend/old.xml" ensure = :absent }
+    }
+
     step "raw" {
       description = "content is written verbatim"
       resource = "unattend_file"
@@ -66,11 +134,54 @@ package "windows_sysprep" {
       properties { path = "/tmp/cw-unattend/x.xml" content = "<unattend/>" admin_password = "x" }
     }
 
+    step "other_user_without_password" {
+      description = "AutoLogon as a non-Administrator account without autologon_password is rejected"
+      resource = "unattend_file"
+      expect = "error"
+      properties { path = "/tmp/cw-unattend/y.xml" admin_password = "x" autologon = true autologon_user = "deploy" }
+    }
+
+    step "zero_logons" {
+      description = "autologon_count below 1 is rejected"
+      resource = "unattend_file"
+      expect = "error"
+      properties { path = "/tmp/cw-unattend/z.xml" admin_password = "x" autologon = true autologon_count = 0 }
+    }
+
     step "ghost_absent" {
       description = "A never-written file with ensure = absent is already configured"
       resource = "unattend_file"
       expect = "already_configured"
       properties { path = "/tmp/cw-unattend/ghost.xml" ensure = :absent }
+    }
+  }
+
+  // The real path on a real Windows image: the default path, the protected
+  // DACL, and a file Windows itself parses. The setup seeds a UTF-16 file at
+  // the sysprep path (drift to rewrite) and a file to remove. Windows setups
+  // run as cmd.exe /C, so they use no double quotes.
+  test "unattend_windows" {
+    description = "unattend_file writes a parseable, locked-down answer file at the sysprep path"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "powershell -NoProfile -Command Set-Content -LiteralPath C:\\Windows\\System32\\Sysprep\\unattend.xml -Value drift -Encoding Unicode & mkdir C:\\cw-sysprep >nul 2>&1 & echo old> C:\\cw-sysprep\\old.xml"
+    verify = "tests/unattend_windows_verify.ws"
+
+    step "sysprep_path" {
+      description = "Write the answer file where sysprep discovers it, replacing a UTF-16 file"
+      resource = "unattend_file"
+      properties {
+        admin_password = "Adm1n!pw"
+        autologon = true
+        first_logon_commands = ["cmd /c echo first"]
+        timezone = "UTC"
+      }
+    }
+
+    step "remove" {
+      description = "An existing answer file is deleted"
+      resource = "unattend_file"
+      properties { path = "C:\\cw-sysprep\\old.xml" ensure = :absent }
     }
   }
 

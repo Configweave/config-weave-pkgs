@@ -531,6 +531,52 @@ settings survive. Only a changed `path` recreates the share, and that
 happens after every account has been resolved and the directory has been
 created. `ensure = :absent` removes the share and leaves its directory. It
 refuses administrative shares such as `ADMIN$`.
+### `windows_updates`
+
+Windows Update itself, and the Group Policy values that steer it. 4 resources:
+
+- `updated` — the package-manager shape. `check` reports `reboot_required`
+  while an installed update waits for a restart, skips the search while the
+  last fully drained run for the same `query` and `source` is younger than
+  `max_age`, and otherwise searches. `apply` installs through a one-shot
+  scheduled task running as SYSTEM, because the Windows Update Agent refuses
+  downloads and installs to network logon sessions (SSH, WinRM). It accepts
+  EULAs, skips updates that would ask for user input, loops up to five passes
+  as later updates become applicable, and logs each update's result code and
+  HRESULT. It returns `reboot_required` when an install needs a restart, so a
+  playbook loops apply, reboot, apply until nothing is pending. The default
+  `query` is `IsInstalled=0 and IsHidden=0 and Type='Software'` (no drivers);
+  `source` picks `:default` (WSUS when policy names one),
+  `:windows_update` or `:microsoft_update`. There is no timeout.
+- `policy` — the Configure Automatic Updates values (`NoAutoUpdate`,
+  `AUOptions` including option 7, the install schedule, reboot behaviour,
+  detection frequency).
+- `wsus` — the WSUS server, status server, target group and `UseWUServer`.
+- `deferral` — Windows Update for Business deferrals, release channel
+  (`BranchReadinessLevel`) and active hours (at most 18 hours). Microsoft
+  documents these for client editions; Windows Server takes no feature
+  updates through Windows Update.
+
+Every enumerated policy param has an `:unmanaged` member and every numeric
+one takes `-1`. A managed value missing from the registry is drift, so a
+wanted `0` is written. `ensure = :absent` on `policy`, `wsus` or `deferral`
+deletes every value that resource manages, returning it to "Not configured".
+
+### `windows_sysprep`
+
+One resource, `unattend_file`, which writes the `unattend.xml` answer file
+sysprep picks up (by default `C:\Windows\System32\Sysprep\unattend.xml`).
+It never runs sysprep: generalizing an image ends the machine's life as a
+configured system, and belongs in an image build, not a convergence step.
+
+The structured params build an `oobeSystem` pass (OOBE screens, the
+Administrator password, AutoLogon, FirstLogonCommands, locales, time zone);
+`content` writes verbatim XML instead. Passwords are hidden the way Windows
+SIM hides them (base64 of UTF-16LE, `PlainText=false`), which is obfuscation
+rather than encryption, so the file is also restricted to SYSTEM and
+Administrators on Windows and mode 0600 elsewhere. Pass passwords with
+`secret()`. `architecture` defaults to the machine running the step; set it
+when generating a file for an image of another architecture.
 
 ### `mssql`
 
