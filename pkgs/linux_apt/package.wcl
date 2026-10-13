@@ -86,13 +86,35 @@ package "linux_apt" {
   }
 
   resource "debconf_selection" {
-    description = "Pre-seed a debconf answer"
+    description = "Pre-seed a debconf answer, or remove it. Present compares both the answer and its type with what debconf holds. Every value reaches debconf through the environment, so a password answer never appears on a command line or in an error"
     script = "resources/debconf_selection.ws"
     concurrency = "exclusive"
     param "package" { description = "Owning package name" type = "string" required = true }
     param "question" { description = "debconf question name" type = "string" required = true }
-    param "vtype" { description = "Answer type (string, boolean, select, ...)" type = "string" default = "string" }
-    param "value" { description = "Answer value" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Set the answer with debconf-set-selections" }
+      symbol "absent"  { description = "Unregister the question for package; debconf deletes it once no package owns it. A question another package also owns cannot be removed, and is an error" }
+    }
+    param "vtype" {
+      description = "Answer type"
+      type = "symbol"
+      default = :string
+
+      symbol "string"      { description = "Free text" }
+      symbol "boolean"     { description = "true or false" }
+      symbol "select"      { description = "One of the template's choices" }
+      symbol "multiselect" { description = "Comma-separated choices" }
+      symbol "note"        { description = "A note" }
+      symbol "text"        { description = "Text shown to the user" }
+      symbol "password"    { description = "A password; the value is never shown" }
+      symbol "title"       { description = "A title" }
+      symbol "error"       { description = "An error message" }
+    }
+    param "value" { description = "Answer value, on one line (when present)" type = "string" default = "" }
   }
 
   test "existing_package" {
@@ -378,7 +400,7 @@ SETUP
     description = "Removal, holds and debconf selections converge offline on Debian"
     image = "debian:12"
     group = "debian"
-    setup = "apt-mark hold gzip >/dev/null"
+    setup = "apt-mark hold gzip >/dev/null && printf 'cw-test cw-test/typed string true\\ncw-test cw-test/gone string x\\n' | debconf-set-selections"
     verify = "tests/apt_state_verify.ws"
 
     step "remove" {
@@ -405,7 +427,35 @@ SETUP
       description = "Pre-seed a debconf answer"
       resource = "debconf_selection"
       requires = ["unhold"]
-      properties { package = "cw-test" question = "cw-test/enable" vtype = "boolean" value = "true" }
+      properties { package = "cw-test" question = "cw-test/enable" vtype = :boolean value = "true" }
+    }
+
+    step "debconf_type" {
+      description = "An answer with the right value but the wrong type is drift"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/typed" vtype = :boolean value = "true" }
+    }
+
+    step "debconf_password" {
+      description = "A password answer with spaces and quotes reaches debconf intact"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/secret" vtype = :password value = "it's a s3cret; $HOME" }
+    }
+
+    step "debconf_absent" {
+      description = "Remove a seeded question"
+      resource = "debconf_selection"
+      requires = ["unhold"]
+      properties { package = "cw-test" question = "cw-test/gone" ensure = :absent }
+    }
+
+    step "hold_option_name" {
+      description = "A name apt-mark would read as an option is rejected"
+      resource = "hold"
+      expect = "error"
+      properties { name = "--version" }
     }
   }
 }
