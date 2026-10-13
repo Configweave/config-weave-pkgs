@@ -2,23 +2,24 @@ package "linux_dnf" {
   description = "Manage packages on dnf/yum systems"
 
   resource "package" {
-    description = "Ensure an rpm package is installed or absent via the dnf family"
+    description = "Ensure an rpm package is installed, at a given version if one is set, or absent, through whichever of dnf5, dnf, microdnf or yum the host has. name is resolved the way dnf install resolves it, against what installed packages provide, so a capability or a file path works too. A versionlock (linux_dnf.hold) makes dnf refuse to change the version; release it first"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "Package name, capability (python3dist(requests)) or file path (/usr/bin/foo); must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "absent"  { description = "Remove every installed package that provides name. dnf also removes dependencies nothing else needs any more (clean_requirements_on_remove). Refused when other installed packages depend on it, unless remove_dependents is true" }
     }
-    param "version" { description = "Optional version to pin when present; empty means any version" type = "string" default = "" }
+    param "version" { description = "Exact version to install when present: VERSION (2.23), VERSION-RELEASE (2.23-4.fc44) or EPOCH:VERSION-RELEASE; matched against every installed instance. Use it with a package name, not a capability or path. A version below the installed one is installed as a downgrade. This installs a version once; it does not stop later upgrades, which is what linux_dnf.hold is for. Empty means any version" type = "string" default = "" }
+    param "remove_dependents" { description = "When :absent, let dnf remove every installed package that depends on this one as well. false checks with rpm -e --test first and fails, naming them, if anything depends on it" type = "bool" default = false }
   }
 
   resource "cache_updated" {
-    description = "Run makecache when the last refresh is older than max_age (dnf5, dnf, microdnf or yum)"
+    description = "Refresh the repository metadata (makecache --refresh with dnf5, dnf or microdnf; clean expire-cache then makecache with yum) when the last refresh this resource made with that front-end is older than max_age, or when /etc/yum.repos.d changed since. The refresh is forced, so it happens even while the cached metadata is younger than the repositories' metadata_expire. The refresh time is the mtime of /var/lib/config-weave/dnf-cache-updated-<front-end>"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
@@ -29,10 +30,10 @@ package "linux_dnf" {
   }
 
   resource "repository" {
-    description = "Ensure a yum/dnf .repo file exists or is absent"
+    description = "Ensure a yum/dnf .repo file under /etc/yum.repos.d holds exactly content, or is absent"
     script = "resources/repository.ws"
     concurrency = "exclusive"
-    param "name" { description = "Repository file basename without .repo" type = "string" required = true }
+    param "name" { description = "Repository file basename without .repo: letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -45,26 +46,26 @@ package "linux_dnf" {
   }
 
   resource "gpg_key" {
-    description = "Ensure an RPM GPG key file exists (imported) or is absent"
+    description = "Ensure an RPM signing key is imported into the rpm database, with its armored copy at /etc/pki/rpm-gpg/<name>.asc, or that both are gone. Present checks the rpm database as well as the file, so a key removed with rpm -e is imported again. Key ids are read with rpm itself (a throwaway rpm database), so no gpg is needed"
     script = "resources/gpg_key.ws"
     concurrency = "exclusive"
-    param "name" { description = "Key basename under /etc/pki/rpm-gpg" type = "string" required = true }
+    param "name" { description = "Key file basename under /etc/pki/rpm-gpg; .asc is appended. Letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
-      description = "Desired state: :present or :absent (removes the key file; an already-imported rpmdb key stays)"
+      description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the key file and import it" }
-      symbol "absent"  { description = "Remove the key file; an already-imported rpmdb key stays" }
+      symbol "present" { description = "Import the key and keep its file" }
+      symbol "absent"  { description = "Remove the key from the rpm database and delete the file. The keys removed are those in content when it is given, else those in the existing file" }
     }
-    param "content" { description = "ASCII-armored GPG public key (required when present)" type = "string" default = "" }
+    param "content" { description = "ASCII-armored GPG public key (required when present, optional when absent)" type = "string" default = "" }
   }
 
   resource "hold" {
-    description = "Ensure a versionlock on a package is present or absent"
+    description = "Ensure a versionlock on a package is present or absent: present locks the installed version, so dnf neither upgrades nor re-versions it. Needs the versionlock plugin: dnf5-plugins (dnf5), python3-dnf-plugin-versionlock (dnf) or yum-plugin-versionlock (yum); microdnf has none. A missing plugin is an error"
     script = "resources/hold.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "Package name, matched exactly against the lock list; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present (held) or :absent (not held)"
       type = "symbol"
@@ -75,38 +76,15 @@ package "linux_dnf" {
     }
   }
 
-  // Untested by design: cache_updated hits the network (makecache), gpg_key
-  // runs `rpm --import` which rejects anything but a real key, and hold
-  // needs the versionlock plugin installed — none converge honestly in an
-  // offline container.
-
-  // Real installs run in a VM, not a container: dnf5 loads its repositories
-  // fine in a Fedora container but then wedges for many minutes on the
-  // transaction itself, while the same command in the VM finishes in
-  // seconds. The container tests above stay for the fast check-only paths.
-  test "package_installs" {
-    description = "package installs a real package and removing it converges"
-    template = "x86_64/fedora-44"
-    verify = "tests/dnf_install_verify.ws"
-
-    step "install" {
-      description = "Install hello"
-      resource = "package"
-      properties { name = "hello" ensure = :present }
-    }
-
-    step "absent_stays_absent" {
-      description = "A package that was never installed is already configured"
-      resource = "package"
-      expect = "already_configured"
-      properties { name = "cw-no-such-package" ensure = :absent }
-    }
-  }
-
+  // Fedora tests run in containers with 2GiB: in the default 256M, dnf5
+  // thrashes for minutes on a transaction. The image is pinned so the
+  // versions the tests name exist: the fedora repository of a release is
+  // frozen, so which 2.23-4.fc44 stays available while updates moves on.
   test "dnf_existing_package" {
     description = "DNF-family installed package checks work in Fedora"
-    image = "fedora:latest"
+    image = "fedora:44"
     group = "fedora"
+    memory = "2GiB"
 
     step "filesystem-installed" {
       description = "filesystem is installed in Fedora"
@@ -116,18 +94,198 @@ package "linux_dnf" {
     }
   }
 
-  // The absent steps converge on files seeded during setup (run 1 checks
-  // every step before any apply). gpg_key's absent leg only deletes the key
-  // file, so it converges offline unlike its rpm --import present path.
-  test "yum_repo_file" {
-    description = "repository and gpg_key add and remove converge"
-    image = "fedora:latest"
+  // Real installs over the container's NAT. Setup is idempotent: the group
+  // shares one container.
+  test "package_converges" {
+    description = "package installs, downgrades to a pinned version, removes for real and guards dependents"
+    image = "fedora:44"
     group = "fedora"
-    setup = "mkdir -p /etc/yum.repos.d /etc/pki/rpm-gpg && printf '[cw-stale]\\nenabled=0\\n' > /etc/yum.repos.d/cw-stale.repo && echo stale-key > /etc/pki/rpm-gpg/cw-stale.asc"
+    memory = "2GiB"
+    setup = "dnf -y -q install which jq dos2unix && dnf -y -q upgrade which && if rpm -q tree >/dev/null; then dnf -y -q remove tree; fi"
+    verify = "tests/dnf_install_verify.ws"
+
+    step "install" {
+      description = "Install tree"
+      resource = "package"
+      properties { name = "tree" }
+    }
+
+    step "downgrade" {
+      description = "Pin which below the installed version, as VERSION-RELEASE"
+      resource = "package"
+      properties { name = "which" version = "2.23-4.fc44" }
+    }
+
+    step "remove" {
+      description = "Remove an installed package"
+      resource = "package"
+      properties { name = "dos2unix" ensure = :absent }
+    }
+
+    step "guarded" {
+      description = "Removing a library jq depends on is refused"
+      resource = "package"
+      expect = "error"
+      properties { name = "oniguruma" ensure = :absent }
+    }
+
+    step "option_name" {
+      description = "A name dnf would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--version" }
+    }
+  }
+
+  // Check-only and offline. gpg-pubkey is installed once per imported key,
+  // with the key id as its version, so two imported test keys give a
+  // multi-instance package whose versions are fixed.
+  test "package_checks" {
+    description = "package matches VERSION and VERSION-RELEASE pins on every instance, and capabilities and paths"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = <<'SETUP'
+cat > /tmp/cw-key1.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+cat > /tmp/cw-key2.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG
+FK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh
+dmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0
+AhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU
+w2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO
+Y0X6rHp4dyxEoO/QAw==
+=n4ju
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+rpm --import /tmp/cw-key1.asc /tmp/cw-key2.asc
+SETUP
+
+    step "pin_version" {
+      description = "VERSION pin on a multi-instance package"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "gpg-pubkey" version = "1d58e9589ad27b04392bf7ef2568ca9a9f64a8a0" }
+    }
+
+    step "pin_version_release" {
+      description = "VERSION-RELEASE pin on a multi-instance package"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "gpg-pubkey" version = "74bfbe19618aafbe09ea3cadd3c3eead65aa662b-6acdeb34" }
+    }
+
+    step "path" {
+      description = "A file path resolves to the package that owns it"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "/usr/bin/bash" }
+    }
+
+    step "capability_absent" {
+      description = "Nothing provides an unknown capability"
+      resource = "package"
+      expect = "already_configured"
+      properties { name = "cw-no-such-capability(x)" ensure = :absent }
+    }
+  }
+
+  // dnf5's versionlock comes with dnf5-plugins. A lock on dnf5-plugins must
+  // not read as a lock on dnf5, its prefix.
+  test "hold_converges" {
+    description = "hold adds and removes dnf5 versionlocks, matching names exactly"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = "rpm -q dnf5-plugins >/dev/null || dnf -y -q install dnf5-plugins; dnf -q versionlock delete dnf5 >/dev/null 2>&1; dnf -q versionlock add dnf5-plugins tzdata >/dev/null"
+    verify = "tests/dnf_hold_verify.ws"
+
+    step "hold" {
+      description = "Lock dnf5 while dnf5-plugins is already locked"
+      resource = "hold"
+      properties { name = "dnf5" }
+    }
+
+    step "unhold" {
+      description = "Release the lock setup placed on tzdata"
+      resource = "hold"
+      properties { name = "tzdata" ensure = :absent }
+    }
+  }
+
+  // dnf4 prints locks as NEVRA patterns, so it gets its own test.
+  test "hold_dnf4" {
+    description = "hold parses dnf4's versionlock list exactly"
+    image = "rockylinux:9"
+    memory = "2GiB"
+    setup = "rpm -q python3-dnf-plugin-versionlock >/dev/null || dnf -y -q install python3-dnf-plugin-versionlock; dnf -q versionlock delete dnf >/dev/null 2>&1; dnf -q versionlock add dnf-data tzdata >/dev/null"
+    verify = "tests/dnf_hold_verify.ws"
+
+    step "hold" {
+      description = "Lock dnf while dnf-data is already locked"
+      resource = "hold"
+      properties { name = "dnf" }
+    }
+
+    step "unhold" {
+      description = "Release the lock setup placed on tzdata"
+      resource = "hold"
+      properties { name = "tzdata" ensure = :absent }
+    }
+  }
+
+  test "cache_updated_refreshes" {
+    description = "cache_updated forces a refresh of metadata that is still inside metadata_expire"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && dnf -q makecache >/dev/null && rm -f /var/lib/config-weave/dnf-cache-updated-* && touch /tmp/cw-before-refresh && sleep 1"
+    verify = "tests/dnf_cache_verify.ws"
+
+    step "refresh" {
+      description = "Refresh the metadata"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated refreshes when a .repo file changed after a recent refresh"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = "export PATH=/usr/sbin:/usr/bin:/sbin:/bin && mkdir -p /var/lib/config-weave && touch -d '-1 hour' /var/lib/config-weave/dnf-cache-updated-dnf5 && touch /etc/yum.repos.d/fedora.repo /tmp/cw-before-refresh && sleep 1"
+    verify = "tests/dnf_cache_verify.ws"
+
+    step "refresh" {
+      description = "A .repo file newer than the stamp forces a refresh inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  // The absent steps converge on files seeded during setup (run 1 checks
+  // every step before any apply).
+  test "yum_repo_file" {
+    description = "repository writes, fixes drift and removes .repo files"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = "mkdir -p /etc/yum.repos.d && printf '[cw-stale]\\nenabled=0\\n' > /etc/yum.repos.d/cw-stale.repo && printf '[cw-test]\\nname=drifted\\n' > /etc/yum.repos.d/cw-test.repo"
     verify = "tests/yum_repository_verify.ws"
 
     step "repo" {
-      description = "Write a .repo file"
+      description = "Rewrite a .repo file whose content drifted"
       resource = "repository"
       properties {
         name = "cw-test"
@@ -141,10 +299,89 @@ package "linux_dnf" {
       properties { name = "cw-stale" ensure = :absent }
     }
 
-    step "rm_key" {
-      description = "Remove the seeded stale GPG key file"
+    step "traversal" {
+      description = "A name that leaves /etc/yum.repos.d is rejected"
+      resource = "repository"
+      expect = "error"
+      properties { name = "../cw-evil" content = "[x]\n" }
+    }
+  }
+
+  // Real rpm --import of generated test keys, offline. Setup leaves the
+  // file for cw-reimport in place but its key out of the rpm database, and
+  // imports cw-gone's key with its file.
+  test "gpg_keys_converge" {
+    description = "gpg_key imports keys, re-imports a key missing from the rpm database and removes keys"
+    image = "fedora:44"
+    group = "fedora"
+    memory = "2GiB"
+    setup = <<'SETUP'
+mkdir -p /etc/pki/rpm-gpg
+cat > /etc/pki/rpm-gpg/cw-reimport.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd
+zWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu
+aW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7
+HNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F
+ewM6ysPM6bWFBw==
+=9OGa
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+cp /etc/pki/rpm-gpg/cw-reimport.asc /tmp/cw-key1.asc
+cat > /etc/pki/rpm-gpg/cw-gone.asc <<'KEY'
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEas3rNBYJKwYBBAHaRw8BAQdA2laNM3WEEJfqsQ7BN1R+auVQAb/4J3btKEaG
+FK1dyea0NENvbmZpZyBXZWF2ZSBUZXN0IEtleSAyIDx0ZXN0MkBjb25maWctd2Vh
+dmUuaW52YWxpZD6IkAQTFgoAOBYhBB1Y6Via0nsEOSv37yVoypqfZKigBQJqzes0
+AhsDBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJECVoypqfZKigHI0BAJBeX5KU
+w2uTXOoaOLSPYLtFVYyqJuipFdkarJH5HMc4AQD+yBTLEhH0A/a2J2Rv+mdT6+bO
+Y0X6rHp4dyxEoO/QAw==
+=n4ju
+-----END PGP PUBLIC KEY BLOCK-----
+KEY
+for v in $(rpm -q gpg-pubkey --qf '%{VERSION}-%{RELEASE}\n'); do case $v in 74bfbe19*) rpm -e --allmatches gpg-pubkey-$v 2>/dev/null;; esac; done
+rpm --import /etc/pki/rpm-gpg/cw-gone.asc
+rm -f /etc/pki/rpm-gpg/cw-bad.asc /etc/pki/rpm-gpg/.cw-bad.asc.cw-tmp
+echo stale-key > /etc/pki/rpm-gpg/cw-stale.asc
+SETUP
+    verify = "tests/dnf_gpg_verify.ws"
+
+    step "reimport" {
+      description = "A key whose file is current but which is missing from the rpm database is imported"
+      resource = "gpg_key"
+      properties {
+        name = "cw-reimport"
+        content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmDMEas3rNBYJKwYBBAHaRw8BAQdAxcMaH9Rk5ojjLO30eoyD7PcQiS9tXrGt0JOd\nzWZyL+K0MUNvbmZpZyBXZWF2ZSBUZXN0IEtleSA8dGVzdEBjb25maWctd2VhdmUu\naW52YWxpZD6IkAQTFgoAOBYhBHS/vhlhiq++Ceo8rdPD7q1lqmYrBQJqzes0AhsD\nBQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJENPD7q1lqmYrZnYBAO32VHZGzUE7\nHNwwoujKKv9KS8WhDRKcn/fI9i7ftFnNAQD0ZzgAoeHRs5nQkBu8b/dvcPC2527F\newM6ysPM6bWFBw==\n=9OGa\n-----END PGP PUBLIC KEY BLOCK-----\n"
+      }
+    }
+
+    step "remove" {
+      description = "Remove an imported key and its file"
+      resource = "gpg_key"
+      properties { name = "cw-gone" ensure = :absent }
+    }
+
+    step "rm_stale" {
+      description = "Remove a seeded key file that holds no key"
       resource = "gpg_key"
       properties { name = "cw-stale" ensure = :absent }
+    }
+
+    step "invalid" {
+      description = "Content that is not a key is an error and writes nothing"
+      resource = "gpg_key"
+      expect = "error"
+      properties { name = "cw-bad" content = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nnot a key\n-----END PGP PUBLIC KEY BLOCK-----\n" }
+    }
+
+    step "traversal" {
+      description = "A name that leaves /etc/pki/rpm-gpg is rejected"
+      resource = "gpg_key"
+      expect = "error"
+      properties { name = "../cw-evil" content = "x" }
     }
   }
 }
