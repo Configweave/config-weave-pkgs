@@ -59,23 +59,31 @@ fn cmd_err(what: string, out: CmdOutput) -> string {
     if text == "" { head } else { head + ": " + text }
 }
 
-// exit 0 = a value, 1 = the key is unset, anything else is a real failure.
-fn cfg_get(params: Value, key: string) -> Result[Option[string], string] {
-    let out = git(params, "--get", key, "")?
-    if out.code == 0 { return Ok(Some(out.stdout.trim())) }
-    if out.code == 1 { return Ok(None) }
-    Err(cmd_err("git config --get " + key, out))
-}
-
+// Every value of `key`, exactly as git stores it. -z ends each value with a
+// NUL instead of a newline, so edge whitespace and multi-line values come
+// back intact and an explicitly empty value is still one entry. Exit 1 =
+// the key is unset; anything else non-zero is a real failure.
 fn cfg_get_all(params: Value, key: string) -> Result[List[string], string] {
-    let out = git(params, "--get-all", key, "")?
+    let out = git(params, "-z --get-all", key, "")?
     if out.code == 1 { return Ok([]) }
     if out.code != 0 { return Err(cmd_err("git config --get-all " + key, out)) }
     let vals: List[string] = []
-    for line in out.stdout.split("\n") {
-        if line.trim() != "" { vals.push(line.trim()) }
+    let parts = out.stdout.split("\0")
+    // The output ends with a NUL, so the last part is the empty remainder.
+    let i = 0
+    while i + 1 < parts.len() {
+        vals.push(parts.get(i).unwrap_or(""))
+        i = i + 1
     }
     Ok(vals)
+}
+
+// The single value of `key`; None when unset. A multi-valued key reads as
+// its last value, which is the one git itself uses.
+fn cfg_get(params: Value, key: string) -> Result[Option[string], string] {
+    let vals = cfg_get_all(params, key)?
+    if vals.is_empty() { return Ok(None) }
+    Ok(vals.last())
 }
 
 // git creates the config file itself, but not the directory holding it.

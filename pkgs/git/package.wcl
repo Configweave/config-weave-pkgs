@@ -1196,6 +1196,27 @@ package "git" {
       properties { name = "lg" command = "log --graph --format=\"%h %s\" # pretty" home = "/root/entries" }
     }
 
+    // Edge whitespace must survive the read-back: values used to be
+    // trimmed, so these never converged.
+    step "alias_padded" {
+      description = "An alias whose command has leading and trailing spaces"
+      resource = "alias"
+      properties { name = "padded" command = "  status  " home = "/root/entries" }
+    }
+
+    step "entry_padded" {
+      description = "A raw entry whose value has a trailing space"
+      resource = "config_entry"
+      properties { key = "cw.padded" value = "tail " home = "/root/entries" }
+    }
+
+    // --get-all used to split on newlines, so this read back as two values.
+    step "entry_multiline" {
+      description = "A raw entry whose value spans two lines"
+      resource = "config_entry"
+      properties { key = "cw.multiline" value = "first\nsecond" home = "/root/entries" }
+    }
+
     step "rm_alias" {
       description = "Remove the seeded alias"
       resource = "alias"
