@@ -733,7 +733,7 @@ package "windows_iis" {
       symbol "allow" { description = "Grant access to the named users, roles and verbs" }
       symbol "deny"  { description = "Refuse access to them" }
     }
-    param "users" { description = "users: comma-separated user names; * is everyone and ?  is anonymous. Rule identity is the (access_type, users, roles, verbs) tuple" type = "string" default = "" }
+    param "users" { description = "users: comma-separated user names; * is everyone and ?  is anonymous. Rule identity is the (users, roles, verbs) tuple; access_type is set on the rule that tuple names, so changing it edits the rule in place" type = "string" default = "" }
     param "roles" { description = "roles: comma-separated role names" type = "string" default = "" }
     param "verbs" { description = "verbs: comma-separated HTTP verbs the rule covers; empty is all verbs" type = "string" default = "" }
   }

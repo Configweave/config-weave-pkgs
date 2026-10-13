@@ -3,10 +3,12 @@ use common
 use collection
 
 // ---------------------------------------------------------------------------
-// A URL authorization rule. IIS keys the element on the whole
-// (accessType, users, roles, verbs) tuple, so changing any of them adds a
-// rule rather than editing one — retire the old tuple with ensure =
-// :absent.
+// A URL authorization rule. IIS's schema makes the whole (accessType,
+// users, roles, verbs) tuple the element's key, but this resource finds the
+// rule by (users, roles, verbs) alone and sets accessType on it: flipping
+// access_type edits the rule in place rather than adding a second rule for
+// the same principals. Changing users, roles or verbs names a different rule
+// — retire the old one with ensure = :absent.
 // ---------------------------------------------------------------------------
 
 fn section(params: Value) -> Result[string, string] {

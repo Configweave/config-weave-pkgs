@@ -89,9 +89,11 @@ fn hms(ns: int) -> string {
 // Get-WebConfigurationProperty is not recognized". CwV flattens whatever a
 // configuration read hands back — a ConfigurationAttribute, a raw value, a
 // TimeSpan or a flags enum — into the text this package compares against.
-// CwEnum reads an enum or flags attribute off a raw ConfigurationElement,
-// whose GetAttributeValue hands back the ordinal, and maps it to the schema
-// name (flags: the comma-joined names of the set bits, "" for none).
+// CwEnum reads an enum or flags attribute off an element whose
+// GetAttributeValue hands back the ordinal (GetCollection() items, either
+// the provider's or Microsoft.Web.Administration's) and maps it to the schema
+// name — flags as the comma-joined names of the set bits, "" for none. Any
+// other attribute returns $fallback. CwKind says which: enum, flags or "".
 fn ps_head() -> string {
     "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
     "Import-Module WebAdministration; " +
@@ -102,14 +104,18 @@ fn ps_head() -> string {
     "if ($x -is [bool]) {{ if ($x) {{ return 'true' }} else {{ return 'false' }} }}; " +
     "if ($x -is [timespan]) {{ return $x.ToString() }}; " +
     "return ([string]$x) }}; " +
+    "function CwKind($el, $name) {{ try {{ $sch = $el.Schema.AttributeSchemas[$name]; " +
+    "if ([string]$sch.Type -eq 'flags' -or $sch.IsCombinedFlags -eq $true) {{ return 'flags' }}; " +
+    "if ([string]$sch.Type -eq 'enum' -or ($null -ne $sch.EnumValues -and @($sch.EnumValues).Count -gt 0)) {{ return 'enum' }} }} catch {{ }}; return '' }}; " +
     "function CwEnum($el, $name, $fallback) {{ try {{ " +
-    "$v = [int]$el.GetAttributeValue($name); " +
+    "$k = CwKind $el $name; if ($k -eq '') {{ return $fallback }}; " +
     "$sch = $el.Schema.AttributeSchemas[$name]; " +
-    "if ($null -ne $sch -and $sch.IsCombinedFlags) {{ $n = @(); foreach ($ev in $sch.EnumValues) {{ " +
-    "$b = [int]$ev.Value; if ($b -ne 0 -and (($b -band ($b - 1)) -eq 0) -and (($v -band $b) -eq $b)) {{ $n += [string]$ev.Name }} }}; " +
+    "$evs = @(); try {{ $evs = @($sch.GetEnumValues()) }} catch {{ if ($null -ne $sch.EnumValues) {{ $evs = @($sch.EnumValues) }} }}; " +
+    "$v = [int64]$el.GetAttributeValue($name); " +
+    "if ($k -eq 'flags') {{ $n = @(); foreach ($ev in $evs) {{ " +
+    "$b = [int64]$ev.Value; if ($b -ne 0 -and (($b -band ($b - 1)) -eq 0) -and (($v -band $b) -eq $b)) {{ $n += [string]$ev.Name }} }}; " +
     "return ($n -join ',') }}; " +
-    "if ($null -ne $sch) {{ foreach ($ev in $sch.EnumValues) {{ " +
-    "if ([int]$ev.Value -eq $v) {{ return [string]$ev.Name }} }} }} " +
+    "foreach ($ev in $evs) {{ if ([int64]$ev.Value -eq $v) {{ return [string]$ev.Name }} }} " +
     "}} catch {{ }}; return $fallback }}; "
 }
 
