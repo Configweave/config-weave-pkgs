@@ -42,11 +42,6 @@ gitignored, so a package's documentation *is* its doc cells in `package.wcl`.
 
 ## Conventions
 
-- Ticket-branch development, driven by the aciddog kanban board: work happens
-  on a branch named for the ticket id (`t-…`) in that ticket's worktree at
-  `.tree/<ticket-id>`, and lands on `main` through a pull request. Never commit
-  or push directly to `main` — the board's Tests and Review stages gate every
-  change, and a direct push bypasses them.
 - **Removal is `ensure = :absent`** on the same resource that creates the thing.
   Every install/remove resource takes an `ensure` param (`:present`, the
   default, or `:absent`) instead of a separate `*_absent` resource. `ensure` is
