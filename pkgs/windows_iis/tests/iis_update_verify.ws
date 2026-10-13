@@ -1,6 +1,5 @@
 use value
 use shell
-use log
 
 // What the steps' own check() cannot see: that the patched rewrite rule kept
 // its place and still rewrites, that both mask entries exist side by side,
@@ -46,26 +45,24 @@ fn config_checks() -> Result[List[string], string] {
 }
 
 fn verify(facts: Value) -> Result[bool, string] {
-    let ok = true
+    let failed: List[string] = []
     for line in config_checks()? {
         let l = line.trim()
-        if l.starts_with("FAIL") { log::warn(l); ok = false }
+        if l.starts_with("FAIL") { failed.push(l.slice(5, l.len())) }
     }
     // The patched rule still rewrites: the new condition matches localhost.
     let rewritten = curl("http://localhost:8080/old/index.html")?
     if !rewritten.stdout.contains("weave-rewritten") {
-        log::warn("/old/index.html is no longer rewritten after the rule was patched")
-        ok = false
+        failed.push("/old/index.html is no longer rewritten after the rule was patched")
     }
     let plain = status("http://localhost:8080/tls/")?
     if plain != "403" {
-        log::warn("expected 403 from /tls over HTTP, got " + plain)
-        ok = false
+        failed.push("expected 403 from /tls over HTTP, got " + plain)
     }
     let tls = curl("https://localhost:8443/tls/")?
     if !tls.stdout.contains("weave-tls-ok") {
-        log::warn("/tls did not serve over HTTPS")
-        ok = false
+        failed.push("/tls did not serve over HTTPS")
     }
-    Ok(ok)
+    if failed.is_empty() { return Ok(true) }
+    Err(failed.join("; "))
 }

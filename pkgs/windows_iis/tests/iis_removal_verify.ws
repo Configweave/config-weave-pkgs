@@ -1,7 +1,6 @@
 use value
 use shell
 use fs
-use log
 
 // Every removal step's own check() says the object is gone from the
 // configuration; this asserts the side effects a removal must also undo — the
@@ -32,17 +31,16 @@ fn verify(facts: Value) -> Result[bool, string] {
         "T ((Get-ItemProperty HKLM:\\SOFTWARE\\Microsoft\\IIS\\CentralCertProvider).Enabled -eq 0) 'the central certificate store is disabled'",
         Value::Null)?
     if !out.success {
-        log::warn("removal checks failed: " + out.stderr.trim())
-        return Ok(false)
+        return Err("removal checks failed: " + out.stderr.trim())
     }
-    let ok = true
+    let failed: List[string] = []
     for line in out.stdout.trim().split("\n") {
         let l = line.trim()
-        if l.starts_with("FAIL") { log::warn(l); ok = false }
+        if l.starts_with("FAIL") { failed.push(l.slice(5, l.len())) }
     }
     if fs::exists("C:\\Windows\\System32\\inetsrv\\rewrite.dll") {
-        log::warn("rewrite.dll is still installed")
-        ok = false
+        failed.push("rewrite.dll is still installed")
     }
-    Ok(ok)
+    if failed.is_empty() { return Ok(true) }
+    Err(failed.join("; "))
 }
