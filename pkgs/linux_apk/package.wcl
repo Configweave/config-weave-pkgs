@@ -1,38 +1,39 @@
 package "linux_apk" {
-  description = "Manage packages on apk/Alpine systems"
+  description = "Manage packages on apk/Alpine systems. Every apk call waits up to five minutes for apk's database lock (apk --wait 300), but steps of different resource types can still run at the same time, so order them with requires"
 
   resource "package" {
-    description = "Ensure an apk package is installed or absent"
+    description = "Ensure an apk package is in /etc/apk/world and installed, or is not installed. A package installed only as another package's dependency is not present: apk removes it with its parent, so present adds it to world"
     script = "resources/package.ws"
     concurrency = "exclusive"
-    param "name" { description = "Package name" type = "string" required = true }
+    param "name" { description = "An apk dependency spec, matched exactly against /etc/apk/world: a name (tree), a repository tag (tree@testing, for a repository line tagged @testing), or a pinned or constrained version (tree=2.1.1-r0, tree>2, tree~2.1). A pin in world stops apk upgrading past it. Must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the package" }
-      symbol "absent"  { description = "Remove the package" }
+      symbol "present" { description = "Add name to world and install it (apk add)" }
+      symbol "absent"  { description = "Remove the package name names (apk del; the tag and version are ignored). apk refuses to remove a package that other installed packages need, and that is an error naming them, unless remove_dependents is true" }
     }
+    param "remove_dependents" { description = "When :absent, also remove the world packages that need this one (apk del -r)" type = "bool" default = false }
   }
 
   resource "cache_updated" {
-    description = "Run apk update when the index is older than max_age"
+    description = "Run apk update when the last refresh this resource made is older than max_age, or when /etc/apk/repositories, /etc/apk/repositories.d or /etc/apk/keys changed since. The refresh time is the mtime of /var/lib/config-weave/apk-cache-updated, not the age of apk's own index files. A repository that cannot be fetched fails the step"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
     param "max_age" {
-      description = "Refresh when the last update is older than this span"
+      description = "Refresh when the last refresh is older than this span"
       type = "duration"
       default = 24h
     }
   }
 
   resource "repository" {
-    description = "Ensure a repository line is present in or absent from /etc/apk/repositories"
+    description = "Ensure a repository line is present in or absent from /etc/apk/repositories. A change makes the next cache_updated refresh"
     script = "resources/repository.ws"
     // read-modify-write on the shared repositories file
     concurrency = "exclusive"
-    param "url" { description = "Repository line, such as https://dl-cdn.alpinelinux.org/alpine/v3.20/community" type = "string" required = true }
+    param "url" { description = "The whole repository line, matched against each line with surrounding whitespace trimmed: https://dl-cdn.alpinelinux.org/alpine/v3.20/community, or with a tag, @testing https://dl-cdn.alpinelinux.org/alpine/edge/testing. The tag is part of the line, so a tagged and an untagged line are different repositories. A commented-out (#) line is not a match: present adds an active line beside it. Must be one line and not start with '#'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -43,11 +44,12 @@ package "linux_apk" {
     }
   }
 
-  // A real install over the container's NAT: `tree` is tiny and lives in
-  // Alpine's main repository.
+  // Real installs over the container's NAT: the packages are tiny and live
+  // in Alpine's main repository.
   test "package_installs" {
-    description = "package installs a real package and removing it converges"
+    description = "package installs a real package, pins a version and rejects option-like names"
     image = "alpine:3.20"
+    setup = "apk add -q xz"
     verify = "tests/apk_install_verify.ws"
 
     step "install" {
@@ -56,39 +58,137 @@ package "linux_apk" {
       properties { name = "tree" ensure = :present }
     }
 
+    step "pin" {
+      // xz is installed and in world unpinned, so apk info -e alone says
+      // the pin holds; world says it does not.
+      description = "Constrain an installed package's version in world"
+      resource = "package"
+      properties { name = "xz>=5" }
+    }
+
     step "absent_stays_absent" {
       description = "A package that was never installed is already configured"
       resource = "package"
       expect = "already_configured"
       properties { name = "cw-no-such-package" ensure = :absent }
     }
+
+    step "option_name" {
+      description = "A name apk would read as an option is rejected"
+      resource = "package"
+      expect = "error"
+      properties { name = "--version" }
+    }
   }
 
-  test "apk_existing_package" {
-    description = "apk installed package checks and repository edits work in Alpine"
+  test "package_removes" {
+    description = "package removes for real, adopts dependency-only packages into world and guards dependents"
     image = "alpine:3.20"
-    setup = "echo 'https://stale.invalid/alpine/v3.20/testing' >> /etc/apk/repositories"
-    verify = "tests/apk_verify.ws"
+    setup = "apk add -q tree curl jq"
+    verify = "tests/apk_remove_verify.ws"
 
-    step "alpine-baselayout-installed" {
-      description = "alpine-baselayout is installed in Alpine"
+    step "remove" {
+      description = "Remove an installed package"
       resource = "package"
-      expect = "already_configured"
-      properties { name = "alpine-baselayout" }
+      properties { name = "tree" ensure = :absent }
     }
 
+    step "dependency_only" {
+      description = "A package installed only as curl's dependency is added to world"
+      resource = "package"
+      properties { name = "libcurl" }
+    }
+
+    step "guarded" {
+      description = "Removing a library jq needs is an error, not a silent no-op"
+      resource = "package"
+      expect = "error"
+      properties { name = "oniguruma" ensure = :absent }
+    }
+  }
+
+  test "package_removes_dependents" {
+    description = "remove_dependents removes the packages that need the target too"
+    image = "alpine:3.20"
+    setup = "apk add -q xz"
+    verify = "tests/apk_remove_dependents_verify.ws"
+
+    step "remove" {
+      description = "Remove xz-libs and xz, which needs it"
+      resource = "package"
+      properties { name = "xz-libs" ensure = :absent remove_dependents = true }
+    }
+  }
+
+  test "cache_updated_refreshes" {
+    description = "cache_updated refreshes when no refresh has been recorded"
+    image = "alpine:3.20"
+    setup = "rm -f /var/lib/config-weave/apk-cache-updated"
+    verify = "tests/apk_cache_verify.ws"
+
+    step "refresh" {
+      description = "Refresh the package index"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_sees_new_sources" {
+    description = "cache_updated refreshes when the repositories changed after a recent refresh"
+    image = "alpine:3.20"
+    setup = "mkdir -p /var/lib/config-weave && touch /var/lib/config-weave/apk-cache-updated && sleep 1 && touch /etc/apk/repositories"
+    verify = "tests/apk_cache_verify.ws"
+
+    step "refresh" {
+      description = "A repositories file newer than the stamp forces a refresh inside max_age"
+      resource = "cache_updated"
+    }
+  }
+
+  test "cache_updated_fresh" {
+    description = "cache_updated leaves a recent refresh with unchanged sources alone"
+    image = "alpine:3.20"
+    setup = "mkdir -p /var/lib/config-weave && touch /etc/apk/repositories /etc/apk/keys/* && sleep 1 && touch /var/lib/config-weave/apk-cache-updated"
+
+    step "fresh" {
+      description = "Nothing to do inside max_age"
+      resource = "cache_updated"
+      expect = "already_configured"
+    }
+  }
+
+  test "repositories_converge" {
+    description = "repository adds and removes lines, trims url and ignores commented lines"
+    image = "alpine:3.20"
+    // No trailing newline, a commented-out line and a stale line.
+    setup = "printf 'https://dl-cdn.alpinelinux.org/alpine/v3.20/main\\n#https://dl-cdn.alpinelinux.org/alpine/v3.20/community\\nhttps://stale.invalid/alpine/v3.20/testing' > /etc/apk/repositories"
+    verify = "tests/apk_verify.ws"
+
     step "repo" {
-      // edge/testing is NOT in the image's default repositories file, so the
-      // step genuinely converges (main/community already ship enabled).
-      description = "Add a repository line"
+      // Whitespace around url must not add a second copy on every run.
+      description = "Add a repository line given with surrounding whitespace"
       resource = "repository"
-      properties { url = "https://dl-cdn.alpinelinux.org/alpine/edge/testing" }
+      properties { url = "  https://dl-cdn.alpinelinux.org/alpine/edge/testing  " }
+    }
+
+    step "commented" {
+      description = "A commented-out line does not count as present"
+      resource = "repository"
+      requires = ["repo"]
+      properties { url = "https://dl-cdn.alpinelinux.org/alpine/v3.20/community" }
     }
 
     step "rm_repo" {
       description = "Remove the seeded stale repository line"
       resource = "repository"
+      requires = ["commented"]
       properties { url = "https://stale.invalid/alpine/v3.20/testing" ensure = :absent }
+    }
+
+    step "multi_line" {
+      description = "A url with a line break is rejected"
+      resource = "repository"
+      expect = "error"
+      properties { url = "https://a.invalid/x\nhttps://b.invalid/y" }
     }
   }
 }
