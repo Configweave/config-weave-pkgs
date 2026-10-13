@@ -123,4 +123,62 @@ package "linux_ssh" {
       properties { key = "X11Forwarding" ensure = :absent }
     }
   }
+
+  // Root's file is seeded with modes sshd's StrictModes rejects, a key whose
+  // comment changes, and a key with options that :absent must still find.
+  // `modes` runs first: every other present step also fixes the modes.
+  test "authorized_key_converges" {
+    description = "authorized_key matches keys by type and blob, enforces StrictModes attributes, and serves a user without a same-named group"
+    image = "debian:12"
+    group = "ssh"
+    setup = "(id cwkey >/dev/null 2>&1 || useradd -m -g users cwkey) && mkdir -p /root/.ssh && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRotateCommentKey old-comment\\nfrom=\"10.0.0.1\",command=\"echo a b\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOptionedKeyGoesAway cw-old\\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepThisKeyUntouched keep\\n' > /root/.ssh/authorized_keys && chmod 755 /root/.ssh && chmod 644 /root/.ssh/authorized_keys"
+    verify = "tests/authorized_key_verify.ws"
+
+    step "modes" {
+      description = "A key already in the file converges on .ssh and file modes alone"
+      resource = "authorized_key"
+      properties { user = "root" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepThisKeyUntouched keep" }
+    }
+
+    step "comment" {
+      description = "The same key with a new comment replaces the old line instead of adding a second"
+      resource = "authorized_key"
+      requires = ["modes"]
+      properties { user = "root" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRotateCommentKey new-comment" }
+    }
+
+    step "rm_optioned" {
+      description = "Removing a key also removes a line that adds options and a different comment"
+      resource = "authorized_key"
+      requires = ["modes"]
+      properties { user = "root" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOptionedKeyGoesAway" ensure = :absent }
+    }
+
+    step "non_root" {
+      description = "A key for a user whose primary group is not named after it, home found through getent"
+      resource = "authorized_key"
+      properties { user = "cwkey" key = "restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonRootUserKey cwkey@test" }
+    }
+
+    step "multi_line" {
+      description = "A key with a line break would add a second entry and is rejected"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "cwkey" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonRootUserKey a\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIInjectedKey b" }
+    }
+
+    step "not_a_key" {
+      description = "Text that is not an authorized_keys entry is rejected"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "cwkey" key = "hello world" }
+    }
+
+    step "bad_user" {
+      description = "A user name that would be read as an option is rejected"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "-froot" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonRootUserKey x" }
+    }
+  }
 }
