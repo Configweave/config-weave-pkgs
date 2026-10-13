@@ -1,20 +1,13 @@
 use value
 use fs
-
-fn fields(line: string) -> List[string] {
-    let f = []
-    for p in line.split(" ") {
-        if p != "" { f.push(p) }
-    }
-    f
-}
+use common
 
 fn gather(params: Value) -> Result[Value, string] {
     let text = if fs::exists("/proc/mounts") { fs::read("/proc/mounts")? } else { "" }
     let entries = []
     for line in text.split("\n") {
         if line.trim() == "" { continue }
-        let p = fields(line)
+        let p = common::fields(line)
         entries.push(Value::Map(#{
             "spec": Value::String(p.get(0).unwrap_or("")),
             "mountpoint": Value::String(p.get(1).unwrap_or("")),

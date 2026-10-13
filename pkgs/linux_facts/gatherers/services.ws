@@ -1,14 +1,7 @@
 use value
 use fs
 use shell
-
-fn fields(line: string) -> List[string] {
-    let f = []
-    for p in line.split(" ") {
-        if p != "" { f.push(p) }
-    }
-    f
-}
+use common
 
 fn gather(params: Value) -> Result[Value, string] {
     // No service manager => no services: an Err here would abort the whole
@@ -25,7 +18,7 @@ fn gather(params: Value) -> Result[Value, string] {
     let svc = []
     for line in out.stdout.split("\n") {
         if line.trim() == "" { continue }
-        let p = fields(line)
+        let p = common::fields(line)
         let name = p.get(0).unwrap_or("")
         if name == "" { continue }
         svc.push(Value::Map(#{
