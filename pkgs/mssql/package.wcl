@@ -6,7 +6,7 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "instance" {
-    description = "Install or uninstall a SQL Server instance silently (Windows setup.exe or Linux mssql-server + mssql-conf)"
+    description = "Install, reconcile or uninstall a SQL Server instance (Windows setup.exe, Linux mssql-server + mssql-conf), with sqlcmd. On an existing instance it compares and fixes security mode, TCP, default directories, sysadmin accounts and the sa password (Windows), and the edition and sa password (Linux). Collation, the Windows edition, the Linux major version and the Windows feature list are not changed in place: a differing collation, Windows edition or Linux version is reported as an error, and features are only applied at install. T-SQL comparisons connect with integrated auth on Windows (the account config-weave runs as must be sysadmin, which the default BUILTIN\\Administrators covers) and as sa on Linux"
     script = "resources/instance.ws"
     concurrency = "global"
     param "ensure" {
@@ -14,49 +14,64 @@ package "mssql" {
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Install the instance" }
-      symbol "absent"  { description = "Uninstall the instance" }
+      symbol "present" { description = "Install the instance and converge its settings" }
+      symbol "absent"  { description = "Uninstall the instance (Linux: removes the mssql-server package; data under /var/opt/mssql is kept)" }
     }
-    param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); also required for ensure = absent (runs the uninstall)" type = "string" default = "" }
-    param "instance"              { description = "Instance name; MSSQLSERVER is the default instance" type = "string" default = "MSSQLSERVER" }
-    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT,CONN; when ensure = absent: features to remove (SQLENGINE removes the whole instance)" type = "string" default = "SQLENGINE" }
-    param "edition"               { description = "Edition / product id (Linux MSSQL_PID): Developer, Express, Standard, Enterprise, EnterpriseCore or a 25-char key" type = "string" default = "Developer" }
-    param "security_mode"         { description = "Authentication mode: Windows (integrated only) or SQL (mixed mode; needs sa_password)" type = "string" default = "Windows" }
-    param "sa_password"           { description = "sa password; required for SQL/mixed mode and for the Linux engine — plaintext in the playbook" type = "string" default = "" }
-    param "sql_sysadmin_accounts" { description = "Windows only: accounts added to the sysadmin role, comma or space separated" type = "string" default = "BUILTIN\\Administrators" }
-    param "collation"             { description = "Server collation; empty = setup default (Windows /SQLCOLLATION; Linux mssql-conf collation)" type = "string" default = "" }
-    param "tcp_enabled"           { description = "Enable the TCP/IP protocol during Windows setup" type = "bool" default = true }
-    param "data_dir"              { description = "Windows only: default data directory (/SQLUSERDBDIR); empty = setup default" type = "string" default = "" }
-    param "log_dir"               { description = "Windows only: default log directory (/SQLUSERDBLOGDIR); empty = setup default" type = "string" default = "" }
-    param "backup_dir"            { description = "Windows only: backup directory (/SQLBACKUPDIR); empty = setup default" type = "string" default = "" }
-    param "version"               { description = "Linux only: major version repo to use, e.g. 2022 or 2019" type = "string" default = "2022" }
-    param "repo_url"              { description = "Linux only: override the Microsoft repo definition URL (apt .list or yum .repo); empty = auto by distro" type = "string" default = "" }
-    param "config_file"           { description = "Windows only: path to a full ConfigurationFile.ini passed via /ConfigurationFile (overrides most flags)" type = "string" default = "" }
+    param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); needed to install, and for ensure = :absent (runs the uninstall)" type = "string" default = "" }
+    param "instance"              { description = "Instance name; MSSQLSERVER is the default instance. Letters, digits, _ and $" type = "string" default = "MSSQLSERVER" }
+    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT; with ensure = :absent, the features to remove (SQLENGINE removes the whole instance). Applied at install only: features are not compared on an existing instance" type = "string" default = "SQLENGINE" }
+    param "edition"               { description = "Edition name (Developer, Express, Evaluation, Standard, Enterprise, EnterpriseCore, Web) or a 25-character product key. Compared on an existing instance: Linux changes it with mssql-conf set-edition (stopping the service), Windows reports a difference as an error because an edition upgrade needs setup.exe and a key. A product key is not compared" type = "string" default = "Developer" }
+    param "security_mode" {
+      description = "Windows authentication mode. Reconciled on an existing instance by setting LoginMode and restarting the engine. Linux engines are always mixed mode, so it has no effect there"
+      type = "symbol"
+      default = :windows
+
+      symbol "windows" { description = "Windows (integrated) authentication only" }
+      symbol "sql"     { description = "Mixed mode: Windows and SQL logins; needs sa_password, which is then kept enabled and in sync" }
+    }
+    param "sa_password"           { description = "sa password: required for security_mode = :sql and for every Linux engine. Compared with PWDCOMPARE (Windows) or by logging in (Linux) and reset when it differs. Never placed on a command line: Windows setup reads it from a temporary ConfigurationFile.ini that only SYSTEM and Administrators can read, Linux mssql-conf from its environment" type = "string" default = "" }
+    param "sql_sysadmin_accounts" { description = "Windows only: comma separated Windows accounts that must be sysadmin members; added on an existing instance too (accounts not listed are left alone)" type = "string" default = "BUILTIN\\Administrators" }
+    param "collation"             { description = "Server collation; empty = the setup default. Set at install (Windows SQLCOLLATION, Linux MSSQL_COLLATION). A different collation on an existing instance is an error: changing it means rebuilding the system databases" type = "string" default = "" }
+    param "tcp_enabled"           { description = "Windows only: whether the TCP/IP protocol is enabled; reconciled on an existing instance with an engine restart (mssql.tcp manages the port)" type = "bool" default = true }
+    param "data_dir"              { description = "Windows only: default data directory (SQLUSERDBDIR, then the DefaultData registry value; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
+    param "log_dir"               { description = "Windows only: default log directory (SQLUSERDBLOGDIR, then DefaultLog; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
+    param "backup_dir"            { description = "Windows only: backup directory (SQLBACKUPDIR, then BackupDirectory; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
+    param "version"               { description = "Linux only: major version to install from Microsoft's repository, e.g. 2022 or 2025. A different installed major version is an error: the upgrade is one-way and left to you" type = "string" default = "2022" }
+    param "repo_url"              { description = "Linux only: URL of the mssql-server apt .list or yum/zypper .repo file; empty = derived from /etc/os-release (ubuntu/<version>, rhel/<major>, sles/<major>)" type = "string" default = "" }
+    param "install_tools"         { description = "Also install sqlcmd, which every T-SQL resource in this package needs: mssql-tools18 on Linux, go-sqlcmd on Windows" type = "bool" default = true }
+    param "tools_repo_url"        { description = "Linux only: URL of the repository file providing mssql-tools18; empty = Microsoft's prod repository for this distribution" type = "string" default = "" }
+    param "tools_msi_url"         { description = "Windows only: URL of the go-sqlcmd MSI; empty = the latest amd64 MSI from github.com/microsoft/go-sqlcmd" type = "string" default = "" }
+    param "config_file"           { description = "Windows only: path to a complete ConfigurationFile.ini passed to setup.exe /ConfigurationFile; it replaces the generated one, so the install-time params above are ignored at install" type = "string" default = "" }
     param "extra_args"            { description = "Windows only: extra setup.exe arguments appended verbatim" type = "string" default = "" }
-    param "install_timeout"       { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
+    param "install_timeout"       { description = "Maximum seconds to wait for the installer or mssql-conf" type = "int" default = 3600 }
   }
 
   // ---------------------------------------------------------------------------
   // Server-level configuration (T-SQL via sqlcmd)
   // ---------------------------------------------------------------------------
+  //
+  // Every resource below runs T-SQL through sqlcmd, which mssql.instance
+  // installs (install_tools). Names are bracket-quoted and values are N'...'
+  // literals, so any name is safe to pass.
 
   resource "server_setting" {
-    description = "Converge an sp_configure server setting to a value (compares the running value_in_use)"
+    description = "Converge an sp_configure setting. Compares the configured value, so a restart-only option (is_dynamic = 0) converges once set and logs a warning until SQL Server restarts and puts it in use. An advanced option turns 'show advanced options' on for the change and back off afterwards"
     script = "resources/server_setting.ws"
     concurrency = "exclusive"
-    param "name"         { description = "sp_configure setting name, e.g. 'max server memory (MB)' or 'cost threshold for parallelism'" type = "string" required = true }
-    param "value"        { description = "Desired integer value" type = "int" required = true }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "name"  { description = "sp_configure setting name, e.g. 'max server memory (MB)' or 'cost threshold for parallelism'" type = "string" required = true }
+    param "value" { description = "Desired integer value" type = "int" required = true }
+    param "server"                    { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                  { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                  { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"              { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate"  { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   resource "login" {
-    description = "Ensure a server login exists (SQL or Windows auth) with its enabled state, default database and server roles, or is absent"
+    description = "Ensure a server login exists with its authentication type, password, enabled state, default database and language, password policy and server roles, or is absent. Everything is compared on an existing login; a SQL login's password through PWDCOMPARE, which needs the connecting login to be sysadmin (CONTROL SERVER)"
     script = "resources/login.ws"
     concurrency = "parallel"
-    param "name"             { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
+    param "name" { description = "Login name (DOMAIN\\user for Windows auth)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -65,26 +80,36 @@ package "mssql" {
       symbol "present" { description = "Create the login and converge its settings" }
       symbol "absent"  { description = "Drop the login" }
     }
-    param "auth"             { description = "Authentication type: windows or sql" type = "string" default = "windows" }
-    param "password"         { description = "Password for SQL logins — plaintext; cannot be read back so drift is undetectable (see force_password)" type = "string" default = "" }
-    param "default_database" { description = "Default database for the login" type = "string" default = "master" }
-    param "enabled"          { description = "Whether the login is enabled" type = "bool" default = true }
-    param "server_roles"     { description = "Fixed server roles to grant, comma separated, e.g. sysadmin,dbcreator" type = "string" default = "" }
-    param "check_policy"     { description = "SQL logins: enforce the Windows password policy (CHECK_POLICY)" type = "bool" default = false }
-    param "force_password"   { description = "SQL logins: re-ALTER the password on every apply (use when rotating passwords, since drift can't be detected)" type = "bool" default = false }
-    param "server"           { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"         { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"         { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"     { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "auth" {
+      description = "Authentication type. A login that exists with the other type is an error unless recreate_on_auth_change is set"
+      type = "symbol"
+      default = :windows
+
+      symbol "windows" { description = "A Windows login (CREATE LOGIN ... FROM WINDOWS)" }
+      symbol "sql"     { description = "A SQL login with a password" }
+    }
+    param "password"                { description = "Password for SQL logins; compared with PWDCOMPARE and reset when it differs" type = "string" default = "" }
+    param "default_database"        { description = "Default database for the login" type = "string" default = "master" }
+    param "default_language"        { description = "Default language, e.g. us_english; empty = leave as is" type = "string" default = "" }
+    param "enabled"                 { description = "Whether the login is enabled" type = "bool" default = true }
+    param "server_roles"            { description = "Server roles the login must be a member of, comma separated, e.g. sysadmin,dbcreator. Roles not listed are left alone" type = "string" default = "" }
+    param "check_policy"            { description = "SQL logins: enforce the Windows password policy (CHECK_POLICY)" type = "bool" default = false }
+    param "check_expiration"        { description = "SQL logins: enforce password expiration (CHECK_EXPIRATION); needs check_policy" type = "bool" default = false }
+    param "recreate_on_auth_change" { description = "Allow changing auth on an existing login by dropping and recreating it. The new login gets a new SID, which orphans its database users (mssql.database_user remaps them)" type = "bool" default = false }
+    param "server"                    { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                  { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                  { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"              { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate"  { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   resource "database" {
-    description = "Ensure a database exists with the desired recovery model, owner and compatibility level, or is absent (drops after forcing SINGLE_USER)"
+    description = "Ensure a database exists with the desired recovery model, collation, owner and compatibility level, or is absent (drops after forcing SINGLE_USER). All four are compared and changed on an existing database"
     script = "resources/database.ws"
     // the ensure = :absent drop path forces SINGLE_USER WITH ROLLBACK
     // IMMEDIATE, so distinct-database creates serialize too
     concurrency = "exclusive"
-    param "name"                { description = "Database name" type = "string" required = true }
+    param "name" { description = "Database name" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -93,29 +118,48 @@ package "mssql" {
       symbol "present" { description = "Create the database and converge its settings" }
       symbol "absent"  { description = "Drop the database, after forcing SINGLE_USER" }
     }
-    param "recovery_model"      { description = "Recovery model: FULL, SIMPLE or BULK_LOGGED; empty = engine default" type = "string" default = "" }
-    param "collation"           { description = "Collation set at CREATE; existing-database mismatch is reported as an error (no in-place change)" type = "string" default = "" }
-    param "owner"               { description = "Login to own the database (ALTER AUTHORIZATION); empty = leave as-is" type = "string" default = "" }
-    param "compatibility_level" { description = "Compatibility level, e.g. 160; 0 = leave as-is" type = "int" default = 0 }
-    param "server"              { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"            { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"            { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"        { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "recovery_model" {
+      description = "Recovery model"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "unmanaged"   { description = "Leave the recovery model as it is (the model database's at create)" }
+      symbol "full"        { description = "FULL" }
+      symbol "simple"      { description = "SIMPLE" }
+      symbol "bulk_logged" { description = "BULK_LOGGED" }
+    }
+    param "collation"           { description = "Database collation (letters, digits and _); empty = leave as is. Changed in place with ALTER DATABASE ... COLLATE, which needs the database to itself and fails while schema-bound objects depend on the old collation" type = "string" default = "" }
+    param "owner"               { description = "Login to own the database (ALTER AUTHORIZATION); empty = leave as is" type = "string" default = "" }
+    param "compatibility_level" { description = "Compatibility level, e.g. 160; 0 = leave as is" type = "int" default = 0 }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   resource "database_user" {
-    description = "Ensure a database user mapped to a login exists with its role memberships"
+    description = "Ensure a database user is mapped to a login with its default schema and role memberships, or is absent. The login mapping (including an orphaned user) and default schema are compared and fixed in place with ALTER USER"
     script = "resources/database_user.ws"
     concurrency = "parallel"
-    param "database"       { description = "Database the user lives in" type = "string" required = true }
-    param "name"           { description = "Database user name" type = "string" required = true }
-    param "login"          { description = "Server login to map the user to" type = "string" required = true }
-    param "roles"          { description = "Database roles to grant, comma separated, e.g. db_datareader,db_datawriter" type = "string" default = "" }
+    param "database" { description = "Database the user lives in" type = "string" required = true }
+    param "name"     { description = "Database user name" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create or remap the user and converge its roles" }
+      symbol "absent"  { description = "Drop the user (fails while it owns a schema)" }
+    }
+    param "login"          { description = "Server login to map the user to; required when present" type = "string" default = "" }
+    param "roles"          { description = "Database roles the user must be a member of, comma separated, e.g. db_datareader,db_datawriter. Roles not listed are left alone" type = "string" default = "" }
     param "default_schema" { description = "Default schema for the user" type = "string" default = "dbo" }
-    param "server"         { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"       { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"       { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"   { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -123,31 +167,49 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "database_cdc" {
-    description = "Enable or disable Change Data Capture at the database level (needs SQL Server Agent for capture to run)"
+    description = "Enable or disable Change Data Capture on a database (capture needs SQL Server Agent running)"
     script = "resources/database_cdc.ws"
     concurrency = "exclusive"
-    param "database"     { description = "Database to enable/disable CDC on" type = "string" required = true }
-    param "enabled"      { description = "Whether CDC should be enabled on the database" type = "bool" default = true }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "database" { description = "Database to enable or disable CDC on" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Enable CDC on the database" }
+      symbol "absent"  { description = "Disable CDC on the database, dropping every capture instance" }
+    }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   resource "cdc_table" {
-    description = "Enable a Change Data Capture instance for a table (requires database CDC already enabled)"
+    description = "Enable a Change Data Capture instance for a table (requires database CDC already enabled), or disable it. A capture instance's role and net-changes option are fixed at creation, so a difference is an error unless recreate_on_change allows recreating it, which discards its captured changes"
     script = "resources/cdc_table.ws"
     concurrency = "exclusive"
     param "database"             { description = "Database holding the table" type = "string" required = true }
     param "schema"               { description = "Source table schema" type = "string" default = "dbo" }
     param "table"                { description = "Source table name" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Enable the capture instance" }
+      symbol "absent"  { description = "Disable the capture instance" }
+    }
     param "capture_instance"     { description = "Capture instance name; empty = <schema>_<table>" type = "string" default = "" }
     param "role_name"            { description = "Gating database role for the change tables; empty = no gating role" type = "string" default = "" }
     param "supports_net_changes" { description = "Create the net-changes function (requires a primary key)" type = "bool" default = true }
-    param "server"               { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"             { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"             { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"         { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "recreate_on_change"   { description = "Allow disabling and re-enabling the capture instance when role_name or supports_net_changes differ (its captured changes are lost)" type = "bool" default = false }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -155,13 +217,13 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "tcp" {
-    description = "Configure the TCP/IP protocol and static port, restarting the engine so the change takes effect"
+    description = "Configure the TCP/IP protocol and static port, clearing any dynamic port (registry on Windows, mssql-conf on Linux), then restart the engine. On Windows the restart is Restart-Service -Force, and SQL Server Agent, which that stops, is started again if it was running"
     script = "resources/tcp.ws"
     concurrency = "global"
-    param "instance" { description = "Instance whose TCP protocol to configure" type = "string" default = "MSSQLSERVER" }
+    param "instance" { description = "Instance whose TCP protocol to configure (Windows; Linux has one instance)" type = "string" default = "MSSQLSERVER" }
     param "port"     { description = "Static TCP port" type = "int" default = 1433 }
     param "enabled"  { description = "Whether the TCP/IP protocol is enabled (Windows only; false errors on Linux, where mssql-conf cannot disable TCP)" type = "bool" default = true }
-    param "restart"       { description = "Restart the SQL Server service after changing the configuration" type = "bool" default = true }
+    param "restart"  { description = "Restart SQL Server after changing the configuration; when false the change waits for the next restart" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -169,27 +231,52 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "replication_distributor" {
-    description = "Configure this server as its own replication distributor with a distribution database"
+    description = "Configure this server as its own replication distributor with a distribution database, registered as a publisher on it, or remove all three. Setup is only complete once the publisher row exists (msdb.dbo.MSdistpublishers), so a failed sp_adddistpublisher is retried. Moving a configured publisher to another distribution database is an error: it means dropping its publications"
     script = "resources/replication_distributor.ws"
     concurrency = "exclusive"
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Configure the distributor" }
+      symbol "absent"  { description = "Remove the publisher registration, distribution database and distributor (fails while publications exist)" }
+    }
     param "distribution_db"   { description = "Distribution database name" type = "string" default = "distribution" }
-    param "working_directory" { description = "Replication working directory (snapshot folder); empty = engine default" type = "string" default = "" }
-    param "server"            { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"          { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"          { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"      { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "working_directory" { description = "Snapshot folder; must exist and be writable by SQL Server (on Linux there is no default folder: create one, e.g. /var/opt/mssql/ReplData). Empty = engine default, not managed; otherwise compared and changed with sp_changedistpublisher" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   resource "replication_publisher" {
-    description = "Enable a database for replication on a publisher whose distributor is already configured"
+    description = "Enable or disable a database for publishing, on a server whose distributor is already configured (mssql.replication_distributor)"
     script = "resources/replication_publisher.ws"
     concurrency = "exclusive"
     param "publisher_db" { description = "Database to enable for publishing" type = "string" required = true }
-    param "type"         { description = "Replication type to enable on the database: publish (transactional/snapshot) or merge" type = "string" default = "publish" }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Enable the database for the replication type" }
+      symbol "absent"  { description = "Disable it (fails while the database still has publications)" }
+    }
+    param "type" {
+      description = "Replication type to enable on the database"
+      type = "symbol"
+      default = :publish
+
+      symbol "publish" { description = "Transactional or snapshot publishing" }
+      symbol "merge"   { description = "Merge publishing (Windows only: SQL Server on Linux has no merge replication)" }
+    }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -197,22 +284,31 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "database_mail" {
-    description = "Enable Database Mail and ensure an SMTP account is linked to a mail profile"
+    description = "Enable Database Mail and ensure an SMTP account linked to a mail profile, or remove them. The account's address, server, port, SSL and SMTP user are compared and updated in place. The SMTP password is kept in a credential that cannot be read back, so it is set at create and when password_revision changes"
     script = "resources/database_mail.ws"
     concurrency = "exclusive"
     param "profile"       { description = "Mail profile name" type = "string" required = true }
     param "account"       { description = "Mail account name" type = "string" required = true }
-    param "smtp_server"   { description = "SMTP server host name" type = "string" required = true }
-    param "from_address"  { description = "From e-mail address for the account" type = "string" required = true }
-    param "port"          { description = "SMTP port" type = "int" default = 25 }
-    param "use_ssl"       { description = "Use SSL/TLS for the SMTP connection" type = "bool" default = false }
-    param "smtp_user"     { description = "SMTP authentication user; empty = anonymous" type = "string" default = "" }
-    param "smtp_password" { description = "SMTP password — plaintext; cannot be read back (see force)" type = "string" default = "" }
-    param "force"         { description = "Re-apply the account settings on every apply (use when rotating the SMTP password)" type = "bool" default = false }
-    param "server"        { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"      { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"      { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"  { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create and converge the profile and account" }
+      symbol "absent"  { description = "Delete the profile, and the account unless another profile uses it (Database Mail XPs stays on)" }
+    }
+    param "smtp_server"       { description = "SMTP server host name" type = "string" default = "" }
+    param "from_address"      { description = "From e-mail address for the account" type = "string" default = "" }
+    param "port"              { description = "SMTP port" type = "int" default = 25 }
+    param "use_ssl"           { description = "Use SSL/TLS for the SMTP connection" type = "bool" default = false }
+    param "smtp_user"         { description = "SMTP authentication user; empty = anonymous" type = "string" default = "" }
+    param "smtp_password"     { description = "SMTP password; set at create and whenever password_revision changes" type = "string" default = "" }
+    param "password_revision" { description = "Any label for the current smtp_password, e.g. 2026-10; change it to push a rotated password. Recorded in the account description, which this resource owns" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -220,47 +316,89 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "agent_job" {
-    description = "Ensure a single-step SQL Server Agent job exists (targeted at the local server) or is absent"
+    description = "Ensure a single-step SQL Server Agent job targeted at the local server, optionally with one managed schedule, or delete it. The job's enabled state, description, owner, step (name, subsystem, command, database) and target server are compared on an existing job and fixed with sp_update_job and sp_update_jobstep; extra steps are deleted"
     script = "resources/agent_job.ws"
     concurrency = "parallel"
-    param "name"         { description = "Job name" type = "string" required = true }
+    param "name" { description = "Job name" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
-      symbol "present" { description = "Create the job" }
-      symbol "absent"  { description = "Drop the job" }
+      symbol "present" { description = "Create and converge the job" }
+      symbol "absent"  { description = "Delete the job" }
     }
-    param "command"      { description = "Command for the job's single step (required when present)" type = "string" default = "" }
-    param "subsystem"    { description = "Job step subsystem: TSQL, CmdExec or PowerShell" type = "string" default = "TSQL" }
-    param "step_name"    { description = "Name of the job's single step" type = "string" default = "Step 1" }
-    param "database"     { description = "Database context for a TSQL step" type = "string" default = "master" }
-    param "enabled"      { description = "Whether the job is enabled" type = "bool" default = true }
-    param "owner"        { description = "Job owner login; empty = current login" type = "string" default = "" }
-    param "description"  { description = "Job description" type = "string" default = "" }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "command" { description = "Command for the job's single step (required when present)" type = "string" default = "" }
+    param "subsystem" {
+      description = "Job step subsystem"
+      type = "symbol"
+      default = :tsql
+
+      symbol "tsql"       { description = "Transact-SQL (TSQL), run in `database`" }
+      symbol "cmdexec"    { description = "Operating system command (CmdExec)" }
+      symbol "powershell" { description = "PowerShell script" }
+    }
+    param "step_name"   { description = "Name of the job's single step" type = "string" default = "Step 1" }
+    param "database"    { description = "Database context for a TSQL step" type = "string" default = "master" }
+    param "enabled"     { description = "Whether the job is enabled" type = "bool" default = true }
+    param "owner"       { description = "Job owner login; empty = the connecting login at create, then left as is" type = "string" default = "" }
+    param "description" { description = "Job description" type = "string" default = "" }
+    param "schedule" {
+      description = "The job's schedule. Any other value than :unmanaged makes the job have exactly that schedule: others attached to it are detached (and deleted when unused)"
+      type = "symbol"
+      default = :unmanaged
+
+      symbol "unmanaged" { description = "Leave the job's schedules alone" }
+      symbol "none"      { description = "No schedule: the job runs only when started" }
+      symbol "daily"     { description = "Every day at schedule_time" }
+      symbol "weekly"    { description = "On schedule_days at schedule_time" }
+      symbol "hourly"    { description = "Every schedule_interval hours from schedule_time" }
+      symbol "minutes"   { description = "Every schedule_interval minutes from schedule_time" }
+    }
+    param "schedule_time"     { description = "Start time of day for the schedule, HH:MM:SS" type = "string" default = "00:00:00" }
+    param "schedule_interval" { description = "Hours or minutes between runs for :hourly and :minutes" type = "int" default = 1 }
+    param "schedule_days"     { description = "Days for :weekly, comma separated: mon,tue,wed,thu,fri,sat,sun" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
-  // Always On availability groups (best-effort, single-node primary side)
+  // Always On availability groups (single-node primary side)
   // ---------------------------------------------------------------------------
 
   resource "availability_group" {
-    description = "Enable Always On HADR and create an availability group on the primary (multi-node join is a scenario concern)"
+    description = "Enable Always On HADR (restarting the engine and waiting for it) and create an availability group with this server as its only replica, or drop the group. The mirroring endpoint's port, state and authentication and the replica's endpoint URL are compared and fixed in place; a different cluster type is an error, as it is fixed at creation. Joining more replicas is a scenario concern"
     script = "resources/availability_group.ws"
     concurrency = "global"
-    param "name"           { description = "Availability group name" type = "string" required = true }
-    param "instance_name"  { description = "Instance to enable HADR on (Windows service name)" type = "string" default = "MSSQLSERVER" }
-    param "endpoint_port"  { description = "Database mirroring endpoint port" type = "int" default = 5022 }
-    param "endpoint_name"  { description = "Database mirroring endpoint name" type = "string" default = "Hadr_endpoint" }
-    param "server"         { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"       { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"       { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password"   { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "name" { description = "Availability group name" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the availability group" }
+      symbol "absent"  { description = "Drop the availability group (the endpoint and HADR stay)" }
+    }
+    param "cluster_type" {
+      description = "CLUSTER_TYPE of the group, fixed when it is created"
+      type = "symbol"
+      default = :none
+
+      symbol "none"     { description = "No cluster manager: a read-scale group on Windows or Linux" }
+      symbol "wsfc"     { description = "Windows Server Failover Cluster; the node must be in a WSFC" }
+      symbol "external" { description = "An external cluster manager such as Pacemaker on Linux" }
+    }
+    param "endpoint_port"        { description = "Database mirroring endpoint port" type = "int" default = 5022 }
+    param "endpoint_name"        { description = "Database mirroring endpoint name" type = "string" default = "Hadr_endpoint" }
+    param "endpoint_certificate" { description = "Certificate in master the endpoint authenticates with; required on Linux, where endpoints cannot use Windows authentication. Empty = Windows (Negotiate) authentication" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
@@ -277,28 +415,43 @@ package "mssql" {
     returns "hadr_enabled" { description = "SERVERPROPERTY IsHadrEnabled (1/0)" type = "string" }
     returns "collation" { description = "Server collation" type = "string" }
     returns "machine" { description = "SERVERPROPERTY MachineName" type = "string" }
-    param "server"       { description = "Target server/host; empty = (local)/localhost" type = "string" default = "" }
-    param "instance"     { description = "Named instance to append as host\\instance; empty = default instance" type = "string" default = "" }
-    param "sql_user"     { description = "SQL login for authentication; empty = integrated (Windows) auth" type = "string" default = "" }
-    param "sql_password" { description = "Password for sql_user — plaintext in the playbook" type = "string" default = "" }
+    param "server"                  { description = "Target server/host; empty = (local) on Windows, localhost on Linux" type = "string" default = "" }
+    param "instance"                { description = "Named instance to connect to as host\\instance; empty or MSSQLSERVER = the default instance" type = "string" default = "" }
+    param "sql_user"                { description = "SQL login to connect as; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"            { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate" { description = "Pass sqlcmd -C to trust the server certificate without validating it. The default suits a local engine with its self-signed certificate; set false for a remote server with a CA-issued one" type = "bool" default = true }
   }
 
   // ---------------------------------------------------------------------------
   // Tests
   // ---------------------------------------------------------------------------
 
-  // Docker test against the official SQL Server image. The testlab keeps the
-  // container alive with `--entrypoint sleep`, so the engine is NOT auto-started;
-  // `setup` launches sqlservr in the background and waits until it accepts
-  // connections, then the three-run protocol exercises the T-SQL resources that
-  // do not need an install or a service restart.
+  // Container tests run against the official SQL Server image. The testlab
+  // keeps the container alive with `--entrypoint sleep`, so the engine is NOT
+  // auto-started: each `setup` launches sqlservr in the background, waits
+  // until it accepts connections, then seeds the state its steps start from.
+  // SQL Server refuses to start below 2GB and the instance defaults to
+  // 256MiB, hence `memory`.
+
   test "config_converges" {
-    description = "Server, login, database, user and CDC resources converge against a running engine"
+    description = "Server, login, database, user, CDC and job resources create and drop objects against a running engine"
     image = "mcr.microsoft.com/mssql/server:2022-latest"
-    // SQL Server refuses to start below 2GB and the instance defaults to
-    // 256MiB; without this the engine never comes up and setup times out.
     memory = "4GiB"
-    setup = "ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 & for i in $(seq 1 120); do /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done; /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -Q \"CREATE LOGIN cw_drop_login WITH PASSWORD=N'Dr0p!Me12345', CHECK_POLICY=OFF; CREATE DATABASE cw_drop_db; CREATE DATABASE cw_cdc_db; EXEC msdb.dbo.sp_add_job @job_name=N'cw_drop_job';\" && /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Str0ng!Passw0rd' -C -d cw_cdc_db -Q 'CREATE TABLE dbo.cw_rows (id int NOT NULL PRIMARY KEY);'"
+    setup = <<'SETUP'
+export ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' SQLCMDPASSWORD='Str0ng!Passw0rd'
+nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 &
+sq() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b "$@"; }
+for i in $(seq 1 120); do sq -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+sq <<'SQL'
+CREATE LOGIN cw_drop_login WITH PASSWORD = N'Dr0p!Me12345', CHECK_POLICY = OFF;
+CREATE DATABASE cw_drop_db;
+CREATE DATABASE cw_cdc_db;
+EXEC msdb.dbo.sp_add_job @job_name = N'cw_drop_job';
+GO
+USE cw_cdc_db;
+CREATE TABLE dbo.cw_rows (id int NOT NULL PRIMARY KEY);
+SQL
+SETUP
     verify = "tests/config_verify.ws"
 
     step "memory" {
@@ -310,13 +463,13 @@ package "mssql" {
     step "app_login" {
       description = "Create a SQL login"
       resource = "login"
-      properties { name = "weave_app" auth = "sql" password = "L0gin!Passw0rd" check_policy = false sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { name = "weave_app" auth = :sql password = "L0gin!Passw0rd" check_policy = false sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "app_db" {
       description = "Create the application database"
       resource = "database"
-      properties { name = "weave_app_db" recovery_model = "SIMPLE" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { name = "weave_app_db" recovery_model = :simple sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "app_user" {
@@ -330,7 +483,7 @@ package "mssql" {
       description = "Enable CDC on the application database"
       resource = "database_cdc"
       requires = ["app_db"]
-      properties { database = "weave_app_db" enabled = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { database = "weave_app_db" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "drop_login" {
@@ -360,7 +513,7 @@ package "mssql" {
     step "cdc_db" {
       description = "Enable CDC on the table-test database"
       resource = "database_cdc"
-      properties { database = "cw_cdc_db" enabled = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+      properties { database = "cw_cdc_db" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
     }
 
     step "cdc_table" {
@@ -377,11 +530,342 @@ package "mssql" {
     }
   }
 
-  // Full silent install on a real Windows VM, then converge configuration over
-  // the install. Heavy (multi-GB media); needs vmlab + the windows-server-2025
-  // template and a reachable SQL Server setup.exe (set in the driver).
+  // Every step here starts from an object setup seeded with different
+  // settings, so a resource that only checks existence (or cannot change an
+  // existing object) fails the convergence assertions.
+  test "reconcile" {
+    description = "Resources change the settings of objects that already exist, and removal paths drop seeded objects"
+    image = "mcr.microsoft.com/mssql/server:2022-latest"
+    memory = "4GiB"
+    setup = <<'SETUP'
+export ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' SQLCMDPASSWORD='Str0ng!Passw0rd'
+nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 &
+sq() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b "$@"; }
+for i in $(seq 1 120); do sq -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+sq <<'SQL'
+EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
+EXEC sp_configure 'cost threshold for parallelism', 5; RECONFIGURE;
+EXEC sp_configure 'show advanced options', 0; RECONFIGURE;
+CREATE LOGIN cw_login WITH PASSWORD = N'0ld!Passw0rd12', DEFAULT_DATABASE = tempdb, CHECK_POLICY = ON;
+ALTER LOGIN cw_login DISABLE;
+CREATE LOGIN cw_owner WITH PASSWORD = N'0wner!Passw0rd1', CHECK_POLICY = OFF;
+CREATE LOGIN cw_old_login WITH PASSWORD = N'0ld!Passw0rd12', CHECK_POLICY = OFF;
+CREATE LOGIN cw_new_login WITH PASSWORD = N'N3w!Passw0rd12', CHECK_POLICY = OFF;
+CREATE DATABASE cw_db COLLATE Latin1_General_CI_AS;
+ALTER DATABASE cw_db SET RECOVERY FULL;
+ALTER DATABASE cw_db SET COMPATIBILITY_LEVEL = 150;
+CREATE DATABASE cw_cdc;
+CREATE DATABASE cw_cdc_off;
+GO
+USE cw_db;
+CREATE USER cw_user FOR LOGIN cw_old_login WITH DEFAULT_SCHEMA = guest;
+CREATE USER cw_drop_user WITHOUT LOGIN;
+GO
+USE cw_cdc;
+CREATE TABLE dbo.t1 (id int NOT NULL PRIMARY KEY);
+CREATE TABLE dbo.t2 (id int NOT NULL PRIMARY KEY);
+CREATE TABLE dbo.t3 (id int NOT NULL PRIMARY KEY);
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N't1', @role_name = NULL, @supports_net_changes = 0;
+EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N't2', @role_name = NULL, @supports_net_changes = 1;
+EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N't3', @role_name = NULL;
+GO
+USE cw_cdc_off;
+EXEC sys.sp_cdc_enable_db;
+GO
+USE master;
+EXEC msdb.dbo.sp_add_job @job_name = N'cw_job', @enabled = 0, @description = N'old';
+EXEC msdb.dbo.sp_add_jobstep @job_name = N'cw_job', @step_name = N'old', @subsystem = N'TSQL', @command = N'select 1', @database_name = N'tempdb', @on_success_action = 3;
+EXEC msdb.dbo.sp_add_jobstep @job_name = N'cw_job', @step_name = N'extra', @subsystem = N'TSQL', @command = N'SELECT 2';
+EXEC msdb.dbo.sp_add_jobschedule @job_name = N'cw_job', @name = N'old', @freq_type = 8, @freq_interval = 2, @freq_recurrence_factor = 1, @active_start_time = 0;
+EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
+EXEC sp_configure 'Database Mail XPs', 1; RECONFIGURE;
+EXEC sp_configure 'show advanced options', 0; RECONFIGURE;
+EXEC msdb.dbo.sysmail_add_account_sp @account_name = N'cw_drift_acct', @email_address = N'old@example.com', @mailserver_name = N'smtp.old.example.com', @port = 25;
+EXEC msdb.dbo.sysmail_add_profile_sp @profile_name = N'cw_drift_prof';
+EXEC msdb.dbo.sysmail_add_profileaccount_sp @profile_name = N'cw_drift_prof', @account_name = N'cw_drift_acct', @sequence_number = 1;
+EXEC msdb.dbo.sysmail_add_account_sp @account_name = N'cw_gone_acct', @email_address = N'gone@example.com', @mailserver_name = N'smtp.example.com';
+EXEC msdb.dbo.sysmail_add_profile_sp @profile_name = N'cw_gone_prof';
+EXEC msdb.dbo.sysmail_add_profileaccount_sp @profile_name = N'cw_gone_prof', @account_name = N'cw_gone_acct', @sequence_number = 1;
+SQL
+SETUP
+    verify = "tests/reconcile_verify.ws"
+
+    step "setting_advanced" {
+      description = "Change an advanced option; 'show advanced options' is restored to off afterwards"
+      resource = "server_setting"
+      properties { name = "cost threshold for parallelism" value = 40 sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "setting_restart_only" {
+      description = "A restart-only option converges on its configured value while value_in_use waits for a restart"
+      resource = "server_setting"
+      properties { name = "fill factor (%)" value = 90 sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "login" {
+      description = "Reset a login's password, enabled state, default database, policy and roles"
+      resource = "login"
+      properties { name = "cw_login" auth = :sql password = "N3w!Passw0rd12" check_policy = false server_roles = "dbcreator" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "database" {
+      description = "Change recovery model, collation, owner and compatibility level of an existing database"
+      resource = "database"
+      properties { name = "cw_db" recovery_model = :simple collation = "SQL_Latin1_General_CP1_CS_AS" owner = "cw_owner" compatibility_level = 160 sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "user" {
+      description = "Remap a user to another login and fix its default schema and roles"
+      resource = "database_user"
+      requires = ["database"]
+      properties { database = "cw_db" name = "cw_user" login = "cw_new_login" default_schema = "dbo" roles = "db_datareader" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "drop_user" {
+      description = "Drop a seeded database user"
+      resource = "database_user"
+      requires = ["database"]
+      properties { database = "cw_db" name = "cw_drop_user" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_recreate" {
+      description = "Recreate a capture instance whose net-changes option differs, as allowed"
+      resource = "cdc_table"
+      properties { database = "cw_cdc" table = "t1" supports_net_changes = true recreate_on_change = true sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_refuse" {
+      description = "Refuse to recreate a capture instance without recreate_on_change"
+      resource = "cdc_table"
+      expect = "error"
+      properties { database = "cw_cdc" table = "t2" supports_net_changes = false sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_table_off" {
+      description = "Disable a seeded capture instance"
+      resource = "cdc_table"
+      properties { database = "cw_cdc" table = "t3" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "cdc_db_off" {
+      description = "Disable CDC on a seeded database"
+      resource = "database_cdc"
+      properties { database = "cw_cdc_off" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "job" {
+      description = "Bring a seeded job's state, description, step and schedule in line"
+      resource = "agent_job"
+      properties {
+        name = "cw_job"
+        command = "SELECT 1"
+        description = "converged"
+        schedule = :daily
+        schedule_time = "01:30:00"
+        sql_user = "sa"
+        sql_password = "Str0ng!Passw0rd"
+      }
+    }
+
+    step "mail" {
+      description = "Create a Database Mail profile and authenticated account"
+      resource = "database_mail"
+      properties {
+        profile = "cw_prof"
+        account = "cw_acct"
+        smtp_server = "smtp.example.com"
+        from_address = "sql@example.com"
+        smtp_user = "mailer"
+        smtp_password = "Sm7p!Secret"
+        password_revision = "r1"
+        sql_user = "sa"
+        sql_password = "Str0ng!Passw0rd"
+      }
+    }
+
+    step "mail_drift" {
+      description = "Update a seeded mail account's server, port, SSL and sender"
+      resource = "database_mail"
+      properties {
+        profile = "cw_drift_prof"
+        account = "cw_drift_acct"
+        smtp_server = "smtp.new.example.com"
+        from_address = "new@example.com"
+        port = 587
+        use_ssl = true
+        sql_user = "sa"
+        sql_password = "Str0ng!Passw0rd"
+      }
+    }
+
+    step "mail_gone" {
+      description = "Delete a seeded mail profile and its account"
+      resource = "database_mail"
+      properties { profile = "cw_gone_prof" account = "cw_gone_acct" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "tcp" {
+      description = "Set the TCP port in mssql.conf (no restart: the container has no systemd)"
+      resource = "tcp"
+      properties { port = 14333 restart = false }
+    }
+  }
+
+  // Setup leaves a distributor half-configured, as a failed
+  // sp_adddistpublisher would: the distributor and its database exist but
+  // the server is not registered as a publisher.
+  test "replication" {
+    description = "Finish a half-configured distributor and enable a database for publishing"
+    image = "mcr.microsoft.com/mssql/server:2022-latest"
+    memory = "4GiB"
+    setup = <<'SETUP'
+mkdir -p /var/opt/mssql/ReplData
+export ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' SQLCMDPASSWORD='Str0ng!Passw0rd'
+nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 &
+sq() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b "$@"; }
+for i in $(seq 1 120); do sq -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+sq <<'SQL'
+DECLARE @srv sysname = @@SERVERNAME;
+EXEC sp_adddistributor @distributor = @srv;
+EXEC sp_adddistributiondb @database = N'distribution', @security_mode = 1;
+CREATE DATABASE cw_pub;
+SQL
+SETUP
+    verify = "tests/replication_verify.ws"
+
+    step "distributor" {
+      description = "Register this server as a publisher on its own distributor"
+      resource = "replication_distributor"
+      properties { working_directory = "/var/opt/mssql/ReplData" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "publisher" {
+      description = "Enable the database for transactional publishing"
+      resource = "replication_publisher"
+      requires = ["distributor"]
+      properties { publisher_db = "cw_pub" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+  }
+
+  test "replication_absent" {
+    description = "Disable publishing on a database, then remove the distributor"
+    image = "mcr.microsoft.com/mssql/server:2022-latest"
+    memory = "4GiB"
+    setup = <<'SETUP'
+mkdir -p /var/opt/mssql/ReplData
+export ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' SQLCMDPASSWORD='Str0ng!Passw0rd'
+nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 &
+sq() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b "$@"; }
+for i in $(seq 1 120); do sq -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+sq <<'SQL'
+DECLARE @srv sysname = @@SERVERNAME;
+EXEC sp_adddistributor @distributor = @srv;
+EXEC sp_adddistributiondb @database = N'distribution', @security_mode = 1;
+EXEC sp_adddistpublisher @publisher = @srv, @distribution_db = N'distribution', @security_mode = 1, @working_directory = N'/var/opt/mssql/ReplData';
+CREATE DATABASE cw_pub_off;
+EXEC sp_replicationdboption @dbname = N'cw_pub_off', @optname = N'publish', @value = N'true';
+SQL
+SETUP
+    verify = "tests/replication_absent_verify.ws"
+
+    step "unpublish" {
+      description = "Disable publishing on the seeded database"
+      resource = "replication_publisher"
+      properties { publisher_db = "cw_pub_off" ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "distributor" {
+      description = "Remove the publisher registration, distribution database and distributor"
+      resource = "replication_distributor"
+      requires = ["unpublish"]
+      properties { ensure = :absent sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+  }
+
+  // HADR is enabled at engine start (MSSQL_ENABLE_HADR), since the container
+  // cannot restart the engine through systemd. Linux endpoints authenticate
+  // with a certificate, which setup creates; it also seeds the endpoint on
+  // the wrong port and a group to drop.
+  test "availability_group" {
+    description = "Create a CLUSTER_TYPE = NONE availability group, move its endpoint's port, and drop another group"
+    image = "mcr.microsoft.com/mssql/server:2022-latest"
+    memory = "4GiB"
+    setup = <<'SETUP'
+export MSSQL_ENABLE_HADR=1
+export ACCEPT_EULA=Y MSSQL_PID=Developer MSSQL_SA_PASSWORD='Str0ng!Passw0rd' SQLCMDPASSWORD='Str0ng!Passw0rd'
+nohup /opt/mssql/bin/sqlservr >/tmp/sqlservr.log 2>&1 &
+sq() { /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b "$@"; }
+for i in $(seq 1 120); do sq -l 2 -Q 'SELECT 1' >/dev/null 2>&1 && break; sleep 2; done
+sq <<'SQL'
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'Mast3r!Key12345';
+CREATE CERTIFICATE cw_ag_cert WITH SUBJECT = N'config-weave test endpoint';
+CREATE ENDPOINT Hadr_endpoint STATE = STARTED AS TCP (LISTENER_PORT = 5023)
+  FOR DATABASE_MIRRORING (ROLE = ALL, AUTHENTICATION = CERTIFICATE cw_ag_cert, ENCRYPTION = REQUIRED ALGORITHM AES);
+DECLARE @sql nvarchar(max) = N'CREATE AVAILABILITY GROUP cw_ag_off WITH (CLUSTER_TYPE = NONE) FOR REPLICA ON N''' + @@SERVERNAME +
+  N''' WITH (ENDPOINT_URL = N''TCP://localhost:5023'', AVAILABILITY_MODE = SYNCHRONOUS_COMMIT, FAILOVER_MODE = MANUAL)';
+EXEC (@sql);
+SQL
+SETUP
+    verify = "tests/availability_group_verify.ws"
+
+    step "ag" {
+      description = "Create the availability group, moving the endpoint to the wanted port"
+      resource = "availability_group"
+      properties { name = "cw_ag" endpoint_certificate = "cw_ag_cert" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+
+    step "ag_off" {
+      description = "Drop the seeded availability group"
+      resource = "availability_group"
+      requires = ["ag"]
+      properties { name = "cw_ag_off" ensure = :absent endpoint_certificate = "cw_ag_cert" sql_user = "sa" sql_password = "Str0ng!Passw0rd" }
+    }
+  }
+
+  // The Linux install path on a real VM: the repository is derived from
+  // /etc/os-release (Ubuntu 24.04 has SQL Server 2025 but no 2022), the
+  // collation is set by mssql-conf setup, and sqlcmd comes with the instance.
+  // No T-SQL step follows it: in the check-only run neither sqlcmd nor the
+  // engine exists yet, so such a step could not report not_configured.
+  test "linux_instance" {
+    description = "Install SQL Server 2025 and mssql-tools18 on Ubuntu 24.04; verify queries the engine through the installed sqlcmd"
+    template = "x86_64/ubuntu-24.04"
+    memory = "6GiB"
+    verify = "tests/linux_instance_verify.ws"
+
+    step "instance" {
+      description = "Install and set up the engine with a non-default collation"
+      resource = "instance"
+      properties { version = "2025" sa_password = "Str0ng!Passw0rd" collation = "Latin1_General_CI_AS" }
+    }
+  }
+
+  test "linux_instance_absent" {
+    description = "Remove an installed mssql-server package"
+    template = "x86_64/ubuntu-24.04"
+    memory = "4GiB"
+    setup = <<'SETUP'
+set -e
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server.list
+apt-get update
+DEBIAN_FRONTEND=noninteractive ACCEPT_EULA=Y apt-get install -y mssql-server
+SETUP
+    verify = "tests/linux_instance_absent_verify.ws"
+
+    step "remove" {
+      description = "Uninstall the engine"
+      resource = "instance"
+      properties { ensure = :absent }
+    }
+  }
+
+  // Full silent install on a real Windows VM, then reconcile configuration
+  // over the install. Heavy (multi-GB media); needs vmlab, the
+  // windows-server-2025 template and the SQL Server media (set in the driver).
   scenario "win_install" {
-    description = "Silent SQL Server install on Windows then database + setting + CDC converge"
+    description = "Silent SQL Server install on Windows, then reconcile the instance, TCP, database, setting, CDC and an availability group"
     lab = "tests/win-install-lab"
     script = "tests/win_install.ws"
   }
