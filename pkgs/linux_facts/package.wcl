@@ -2,7 +2,7 @@ package "linux_facts" {
   description = "Gather Linux operating system facts"
 
   gatherer "os_release" {
-    description = "Read /etc/os-release and kernel facts"
+    description = "Read os-release (/etc/os-release, falling back to /usr/lib/os-release) and kernel facts. Values are unquoted the way os-release(5) specifies: single quotes literally, double quotes with backslash escapes"
     script = "gatherers/os_release.ws"
     returns "family" { description = "OS family (linux, windows, macos)" type = "string" }
     returns "name" { description = "OS name" type = "string" }
@@ -15,37 +15,46 @@ package "linux_facts" {
   }
 
   gatherer "init_system" {
-    description = "Detect the init/service manager"
+    description = "Detect the init/service manager from PID 1 (/proc/1/comm and, when readable, /proc/1/exe), not from which tools are installed. In a container whose PID 1 is a plain entrypoint this is :unknown"
     script = "gatherers/init_system.ws"
     returns "init" {
       description = "Detected init/service manager"
       type = "symbol"
-      symbol "systemd"  { description = "systemd — /run/systemd/system exists and systemctl runs" }
-      symbol "openrc"   { description = "OpenRC" }
-      symbol "runit"    { description = "runit" }
-      symbol "sysvinit" { description = "SysV init scripts, detected via `service`" }
-      symbol "unknown"  { description = "No init manager could be detected" }
+      symbol "systemd"  { description = "systemd is PID 1" }
+      symbol "openrc"   { description = "OpenRC: PID 1 is openrc-init, or /run/openrc exists (OpenRC booted under sysvinit's or busybox's init)" }
+      symbol "runit"    { description = "runit is PID 1" }
+      symbol "sysvinit" { description = "SysV init: PID 1 is an init reading /etc/inittab, other than busybox's" }
+      symbol "unknown"  { description = "PID 1 is none of the above, such as a container entrypoint" }
     }
   }
 
   gatherer "network" {
     description = "Enumerate network interfaces and detect the network management system"
     script = "gatherers/network.ws"
-    returns "interfaces" { description = "One { name, mac, state, ipv4, ipv6 } map per interface" type = "list" }
-    returns "network_system" { description = "Detected network manager (netplan, NetworkManager, systemd-networkd, wicked, ifupdown, unknown)" type = "string" }
+    returns "interfaces" { description = "One { name, mac, state, ipv4, ipv6 } map per interface; the address lists need iproute2 (ip) and are empty without it" type = "list" }
+    returns "network_system" {
+      description = "Detected network management system. A daemon counts when systemd reports it active or, under any other init, when its process is running"
+      type = "symbol"
+      symbol "netplan"          { description = "/etc/netplan/*.yaml exists; netplan wins over the renderer it drives" }
+      symbol "network_manager"  { description = "NetworkManager is running" }
+      symbol "systemd_networkd" { description = "systemd-networkd is running" }
+      symbol "wicked"           { description = "wicked is running" }
+      symbol "ifupdown"         { description = "/etc/network/interfaces exists and none of the above is running" }
+      symbol "unknown"          { description = "None of the above" }
+    }
   }
 
   gatherer "services" {
-    description = "List systemd services and their active state"
+    description = "List systemd services: every loaded service unit (systemctl list-units --all) plus every installed unit file that is not loaded (list-unit-files), with their active and enabled state. Template units (foo@.service) are left out; their instances appear once loaded"
     script = "gatherers/services.ws"
-    returns "services" { description = "One { name, active, sub } map per service unit; empty without systemd" type = "list" }
+    returns "services" { description = "One { name, active, sub, enabled } map per service. enabled is the unit-file state (enabled, disabled, static, masked, ...), empty for a unit with no unit file; a unit file that is not loaded reads active = inactive, sub = dead. Empty without a reachable systemd" type = "list" }
   }
 
   gatherer "mounts" {
     description = "List mounted filesystems from /proc/mounts"
     script = "gatherers/mounts.ws"
     returns "count" { description = "Number of mounted filesystems" type = "int" }
-    returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount" type = "list" }
+    returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount; the kernel's \\040-style escapes in spec and mountpoint are decoded, so a mount point with a space reads as one" type = "list" }
   }
 
   // In a VM the gatherers must return substance, not just degrade
@@ -77,6 +86,9 @@ package "linux_facts" {
     gather "net" {
       description = "Interfaces and the network manager"
       from = "network"
+      expect {
+        network_system = :netplan
+      }
     }
 
     gather "mnt" {
@@ -90,9 +102,17 @@ package "linux_facts" {
     }
   }
 
+  // /etc/os-release becomes a copy whose PRETTY_NAME is single-quoted, a
+  // mount point with a space shows up in /proc/mounts as \040, and a copy
+  // of sleep runs under the name NetworkManager.
   test "facts_gather" {
     description = "Linux facts gatherers work in a Debian container"
     image = "debian:12"
+    setup = <<'SH'
+sed "s/^PRETTY_NAME=.*/PRETTY_NAME='Debian 12 (cw)'/" /usr/lib/os-release > /tmp/os-release && rm /etc/os-release && mv /tmp/os-release /etc/os-release
+mkdir -p "/mnt/cw space" && mount -t tmpfs tmpfs "/mnt/cw space"
+cp /bin/sleep /usr/local/bin/NetworkManager && (nohup NetworkManager 3600 >/dev/null 2>&1 &)
+SH
     verify = "tests/facts_verify.ws"
 
     gather "os" {
@@ -100,17 +120,30 @@ package "linux_facts" {
       from = "os_release"
       expect {
         family = "linux"
+        id = "debian"
+        version_id = "12"
+        pretty_name = "Debian 12 (cw)"
       }
     }
 
+    // PID 1 is vmlab's /init. Debian's `service` used to make every such
+    // host :sysvinit.
     gather "init" {
-      description = "Init system is detected"
+      description = "A container entrypoint as PID 1 is not mistaken for an init system"
       from = "init_system"
+      expect {
+        init = :unknown
+      }
     }
 
+    // The stand-in NetworkManager process from setup: without systemd,
+    // only a process scan can see it.
     gather "net" {
-      description = "Interfaces enumerate and a network system is reported"
+      description = "Interfaces enumerate, and NetworkManager is found without systemd"
       from = "network"
+      expect {
+        network_system = :network_manager
+      }
     }
 
     gather "mnt" {
@@ -120,6 +153,55 @@ package "linux_facts" {
 
     gather "svc" {
       description = "services degrades to an empty list without systemd"
+      from = "services"
+    }
+  }
+
+  // OpenRC is not PID 1 in a container, so /run/openrc (what a booted
+  // OpenRC leaves) is seeded. /etc/os-release is removed to exercise the
+  // /usr/lib/os-release fallback, whose PRETTY_NAME carries escapes.
+  test "facts_gather_alpine" {
+    description = "Linux facts gatherers on Alpine: OpenRC detection, os-release fallback and escapes"
+    image = "alpine:3.20"
+    setup = <<'SH'
+f=$(readlink -f /etc/os-release)
+grep -v '^PRETTY_NAME=' "$f" > /tmp/os-release
+printf '%s\n' 'PRETTY_NAME="Alpine \"cw\" \$HOME"' >> /tmp/os-release
+rm -f /etc/os-release /usr/lib/os-release && mv /tmp/os-release /usr/lib/os-release
+mkdir -p /run/openrc
+SH
+    verify = "tests/facts_verify.ws"
+
+    gather "os" {
+      description = "OS facts from /usr/lib/os-release"
+      from = "os_release"
+      expect {
+        family = "linux"
+        id = "alpine"
+        pretty_name = "Alpine \"cw\" $HOME"
+      }
+    }
+
+    gather "init" {
+      description = "A booted OpenRC is detected without being PID 1"
+      from = "init_system"
+      expect {
+        init = :openrc
+      }
+    }
+
+    gather "net" {
+      description = "Interfaces enumerate"
+      from = "network"
+    }
+
+    gather "mnt" {
+      description = "Mounts parse"
+      from = "mounts"
+    }
+
+    gather "svc" {
+      description = "services is empty without systemd"
       from = "services"
     }
   }

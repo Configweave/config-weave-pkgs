@@ -1,21 +1,23 @@
 use value
 use fs
+use common
 
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
-    fallback
-}
-
+// Describes the path itself, never what a symlink points at (fs::metadata
+// is lstat): a dangling symlink exists, and a symlink to a directory is
+// is_symlink, not is_dir.
 fn gather(params: Value) -> Result[Value, string] {
-    let p = param_str(params, "path", "")
+    let p = common::param_str(params, "path", "")
     if p == "" { return Err("missing 'path' parameter") }
-    if !fs::exists(p) {
+    if !common::lexists(p) {
         return Ok(Value::Map(#{
             "path": Value::String(p),
             "exists": Value::Bool(false)
         }))
     }
     let md = fs::metadata(p)?
+    // st_mode carries the file-type bits too (33188 for a 0644 file); keep
+    // the permission bits only — there is no bitwise and, so take mod 0o10000.
+    let mode = if let Some(m) = md.get("mode") { m.as_int().unwrap_or(0) % 4096 } else { 0 }
     Ok(Value::Map(#{
         "path": Value::String(p),
         "exists": Value::Bool(true),
@@ -23,7 +25,7 @@ fn gather(params: Value) -> Result[Value, string] {
         "is_file": md.get("is_file").unwrap_or(Value::Bool(false)),
         "is_dir": md.get("is_dir").unwrap_or(Value::Bool(false)),
         "is_symlink": md.get("is_symlink").unwrap_or(Value::Bool(false)),
-        "mode": md.get("mode").unwrap_or(Value::Int(0)),
+        "mode": Value::Int(mode),
         "modified": md.get("modified").unwrap_or(Value::Int(0))
     }))
 }

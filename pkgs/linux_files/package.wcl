@@ -2,10 +2,10 @@ package "linux_files" {
   description = "Manage Linux filesystem state"
 
   resource "file" {
-    description = "Ensure a file exists with exact content or fetched from a URL, or is absent"
+    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Content that is not valid UTF-8 counts as drift and is replaced."
     script = "resources/file.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
@@ -15,88 +15,108 @@ package "linux_files" {
       symbol "absent"  { description = "Delete the file" }
     }
     param "content" { description = "Desired file content; mutually exclusive with url" type = "string" default = "" }
-    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content" type = "string" default = "" }
-    param "sha256" { description = "Optional expected SHA-256 digest (url mode)" type = "string" default = "" }
-    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
-    param "owner" { description = "Optional file owner" type = "string" default = "" }
-    param "group" { description = "Optional file group" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded beside the target and only renamed into place once it passes sha256. Without sha256 it is fetched once and never re-checked: a changed upstream file is not drift, so set sha256 whenever the content matters" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error and leaves the existing file untouched" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
+    param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional file group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "template" {
-    description = "Render a Tera template to a file with exact content"
+    description = "Render a Tera template to a file with exact content, or ensure the file is absent. Rendered content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Existing content that differs, or is not valid UTF-8, is drift"
     script = "resources/template.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute file path" type = "string" required = true }
-    param "template" { description = "Tera template body (author as a raw heredoc)" type = "string" required = true }
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Render the template to path" }
+      symbol "absent"  { description = "Delete the file; template and vars are not needed" }
+    }
+    param "template" { description = "Tera template body (author as a raw heredoc); required when ensure is :present" type = "string" default = "" }
     param "vars" { description = "Variables exposed to the template" type = "map" }
-    param "mode" { description = "Optional octal mode such as 0644" type = "string" default = "" }
-    param "owner" { description = "Optional file owner" type = "string" default = "" }
-    param "group" { description = "Optional file group" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
+    param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional file group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "directory" {
-    description = "Ensure a directory exists or is absent"
+    description = "Ensure a directory exists, including missing parents, or is absent. Removal is recursive and refuses / and every top-level directory (/etc, /usr, /var, /home, ...). mode, owner and group apply to the directory itself, not its contents, and only the last path component gets them"
     script = "resources/directory.ws"
     concurrency = "parallel"
-    param "path" { description = "Absolute directory path" type = "string" required = true }
+    param "path" { description = "Absolute directory path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent (absent removes the directory and its contents)"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Create the directory" }
-      symbol "absent"  { description = "Delete the directory and its contents" }
+      symbol "absent"  { description = "Delete the directory and its contents; refused for / and top-level directories, and an error when path is a file or a symlink" }
     }
-    param "mode" { description = "Optional octal mode such as 0755" type = "string" default = "" }
-    param "owner" { description = "Optional directory owner" type = "string" default = "" }
-    param "group" { description = "Optional directory group" type = "string" default = "" }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0755 or 2775; symbolic modes are rejected" type = "string" default = "" }
+    param "owner" { description = "Optional directory owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional directory group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   resource "symlink" {
-    description = "Ensure a symbolic or hard link points at a target, or is absent"
+    description = "Ensure a symbolic or hard link points at a target, or is absent. Whatever is at path is replaced (a dangling symlink included), except a directory, which is an error. A symlink may point at a target that does not exist yet; a hard link's target must be an existing file"
     script = "resources/symlink.ws"
     concurrency = "parallel"
-    param "path" { description = "Link path" type = "string" required = true }
+    param "path" { description = "Absolute link path (no .. segments)" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
       symbol "present" { description = "Create the link" }
-      symbol "absent"  { description = "Delete the link" }
+      symbol "absent"  { description = "Delete the link itself, never its target; for a hard link only this name goes" }
     }
-    param "target" { description = "Link target (required when present)" type = "string" default = "" }
+    param "target" { description = "Link target (required when present); a symlink stores it verbatim, so it may be relative to the link's directory" type = "string" default = "" }
     param "hard" { description = "Create a hard link instead of a symlink" type = "bool" default = false }
   }
 
   resource "archive_extracted" {
-    description = "Ensure a local archive has been extracted into a directory"
+    description = "Ensure a local archive has been extracted into a directory, or that the directory is absent. dest/.config-weave-archive records the SHA-256 of the archive last extracted: a dest without it (even a non-empty one) is extracted into, and a changed src is extracted again over the top. Re-extraction overwrites files the archive contains and leaves any others in place. src must still exist on later runs, since its digest is what is compared"
     script = "resources/archive_extracted.ws"
     concurrency = "parallel"
-    param "src" { description = "Local archive path (.zip, .tar.gz, .tgz)" type = "string" required = true }
-    param "dest" { description = "Destination directory" type = "string" required = true }
+    param "src" { description = "Absolute path of a local archive (.zip, .tar.gz, .tgz); required when ensure is :present" type = "string" default = "" }
+    param "dest" { description = "Absolute destination directory (no .. segments)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Extract the archive into dest" }
+      symbol "absent"  { description = "Delete dest and everything in it; refused for / and top-level directories" }
+    }
+    param "owner" { description = "Optional owner for dest and everything under it (chown -R, symlinks themselves included), as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional group for dest and everything under it, as a group name or numeric gid" type = "string" default = "" }
+    param "file_mode" { description = "Optional mode, as 3 or 4 octal digits, for every regular file under dest" type = "string" default = "" }
+    param "dir_mode" { description = "Optional mode, as 3 or 4 octal digits, for dest and every directory under it" type = "string" default = "" }
   }
 
   resource "permissions" {
-    description = "Ensure owner, group and mode on an existing path"
+    description = "Ensure owner, group and mode on an existing path (not recursive). A symlink at path is followed: the target's attributes are compared and changed. A missing path is an error"
     script = "resources/permissions.ws"
     concurrency = "parallel"
-    param "path" { description = "Target path" type = "string" required = true }
-    param "mode" { description = "Optional octal mode" type = "string" default = "" }
-    param "owner" { description = "Optional owner" type = "string" default = "" }
-    param "group" { description = "Optional group" type = "string" default = "" }
+    param "path" { description = "Absolute target path (no .. segments)" type = "string" required = true }
+    param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0640 or 2775; symbolic modes are rejected" type = "string" default = "" }
+    param "owner" { description = "Optional owner, as a user name or numeric uid" type = "string" default = "" }
+    param "group" { description = "Optional group, as a group name or numeric gid" type = "string" default = "" }
   }
 
   gatherer "path_stat" {
-    description = "Report a path's existence, type, size and mode"
+    description = "Report a path's existence, type, size and mode. Describes the path itself and never follows a symlink: a dangling symlink exists, and a symlink to a directory reports is_symlink rather than is_dir"
     script = "gatherers/path_stat.ws"
     returns "path" { description = "The path that was examined" type = "string" }
-    returns "exists" { description = "True when the path exists" type = "bool" }
-    returns "size" { description = "Size in bytes (only when exists)" type = "int" }
-    returns "is_file" { description = "True for a regular file (only when exists)" type = "bool" }
-    returns "is_dir" { description = "True for a directory (only when exists)" type = "bool" }
+    returns "exists" { description = "True when anything is at the path, a dangling symlink included" type = "bool" }
+    returns "size" { description = "Size in bytes of the path itself (only when exists)" type = "int" }
+    returns "is_file" { description = "True for a regular file, false for a symlink to one (only when exists)" type = "bool" }
+    returns "is_dir" { description = "True for a directory, false for a symlink to one (only when exists)" type = "bool" }
     returns "is_symlink" { description = "True for a symlink (only when exists)" type = "bool" }
-    returns "mode" { description = "Unix permission bits (only when exists)" type = "int" }
+    returns "mode" { description = "Permission bits as an int, without file-type bits: 420 for 0644 (only when exists)" type = "int" }
     returns "modified" { description = "mtime as a unix timestamp (only when exists)" type = "int" }
     param "path" { description = "Target path" type = "string" required = true }
   }
@@ -116,6 +136,9 @@ package "linux_files" {
     description = "Core file resources converge"
     image = "debian:12"
     group = "files"
+    // binary.txt starts as non-UTF-8 bytes, which fs::read cannot decode;
+    // keep.txt has an owner and mode the playbook does not manage.
+    setup = "mkdir -p /tmp/cw-files && chmod 700 /tmp/cw-files && printf '\\377\\376\\n' > /tmp/cw-files/binary.txt && printf 'old\\n' > /tmp/cw-files/keep.txt && chown 65534:65534 /tmp/cw-files/keep.txt && chmod 604 /tmp/cw-files/keep.txt && ln -s /etc/hostname /tmp/cw-files/retarget.txt && ln -s /tmp/cw-files/gone /tmp/cw-files/dangling.txt"
     verify = "tests/files_verify.ws"
 
     step "dir" {
@@ -131,11 +154,48 @@ package "linux_files" {
       properties { path = "/tmp/cw-files/a.txt" content = "alpha\n" mode = "0644" }
     }
 
+    step "binary" {
+      description = "Replace non-UTF-8 content"
+      resource = "file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/binary.txt" content = "text\n" }
+    }
+
+    step "keep" {
+      description = "Rewrite content without resetting an unmanaged owner and mode"
+      resource = "file"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/keep.txt" content = "new\n" }
+    }
+
     step "link" {
       description = "Create symlink"
       resource = "symlink"
       requires = ["file"]
       properties { path = "/tmp/cw-files/link.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    step "retarget" {
+      description = "Repoint an existing symlink at a new target"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/retarget.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    // The seeded link is dangling: fs::exists follows it, so the old code
+    // skipped the delete and fs::symlink failed with "File exists".
+    step "dangling" {
+      description = "Replace a dangling symlink"
+      resource = "symlink"
+      requires = ["file"]
+      properties { path = "/tmp/cw-files/dangling.txt" target = "/tmp/cw-files/a.txt" }
+    }
+
+    step "to_missing" {
+      description = "A symlink to a target that does not exist converges"
+      resource = "symlink"
+      requires = ["dir"]
+      properties { path = "/tmp/cw-files/future.txt" target = "/tmp/cw-files/not-yet" }
     }
 
     step "hardlink" {
@@ -147,9 +207,10 @@ package "linux_files" {
   }
 
   test "template_renders" {
-    description = "Tera template resource renders and converges"
+    description = "Tera template resource renders over drifted content and removes a rendered file"
     image = "debian:12"
     group = "files"
+    setup = "mkdir -p /tmp/cw-tmpl && printf '# stale\\n' > /tmp/cw-tmpl/app.conf && chmod 600 /tmp/cw-tmpl/app.conf && echo old > /tmp/cw-tmpl/old.conf"
     verify = "tests/template_verify.ws"
 
     step "tmpl" {
@@ -166,20 +227,48 @@ servers={{ hosts | join(sep=",") }}
 TMPL
       }
     }
+
+    step "rm_tmpl" {
+      description = "Remove a file a template once rendered"
+      resource = "template"
+      properties { path = "/tmp/cw-tmpl/old.conf" ensure = :absent }
+    }
+
+    step "no_body" {
+      description = "A present template without a body is rejected"
+      resource = "template"
+      expect = "error"
+      properties { path = "/tmp/cw-tmpl/empty.conf" }
+    }
   }
 
   test "removals_and_extract_converge" {
     description = "Removal and extraction resources converge"
     image = "debian:12"
     group = "files"
-    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt"
+    setup = "echo delete-me > /tmp/cw-del.txt; mkdir -p /tmp/cw-rmdir/sub; echo x > /tmp/cw-rmdir/sub/f.txt; ln -s /tmp/cw-del.txt /tmp/cw-oldlink; echo keep > /tmp/cw-hard-src.txt; ln /tmp/cw-hard-src.txt /tmp/cw-hard-link.txt; ln -s /tmp/cw-nowhere /tmp/cw-dangling-rm; mkdir -p /tmp/cw-arch-src; echo hi > /tmp/cw-arch-src/inside.txt; mkdir -p /tmp/cw-arch-src/sub; echo deep > /tmp/cw-arch-src/sub/deep.txt; tar -C /tmp/cw-arch-src -czf /tmp/cw-arch.tar.gz inside.txt sub; mkdir -p /tmp/cw-prepop; echo mine > /tmp/cw-prepop/existing.txt; mkdir -p /tmp/cw-changed; echo stale > /tmp/cw-changed/inside.txt; echo 0000 > /tmp/cw-changed/.config-weave-archive; mkdir -p /tmp/cw-arch-rm/x; echo y > /tmp/cw-arch-rm/x/y.txt; { id cwuser >/dev/null 2>&1 || useradd -u 1234 -U -M cwuser; }"
     verify = "tests/removals_verify.ws"
 
     gather "seed_stat" {
       description = "Stat the seed file created during setup"
       from = "path_stat"
       params { path = "/tmp/cw-del.txt" }
-      expect { exists = true }
+      expect {
+        exists = true
+        is_file = true
+        mode = 420
+      }
+    }
+
+    gather "dangling_stat" {
+      description = "A dangling symlink exists and is a symlink"
+      from = "path_stat"
+      params { path = "/tmp/cw-dangling-rm" }
+      expect {
+        exists = true
+        is_symlink = true
+        is_file = false
+      }
     }
 
     gather "src_matches" {
@@ -195,6 +284,20 @@ TMPL
       properties { path = "/tmp/cw-del.txt" ensure = :absent }
     }
 
+    step "rm_root" {
+      description = "Removing / is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "/" ensure = :absent }
+    }
+
+    step "rm_top" {
+      description = "Removing a top-level directory is refused"
+      resource = "directory"
+      expect = "error"
+      properties { path = "/srv/" ensure = :absent }
+    }
+
     step "rmdir" {
       description = "Remove a non-empty directory"
       resource = "directory"
@@ -207,10 +310,112 @@ TMPL
       properties { path = "/tmp/cw-oldlink" ensure = :absent }
     }
 
+    step "rmhard" {
+      description = "Remove a hard link, leaving the other name and its content"
+      resource = "symlink"
+      properties { path = "/tmp/cw-hard-link.txt" ensure = :absent }
+    }
+
+    step "rmdangling" {
+      description = "Remove a symlink whose target does not exist"
+      resource = "symlink"
+      properties { path = "/tmp/cw-dangling-rm" ensure = :absent }
+    }
+
     step "extract" {
-      description = "Extract an archive"
+      description = "Extract an archive with an owner and modes applied to the whole tree"
       resource = "archive_extracted"
-      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-extracted" }
+      properties {
+        src = "/tmp/cw-arch.tar.gz"
+        dest = "/tmp/cw-extracted"
+        owner = "cwuser"
+        group = "1234"
+        file_mode = "0640"
+        dir_mode = "0750"
+      }
+    }
+
+    // The old "dest is non-empty" test treated both of these as done.
+    step "prepopulated" {
+      description = "Extract into a dest that already holds other files"
+      resource = "archive_extracted"
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-prepop" }
+    }
+
+    step "changed_src" {
+      description = "Re-extract when the recorded archive digest differs"
+      resource = "archive_extracted"
+      properties { src = "/tmp/cw-arch.tar.gz" dest = "/tmp/cw-changed" }
+    }
+
+    step "rm_extracted" {
+      description = "Remove an extracted tree"
+      resource = "archive_extracted"
+      properties { dest = "/tmp/cw-arch-rm" ensure = :absent }
+    }
+
+    step "rm_arch_top" {
+      description = "Removing a top-level directory as dest is refused"
+      resource = "archive_extracted"
+      expect = "error"
+      properties { dest = "/opt" ensure = :absent }
+    }
+  }
+
+  // Owner/group by name and by bare id (4321 has no passwd entry, so stat
+  // names it UNKNOWN), a mode on a path that is a symlink (stat without -L
+  // reads the link's 777), and paths with a space (chmod/chown were split
+  // on whitespace).
+  test "attrs_converge" {
+    description = "mode, owner and group converge by name, by id, through a symlink and on paths with spaces"
+    image = "debian:12"
+    group = "files"
+    setup = "{ id cwuser >/dev/null 2>&1 || useradd -u 1234 -U -M cwuser; } && mkdir -p /tmp/cw-attrs && printf 'r\\n' > /tmp/cw-attrs/real.txt && chmod 600 /tmp/cw-attrs/real.txt && ln -s /tmp/cw-attrs/real.txt /tmp/cw-attrs/link.txt"
+    verify = "tests/attrs_verify.ws"
+
+    step "named" {
+      description = "file owned by a named user and group"
+      resource = "file"
+      properties { path = "/tmp/cw-attrs/named.txt" content = "n\n" owner = "cwuser" group = "cwuser" mode = "0640" }
+    }
+
+    step "numeric" {
+      description = "file owned by ids with no passwd or group entry"
+      resource = "file"
+      properties { path = "/tmp/cw-attrs/numeric.txt" content = "i\n" owner = "4321" group = "4321" mode = "600" }
+    }
+
+    step "via_link" {
+      description = "permissions on a symlinked path change and compare the target"
+      resource = "permissions"
+      properties { path = "/tmp/cw-attrs/link.txt" mode = "0644" owner = "1234" }
+    }
+
+    step "spaced_dir" {
+      description = "directory with a space in its path and a setgid mode"
+      resource = "directory"
+      properties { path = "/tmp/cw attrs/sub dir" mode = "2775" group = "cwuser" }
+    }
+
+    step "spaced_file" {
+      description = "file with a space in its path"
+      resource = "file"
+      requires = ["spaced_dir"]
+      properties { path = "/tmp/cw attrs/sub dir/a b.txt" content = "s\n" mode = "0600" }
+    }
+
+    step "bad_mode" {
+      description = "a symbolic mode is rejected rather than compared forever"
+      resource = "file"
+      expect = "error"
+      properties { path = "/tmp/cw-attrs/bad.txt" content = "x" mode = "u+rw" }
+    }
+
+    step "relative" {
+      description = "a relative path is rejected"
+      resource = "directory"
+      expect = "error"
+      properties { path = "tmp/cw-relative" }
     }
   }
 
@@ -219,7 +424,7 @@ TMPL
   test "file_url_and_permissions_converge" {
     description = "file fetches by url over local HTTP and permissions converges a mode"
     image = "python:3.12-slim"
-    setup = "mkdir -p /srv/www && printf 'payload\\n' > /srv/www/payload.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
+    setup = "mkdir -p /srv/www /srv/dl && printf 'payload\\n' > /srv/www/payload.txt && printf 'old\\n' > /srv/dl/keep.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
     verify = "tests/download_verify.ws"
 
     step "fetch" {
@@ -238,6 +443,19 @@ TMPL
       resource = "file"
       expect = "error"
       properties { path = "/srv/dl/conflict.txt" url = "http://127.0.0.1:8080/payload.txt" content = "nope" }
+    }
+
+    // The digest is the empty file's, so the download can never match: the
+    // file already at the path must survive, and no temp file is left.
+    step "bad_digest" {
+      description = "a download that fails its sha256 leaves the existing file alone"
+      resource = "file"
+      expect = "error"
+      properties {
+        path = "/srv/dl/keep.txt"
+        url = "http://127.0.0.1:8080/payload.txt"
+        sha256 = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+      }
     }
 
     step "perms" {

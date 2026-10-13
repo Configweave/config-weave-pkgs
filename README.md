@@ -70,6 +70,70 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 
+### `linux_files`
+
+Files, directories, links, archives and modes. 6 resources and 2 gatherers:
+
+- `file` — exact `content`, or fetched from `url`. Writes go to a temp file
+  beside the target and are renamed into place, keeping the old file's owner
+  and mode unless `mode`/`owner`/`group` say otherwise. A download is
+  verified against `sha256` before it replaces anything. Without `sha256`, a
+  url is fetched once and never re-checked, so set it whenever the content
+  matters.
+- `template` — a Tera template rendered the same way as `file`; takes
+  `ensure`.
+- `directory` — creates missing parents. `:absent` is recursive and refuses
+  `/` and every top-level directory.
+- `symlink` — symbolic or hard links. A dangling link at `path` is replaced,
+  and a symlink may point at a target that does not exist yet.
+- `archive_extracted` — extracts a local `.zip`/`.tar.gz` into `dest` and
+  records the archive's SHA-256 in `dest/.config-weave-archive`, so a changed
+  archive is extracted again. `owner`/`group`/`file_mode`/`dir_mode` apply to
+  the whole tree; `:absent` deletes `dest`.
+- `permissions` — owner, group and mode on an existing path (not recursive).
+- `path_stat` and `paths_matching` gatherers. `path_stat` describes the path
+  itself and never follows a symlink; `mode` is the permission bits (420 for
+  0644).
+
+Paths must be absolute and free of `..`. `mode` is 3 or 4 octal digits;
+`owner` and `group` take a name or a numeric id. Every resource follows a
+symlink at `path` for content and attributes, so `mode` on a symlinked path
+changes the target.
+
+### `linux_system`
+
+Core system settings. 6 resources:
+
+- `sysctl` — sets the value now and persists it in its own
+  `/etc/sysctl.d/99-config-weave-<key>.conf`. Multi-value keys compare field
+  by field. `:absent` deletes the drop-in and leaves the running value until
+  the next boot.
+- `hostname` — `/etc/hostname` and the running hostname (RFC 1123 names).
+- `timezone` — `/etc/localtime`, plus `/etc/timezone` where it exists. Uses
+  `timedatectl` only when systemd is PID 1, and an unknown zone is an error.
+- `locale` — enables the `/etc/locale.gen` line and runs `locale-gen` where
+  that exists (Debian, Ubuntu, Arch), and uses `localedef` elsewhere (RHEL,
+  Fedora: needs `glibc-locale-source` or a `glibc-langpack-*`). With
+  neither, it errors. `:absent` comments the line out.
+- `cron_job` — one `/etc/cron.d/<name>` file per job. Names are
+  `[A-Za-z0-9_-]+` (cron ignores any other file name), and a literal `%` in
+  `command` must be written `\%`.
+- `fstab_mount` — exactly one fstab entry per mount point, written through a
+  temp file. With `mount = true` it also keeps the mount live: it creates the
+  mount point, mounts it, remounts when the options change, and unmounts
+  before `:absent` removes the entry.
+
+### `linux_facts`
+
+OS facts as gatherers: `os_release` (with `/usr/lib/os-release` as
+fallback), `init_system`, `network`, `services` and `mounts`.
+`init_system` reads PID 1, so a container whose PID 1 is an entrypoint
+reports `:unknown`. `network.network_system` is a symbol (`:netplan`,
+`:network_manager`, `:systemd_networkd`, `:wicked`, `:ifupdown`,
+`:unknown`), and a daemon counts as running under any init system, not
+only when systemd reports it. `services` includes installed unit files that
+are not loaded, each with an `enabled` state.
+
 ### `windows_powershell`
 
 PowerShell itself, as convergent resources — installing it, and every setting

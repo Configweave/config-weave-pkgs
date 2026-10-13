@@ -1,118 +1,97 @@
 use value
 use fs
 use path
-use shell
 use http
 use hash
 use log
-
-fn param_str(params: Value, key: string, fallback: string) -> string {
-    if let Some(v) = params.get(key) {
-        if let Some(s) = v.as_string() { return s }
-    }
-    fallback
-}
-
-fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
-
-fn want_present(params: Value) -> Result[bool, string] {
-    let e = param_str(params, "ensure", "present")
-    if e == "present" { return Ok(true) }
-    if e == "absent" { return Ok(false) }
-    Err("invalid 'ensure' value '" + e + "' (expected :present or :absent)")
-}
+use common
 
 // url mode and content mode are mutually exclusive; sha256 only makes sense
 // alongside a url.
 fn source_url(params: Value) -> Result[string, string] {
-    let url = param_str(params, "url", "")
-    if url != "" && param_str(params, "content", "") != "" {
+    let url = common::param_str(params, "url", "")
+    if url != "" && common::param_str(params, "content", "") != "" {
         return Err("'url' and 'content' are mutually exclusive")
     }
-    if url == "" && param_str(params, "sha256", "") != "" {
+    if url == "" && common::param_str(params, "sha256", "") != "" {
         return Err("'sha256' requires 'url'")
     }
     Ok(url)
 }
 
-fn norm_mode(mode: string) -> string {
-    let m = mode.trim()
-    if m.starts_with("0") && m.len() > 1 { return m.slice(1, m.len()) }
-    m
-}
-
-fn apply_attrs(p: string, mode: string, owner: string, group: string) -> Result[unit, string] {
-    if mode != "" {
-        let out = shell::run("chmod " + mode + " " + p, Value::Null)?
-        if !out.success { return Err(out.stderr.trim()) }
+// The expected digest, lower-cased; "" when none was given.
+fn want_sha(params: Value) -> Result[string, string] {
+    let want = common::param_str(params, "sha256", "").trim().to_lower()
+    if want == "" { return Ok("") }
+    if want.len() != 64 || !want.chars().all(|c| (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+        return Err("invalid 'sha256' (expected 64 hex digits)")
     }
-    if owner != "" || group != "" {
-        let spec = if owner != "" && group != "" { owner + ":" + group } else if owner != "" { owner } else { ":" + group }
-        let out = shell::run("chown " + spec + " " + p, Value::Null)?
-        if !out.success { return Err(out.stderr.trim()) }
-    }
-    Ok(())
-}
-
-fn attrs_ok(p: string, mode: string, owner: string, group: string) -> Result[bool, string] {
-    let cmd = "stat -c '%a %U %G' " + q(p)
-    let out = shell::bash(cmd, Value::Null)?
-    if !out.success { return Ok(false) }
-    let parts = out.stdout.trim().split(" ")
-    if mode != "" && parts.get(0).unwrap_or("") != norm_mode(mode) { return Ok(false) }
-    if owner != "" && parts.get(1).unwrap_or("") != owner { return Ok(false) }
-    if group != "" && parts.get(2).unwrap_or("") != group { return Ok(false) }
-    Ok(true)
+    Ok(want)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
-    let p = param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    let p = common::param_str(params, "path", "")
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
     let url = source_url(params)?
-    if !want_present(params)? {
-        if fs::exists(p) { return Ok(CheckResult::NotConfigured) }
+    let want = want_sha(params)?
+    if !common::want_present(params)? {
+        if common::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
     if url != "" {
-        let want = param_str(params, "sha256", "")
         if want != "" && hash::sha256_file(p)? != want { return Ok(CheckResult::NotConfigured) }
     } else {
-        if fs::read(p)? != param_str(params, "content", "") { return Ok(CheckResult::NotConfigured) }
+        if !common::content_is(p, common::param_str(params, "content", "")) { return Ok(CheckResult::NotConfigured) }
     }
-    if !attrs_ok(p, param_str(params, "mode", ""), param_str(params, "owner", ""), param_str(params, "group", ""))? {
+    if !common::attrs_ok(p, a)? {
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
-    let p = param_str(params, "path", "")
-    if p == "" { return Err("missing 'path' parameter") }
+    let p = common::param_str(params, "path", "")
+    common::require_path("path", p)?
+    let a = common::attrs(params)?
     let url = source_url(params)?
-    if !want_present(params)? {
-        if !fs::exists(p) { return Ok(ApplyResult::Success) }
-        if fs::is_dir(p) { return Err("path is a directory; use linux_files.directory with ensure = :absent") }
+    let want = want_sha(params)?
+    if !common::want_present(params)? {
+        if !common::lexists(p) { return Ok(ApplyResult::Success) }
+        if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("path is a directory; use linux_files.directory with ensure = :absent") }
         log::info("deleting " + p)
         fs::delete(p)?
         return Ok(ApplyResult::Success)
     }
+    fs::mkdir(path::parent(p))?
+    let tmp = common::tmp_sibling(p)
     if url != "" {
-        let want = param_str(params, "sha256", "")
         // Only fetch when the file is missing or fails its digest — keeps a
         // metadata-only fix (mode/owner) from re-downloading.
         let need = !fs::is_file(p) || (want != "" && hash::sha256_file(p)? != want)
         if need {
+            // Download beside the target and verify before it goes live, so
+            // a bad digest never replaces (or creates) the file at `path`.
             log::info("downloading " + url + " -> " + p)
-            fs::mkdir(path::parent(p))?
-            http::download(url, p, Value::Null)?
-            if want != "" && hash::sha256_file(p)? != want { return Err("downloaded file sha256 mismatch") }
+            if let Err(e) = http::download(url, tmp, Value::Null) {
+                fs::delete(tmp).unwrap_or(())
+                return Err("downloading " + url + ": " + e)
+            }
+            if want != "" {
+                let got = hash::sha256_file(tmp)?
+                if got != want {
+                    fs::delete(tmp).unwrap_or(())
+                    return Err("downloaded file sha256 mismatch: expected " + want + ", got " + got)
+                }
+            }
+            common::install_tmp(tmp, p)?
         }
     } else {
         log::info("writing " + p)
-        fs::mkdir(path::parent(p))?
-        fs::write(p, param_str(params, "content", ""))?
+        fs::write(tmp, common::param_str(params, "content", ""))?
+        common::install_tmp(tmp, p)?
     }
-    apply_attrs(p, param_str(params, "mode", ""), param_str(params, "owner", ""), param_str(params, "group", ""))?
+    common::apply_attrs(p, a)?
     Ok(ApplyResult::Success)
 }
