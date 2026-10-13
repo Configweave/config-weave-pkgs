@@ -2155,7 +2155,7 @@ package "windows_iis" {
   gatherer "sites" {
     description = "Every configured site with its state, root path, pool and bindings"
     script = "gatherers/sites.ws"
-    returns "sites" { description = "One { name, id, state, physical_path, app_pool, bindings } map per site, each binding a { protocol, binding_information, ssl_flags, certificate_hash } map; empty without IIS" type = "list" }
+    returns "sites" { description = "One { name, id, state, physical_path, app_pool, bindings } map per site, each binding a { protocol, binding_information, ssl_flags, certificate_hash } map. ssl_flags uses binding's symbol names as text (none, sni, central_cert_store, sni_central_cert_store); state is empty when it cannot be read. Empty without IIS" type = "list" }
   }
 
   gatherer "app_pools" {
