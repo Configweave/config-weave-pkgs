@@ -51,6 +51,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     lacks(other, o, "<OOBE>")?
     lacks(other, o, "AdministratorPassword")?
 
+    // The value config-weave's encoding tests pin for the same form.
+    let engine = "/tmp/cw-unattend/engine.xml"
+    let e = fs::read(engine)?
+    has(engine, e, "<Password><Value>UABhAHMAcwB3ADAAcgBkAFAAYQBzAHMAdwBvAHIAZAA=</Value><PlainText>false</PlainText>")?
+
     let noacct = "/tmp/cw-unattend/noaccount.xml"
     let n = fs::read(noacct)?
     has(noacct, n, "<HideEULAPage>true</HideEULAPage>")?

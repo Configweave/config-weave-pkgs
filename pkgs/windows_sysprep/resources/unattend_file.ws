@@ -88,17 +88,18 @@ fn autologon_xml(params: Value, admin_pw: string) -> Result[string, string] {
         }
         pw = admin_pw
     }
+    let hidden = common::hidden_password(pw, "Password")?
     Ok("      <AutoLogon>" + el("Enabled", "true") +
         el("LogonCount", str(count)) +
         el("Username", common::xml_esc(user)) +
-        "<Password>" + common::hidden_password(pw, "Password") + "</Password></AutoLogon>\n")
+        "<Password>" + hidden + "</Password></AutoLogon>\n")
 }
 
 fn shell_setup_component(params: Value, arch: string) -> Result[string, string] {
     let pw = common::param_str(params, "admin_password", "")
     let o_oobe = if common::param_bool(params, "skip_oobe_screens", true) { oobe_block(pw != "") } else { "" }
     let o_ua = if pw != "" {
-        "      <UserAccounts><AdministratorPassword>" + common::hidden_password(pw, "AdministratorPassword") +
+        "      <UserAccounts><AdministratorPassword>" + common::hidden_password(pw, "AdministratorPassword")? +
         "</AdministratorPassword></UserAccounts>\n"
     } else { "" }
     let o_al = autologon_xml(params, pw)?

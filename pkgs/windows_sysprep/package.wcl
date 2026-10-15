@@ -103,6 +103,18 @@ package "windows_sysprep" {
       }
     }
 
+    step "engine_value" {
+      description = "The engine's own encoding test value: base64(UTF-16LE(\"Passw0rd\" + \"Password\"))"
+      resource = "unattend_file"
+      properties {
+        path = "/tmp/cw-unattend/engine.xml"
+        skip_oobe_screens = false
+        autologon = true
+        autologon_user = "deploy"
+        autologon_password = "Passw0rd"
+      }
+    }
+
     step "no_account" {
       description = "Skipping OOBE with no account keeps the local-account screen"
       resource = "unattend_file"
