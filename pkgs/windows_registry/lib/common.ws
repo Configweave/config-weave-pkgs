@@ -98,8 +98,7 @@ fn failure(what: string, out: CmdOutput) -> string {
 // passes through command-line quoting and may hold any character. The file
 // carries a UTF-8 BOM because 5.1 reads a BOM-less script as the ANSI code
 // page, and output is forced to UTF-8 because 5.1 otherwise re-encodes it
-// to the OEM code page and the host drops output that is not valid UTF-8
-// (engine gap E3). The trap reduces a terminating error to its message.
+// to the OEM code page, which mangles non-ASCII text. The trap reduces a terminating error to its message.
 fn run_ps(script: string) -> Result[CmdOutput, string] {
     let dir = fs::temp_dir()?
     let file = path::join(dir, "config-weave-registry.ps1")
