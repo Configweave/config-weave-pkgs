@@ -36,7 +36,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let url = source_url(params)?
     let want = want_sha(params)?
     if !common::want_present(params)? {
-        if common::lexists(p) { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
@@ -58,7 +58,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let url = source_url(params)?
     let want = want_sha(params)?
     if !common::want_present(params)? {
-        if !common::lexists(p) { return Ok(ApplyResult::Success) }
+        if !fs::lexists(p) { return Ok(ApplyResult::Success) }
         if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("path is a directory; use linux_files.directory with ensure = :absent") }
         log::info("deleting " + p)
         fs::delete(p)?

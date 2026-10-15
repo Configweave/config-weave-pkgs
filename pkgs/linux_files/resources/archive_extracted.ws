@@ -87,7 +87,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let t = tree(params)?
     if !common::want_present(params)? {
         common::refuse_critical("dest", dest)?
-        if common::lexists(dest) { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(dest) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     // A missing archive may be created by an earlier step; apply errors if
@@ -105,7 +105,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let t = tree(params)?
     if !common::want_present(params)? {
         common::refuse_critical("dest", dest)?
-        if !common::lexists(dest) { return Ok(ApplyResult::Success) }
+        if !fs::lexists(dest) { return Ok(ApplyResult::Success) }
         if fs::read_link(dest).is_ok() || !fs::is_dir(dest) { return Err("dest is not a directory: " + dest) }
         log::info("deleting " + dest)
         fs::delete_dir(dest)?
