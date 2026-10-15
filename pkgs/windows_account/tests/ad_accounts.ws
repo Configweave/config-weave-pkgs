@@ -3,24 +3,14 @@
 // no other), then ad_user, ad_group and ad_group_member converge against it,
 // have drift seeded behind their backs, and converge again.
 //
-// Scenario properties reach the engine as quoted strings, which a symbol
-// param refuses (and `machine.apply(dir)` cannot run a playbook: it passes
-// no play name). So the steps that need a symbol (ensure = :absent,
-// scope = :domainlocal) are written as a playbook here, copied into the
-// guest beside the package, and run with the guest's own config-weave.
+// Symbol params (ensure = :absent, scope = :domainlocal) are passed as plain
+// strings: testlab renders a top-level string as a symbol when the param is
+// declared `type = "symbol"`.
 
 use testlab
 use value
-use fs
-use path
-use json
 
 fn s(v: string) -> Value { Value::String(v) }
-
-fn str_of(m: Value, key: string) -> string {
-    if let Some(v) = m.get(key) { if let Some(x) = v.as_string() { return x } }
-    ""
-}
 
 fn ps(m: Machine, script: string) -> Result[string, string] {
     let r = m.powershell("$ErrorActionPreference='Stop'; " + script)?
@@ -54,39 +44,6 @@ fn expect(m: Machine, key: string, props: Value, want: string) -> Result[bool, s
     Ok(true)
 }
 
-// One step written as WCL properties, run through the guest's config-weave.
-fn run_wcl(m: Machine, tag: string, mode: string, resource: string, props: string) -> Result[List[string], string] {
-    let dir = fs::temp_dir()?
-    let pb = path::join(dir, "playbook.wcl")
-    fs::write(pb,
-        "playbook \"ad-accounts\" {{\n  description = \"scenario step\"\n  version = \"0.0.0\"\n" +
-        "  play \"t\" {{\n    description = \"scenario step\"\n" +
-        "    step \"step\" {{\n      description = \"" + tag + "\"\n      resource = \"" + resource + "\"\n" +
-        "      properties {{ " + props + " }}\n    }}\n  }}\n}}\n")?
-    let guest = "C:/weave/sym/" + tag
-    m.copy_in(path::absolutize("pkgs/windows_account")?, guest + "/pkgs/windows_account")?
-    m.copy_in(pb, guest + "/playbook.wcl")?
-    fs::delete_dir(dir)?
-    let r = m.exec("C:/weave/config-weave.exe", [mode, guest, "t", "--json", "--continue-on-error"])?
-    let report = json::parse(r.stdout.trim())?
-    if let Some(steps) = report.get("steps") {
-        if let Some(step) = steps.at(0) {
-            return Ok([str_of(step, "status"), str_of(step, "message")])
-        }
-    }
-    Err(tag + ": no step in the report: " + r.stdout + r.stderr)
-}
-
-fn converge_wcl(m: Machine, tag: string, resource: string, props: string) -> Result[bool, string] {
-    let want = ["not_configured", "configured", "already_configured"]
-    let modes = ["check", "apply", "apply"]
-    for i in 0..3 {
-        let r = run_wcl(m, tag + "-{i}", modes[i], resource, props)?
-        if r[0] != want[i] { return Err(tag + ": expected " + want[i] + " on run {i}, got " + r[0] + " (" + r[1] + ")") }
-    }
-    Ok(true)
-}
-
 // Whether `pw` is the password of ACCT\<user>, by binding to the directory
 // as that user.
 fn password_ok(m: Machine, user: string, pw: string) -> Result[bool, string] {
@@ -110,8 +67,7 @@ fn settle(m: Machine) -> Result[bool, string] {
 fn run(lab: Lab) -> Result[bool, string] {
     let dc = lab.machine("dc")?
     settle(dc)?
-    // The first resource call stages config-weave in the guest, which
-    // run_wcl relies on; ad_user guarding on the missing module is that call.
+    // ad_user guards on the missing ActiveDirectory module before promotion.
     let pre = dc.check_resource("windows_account.ad_user", Value::Map(#{ "name": s("weave-ad1") }))?
     if pre.status != "error" { return Err("ad_user before promotion: expected the module guard error, got " + pre.status) }
 
@@ -153,8 +109,7 @@ fn run(lab: Lab) -> Result[bool, string] {
     let grp = Value::Map(#{ "name": s("weave-grp"), "ou_path": s(staff), "server": s("acct.test") })
     converge(dc, "windows_account.ad_group", grp)?
     // Global -> DomainLocal has no direct conversion; it steps via Universal.
-    converge_wcl(dc, "grp-domainlocal", "windows_account.ad_group",
-        "name = \"weave-grp\" scope = :domainlocal ou_path = \"" + staff + "\"")?
+    converge(dc, "windows_account.ad_group", Value::Map(#{ "name": s("weave-grp"), "scope": s("domainlocal"), "ou_path": s(staff) }))?
     let scope = ps(dc, "[string](Get-ADGroup weave-grp).GroupScope")?
     if scope != "DomainLocal" { return Err("weave-grp scope is " + scope) }
     lab.log("weave-grp moved from Global to DomainLocal")
@@ -165,17 +120,14 @@ fn run(lab: Lab) -> Result[bool, string] {
     // Domain Users is every user's primary group: a member, though not in
     // the group's 'member' attribute.
     expect(dc, "windows_account.ad_group_member", Value::Map(#{ "group": s("Domain Users"), "member": s("weave-ad1") }), "already_configured")?
-    let prim = run_wcl(dc, "primary-absent", "check", "windows_account.ad_group_member",
-        "group = \"Domain Users\" member = \"weave-ad1\" ensure = :absent")?
-    if prim[0] != "error" { return Err("removing a primary-group membership: expected an error, got " + prim[0]) }
-    converge_wcl(dc, "member-absent", "windows_account.ad_group_member",
-        "group = \"weave-grp\" member = \"weave-ad1\" ensure = :absent")?
+    expect(dc, "windows_account.ad_group_member", Value::Map(#{ "group": s("Domain Users"), "member": s("weave-ad1"), "ensure": s("absent") }), "error")?
+    converge(dc, "windows_account.ad_group_member", Value::Map(#{ "group": s("weave-grp"), "member": s("weave-ad1"), "ensure": s("absent") }))?
     let members = ps(dc, "(@(Get-ADGroupMember weave-grp | ForEach-Object {{ $_.SamAccountName }}) | Sort-Object) -join ','")?
     if members != "weave-ad2" { return Err("weave-grp members: " + members) }
 
     // --- removal ---------------------------------------------------------
-    converge_wcl(dc, "group-absent", "windows_account.ad_group", "name = \"weave-grp\" ensure = :absent")?
-    converge_wcl(dc, "user-absent", "windows_account.ad_user", "name = \"weave-ad2\" ensure = :absent")?
+    converge(dc, "windows_account.ad_group", Value::Map(#{ "name": s("weave-grp"), "ensure": s("absent") }))?
+    converge(dc, "windows_account.ad_user", Value::Map(#{ "name": s("weave-ad2"), "ensure": s("absent") }))?
     let gone = ps(dc, "$g = Get-ADGroup -Filter \"Name -eq 'weave-grp'\"; $u = Get-ADUser -Filter \"Name -eq 'weave-ad2'\"; [string]([bool]$g) + [string]([bool]$u)")?
     if gone != "FalseFalse" { return Err("weave-grp or weave-ad2 survived removal: " + gone) }
     lab.log("ad_user, ad_group and ad_group_member converged, reconciled and removed")

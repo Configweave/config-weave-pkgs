@@ -309,10 +309,10 @@ package "windows_network" {
   // A second adapter, on a segment whose DHCP leases it a known address:
   // static_ip must not mistake that lease for the static address, and
   // dns_servers must not mistake DHCP-assigned servers for static ones.
-  // A scenario, because a test instance has one adapter. It drives only
-  // :present and lists, which scenario properties can carry.
+  // A scenario, because a test instance has one adapter. It ends with
+  // static_ip's :absent handing the second adapter back to DHCP.
   scenario "second_adapter" {
-    description = "static_ip and dns_servers converge on a second adapter, telling DHCP-assigned state from static"
+    description = "static_ip and dns_servers converge on a second adapter, telling DHCP-assigned state from static, and :absent restores DHCP"
     lab = "tests/net-lab"
     script = "tests/second_adapter.ws"
   }

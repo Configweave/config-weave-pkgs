@@ -1,11 +1,11 @@
 // Scenario driver for windows_network: static_ip and dns_servers on a second
 // adapter whose segment hands out a DHCP lease (and, on the management
 // adapter, DHCP-assigned DNS servers). Both resources used to read that
-// DHCP state as their own converged static state.
+// DHCP state as their own converged static state. Last, static_ip's
+// ensure = :absent hands the adapter back to DHCP.
 //
-// Scenario properties reach the engine as strings, so only symbol defaults
-// (static_ip's :present) are driven here; the :absent paths are covered by
-// the package's static_ip tests.
+// Symbol params are passed as plain strings: testlab renders a top-level
+// string as a symbol when the param is declared `type = "symbol"`.
 
 use testlab
 use value
@@ -88,5 +88,18 @@ fn run(lab: Lab) -> Result[bool, string] {
     }))?
     let left = ps(m, ns_ps)?
     if left != "|" { return Err("static DNS servers left on Ethernet 2: '" + left + "'") }
+
+    // --- static_ip :absent: the address goes and DHCP comes back -------------
+    lab.log("removing the static " + lease + " from Ethernet 2")
+    converge(m, "windows_network.static_ip", Value::Map(#{
+        "interface": s("Ethernet 2"),
+        "ip": s(lease),
+        "prefix_length": Value::Int(24),
+        "ensure": s("absent")
+    }))?
+    let back = ps(m, "$d = [string](Get-NetIPInterface -InterfaceAlias 'Ethernet 2' -AddressFamily IPv4).Dhcp; " +
+        "$man = @(Get-NetIPAddress -InterfaceAlias 'Ethernet 2' -AddressFamily IPv4 -PrefixOrigin Manual -ErrorAction SilentlyContinue).Count; " +
+        "$d + '/' + $man")?
+    if back != "Enabled/0" { return Err("Ethernet 2 after static_ip :absent is DHCP/manual-count " + back + ", wanted Enabled/0") }
     Ok(true)
 }
