@@ -252,7 +252,7 @@ fn install_archive(params: Value, how: string) -> Result[ApplyResult, string] {
     }
     let link = common::param_str(params, "symlink", "")
     if link != "" {
-        if fs::exists(link) || fs::read_link(link).is_ok() { fs::delete(link)? }
+        if fs::lexists(link) { fs::delete(link)? }
         let parent = path::parent(link)
         if parent != "" { fs::mkdir(parent)? }
         fs::symlink(binary, link)?
