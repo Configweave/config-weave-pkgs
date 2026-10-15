@@ -80,7 +80,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     common::require_name(name)?
     let p = script_path(name)
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         if any_links(name)? { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
@@ -110,7 +110,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // script: update-rc.d, chkconfig and the `stop` verb need it.
         if fs::is_file(p) && running(name)? { script(name, "stop")? }
         remove_links(name)?
-        if fs::exists(p) || fs::read_link(p).is_ok() { fs::delete(p)? }
+        if fs::lexists(p) { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
     let body = common::param_str(params, "script", "")
