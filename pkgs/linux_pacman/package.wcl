@@ -1,10 +1,11 @@
 package "linux_pacman" {
-  description = "Manage packages on pacman/Arch systems. pacman has no lock wait, so every pacman call first waits up to five minutes for /var/lib/pacman/db.lck to go; steps of different resource types can still run at the same time, so order them with requires"
+  description = "Manage packages on pacman/Arch systems. pacman has no lock wait, so every pacman call first waits up to five minutes for /var/lib/pacman/db.lck to go. package, cache_updated, aur_package, aur_cache_updated and key share the lock group \"pacman-db\", and repository and hold, which both rewrite /etc/pacman.conf, share \"pacman-conf\", so steps in one group never run at the same time. The locks do not order steps: put a repository and its key before cache_updated, and cache_updated before package, with requires"
 
   resource "package" {
     description = "Ensure a pacman package, something an installed package provides, or a package group is installed, or that it is not. Installs with pacman -S --needed and no -y: the sync databases must already be synced, which is what cache_updated (or a pacman -Sy of your own) is for. A name in IgnorePkg (linux_pacman.hold) is not upgraded"
     script = "resources/package.ws"
     concurrency = "exclusive"
+    lock = "pacman-db"
     param "name" { description = "A package name (tree), a name an installed package provides (sh, satisfied by bash), or a group (base-devel). A group is present when every member the sync databases list is installed. Must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -20,6 +21,7 @@ package "linux_pacman" {
     description = "Run pacman -Sy when the last sync this resource made is older than max_age, or when /etc/pacman.conf or /etc/pacman.d (outside the gnupg keyring) changed since. The sync time is the mtime of /var/lib/config-weave/pacman-cache-updated"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
+    lock = "pacman-db"
     param "max_age" {
       description = "Sync when the last sync is older than this span"
       type = "duration"
@@ -34,6 +36,7 @@ package "linux_pacman" {
     description = "Run the AUR helper's -Sy, which syncs the pacman databases, as the build user when the last sync this resource made is older than max_age. AUR metadata itself is never cached: yay and paru query the AUR live. Needs the helper on the user's PATH and passwordless sudo for that user, since the helper calls sudo pacman"
     script = "resources/aur_cache_updated.ws"
     concurrency = "exclusive"
+    lock = "pacman-db"
     param "max_age" {
       description = "Sync when the last sync is older than this span"
       type = "duration"
@@ -55,6 +58,7 @@ package "linux_pacman" {
     description = "Ensure an AUR package is installed through yay or paru, or is absent. Checked with pacman, so a name an installed package provides counts. Removal is plain pacman -R as root and needs neither user nor helper"
     script = "resources/aur_package.ws"
     concurrency = "exclusive"
+    lock = "pacman-db"
     param "name" { description = "AUR package name; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -80,6 +84,7 @@ package "linux_pacman" {
     description = "Ensure a [name] repository section in /etc/pacman.conf holds exactly the given SigLevel and Server lines, or is absent. A new section is appended, so it is searched after the repositories already there; an existing one is rewritten in place and keeps its position. A change makes the next cache_updated sync"
     script = "resources/repository.ws"
     concurrency = "exclusive"
+    lock = "pacman-conf"
     param "name" { description = "Repository name, the section header: letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-', and not options" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -97,6 +102,7 @@ package "linux_pacman" {
     description = "Ensure a key is in pacman's keyring and locally signed (pacman-key --add or --recv-keys, then --lsign-key), so packages it signed are trusted, or that it is deleted (pacman-key --delete). Needs an initialised keyring (pacman-key --init)"
     script = "resources/key.ws"
     concurrency = "exclusive"
+    lock = "pacman-db"
     param "fingerprint" { description = "The key's full fingerprint (40 hex digits; spaces are ignored). The key is matched by fingerprint only" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -114,6 +120,7 @@ package "linux_pacman" {
     description = "Ensure a package name is in, or not in, the IgnorePkg entries of /etc/pacman.conf's [options] section, so pacman -Syu does not upgrade it. Commented-out lines and IgnorePkg in included files are not read"
     script = "resources/hold.ws"
     concurrency = "exclusive"
+    lock = "pacman-conf"
     param "name" { description = "Package name (or IgnorePkg glob), matched exactly against the entries; must not start with '-' or contain whitespace" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present (held) or :absent (not held)"
