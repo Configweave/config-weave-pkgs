@@ -109,9 +109,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     }
     let d = dir?
     let p = path::join(d, "authorized_keys")
-    // the owner is the user, with the group left as the user's login group
-    // (`user:`), which need not be named after the user
-    let uid = common::user_uid(user)?
+    // the owner is the user, with the group the user's login group, which
+    // need not be named after the user
+    let ids = common::user_uid(user)? + ":" + common::user_gid(user)?
     if !fs::is_dir(d) {
         fs::mkdir(d)?
         common::run("securing " + d, "chmod 700 -- " + common::q(d))?
@@ -119,6 +119,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let text = read_keys(p)?
     let next = rewrite(text, identity(key), key)
     if next != text || !fs::is_file(p) { common::write_atomic(p, next)? }
-    common::run("securing " + d, "chmod 700 -- " + common::q(d) + " && chmod 600 -- " + common::q(p) + " && chown -- " + common::q(user + ":") + " " + common::q(d) + " " + common::q(p))?
+    common::run("securing " + d, "chmod 700 -- " + common::q(d) + " && chmod 600 -- " + common::q(p))?
+    common::chown_ids(d, ids)?
+    common::chown_ids(p, ids)?
     Ok(ApplyResult::Success)
 }

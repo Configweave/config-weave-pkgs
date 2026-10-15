@@ -2,9 +2,10 @@ package "linux_apt" {
   description = "Manage packages on apt/dpkg systems"
 
   resource "package" {
-    description = "Ensure an apt package is installed, at an exact version if one is given, or absent. Installed means dpkg reports it installed: a removed package whose conffiles remain (the \"rc\" state) counts as absent. A package held with apt-mark is an error to change, version or removal alike; release the hold first with linux_apt.hold. apt-get waits up to five minutes for the dpkg lock, but different linux_apt resource types can still run at the same time, so order package, hold, debconf_selection and cache_updated steps with requires"
+    description = "Ensure an apt package is installed, at an exact version if one is given, or absent. Installed means dpkg reports it installed: a removed package whose conffiles remain (the \"rc\" state) counts as absent. A package held with apt-mark is an error to change, version or removal alike; release the hold first with linux_apt.hold. apt-get waits up to five minutes for the dpkg lock, and package, cache_updated, hold and debconf_selection share the lock group \"dpkg\", so no two of their steps run at the same time"
     script = "resources/package.ws"
     concurrency = "exclusive"
+    lock = "dpkg"
     param "name" { description = "Package name, optionally with :arch; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -22,6 +23,7 @@ package "linux_apt" {
     description = "Run apt-get update when the last refresh this resource made is older than max_age, or when anything under /etc/apt/sources.list, sources.list.d, keyrings or trusted.gpg.d changed since then, so a repository or key added after the last refresh is indexed on the next run. The refresh time is the mtime of /var/lib/config-weave/apt-cache-updated; a refresh run outside config-weave does not count"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
+    lock = "dpkg"
     param "max_age" {
       description = "Refresh when the last update is older than this span"
       type = "duration"
@@ -74,6 +76,7 @@ package "linux_apt" {
     description = "Ensure an apt-mark hold on a package is present or absent"
     script = "resources/hold.ws"
     concurrency = "exclusive"
+    lock = "dpkg"
     param "name" { description = "Package name" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present (held) or :absent (not held)"
@@ -89,6 +92,7 @@ package "linux_apt" {
     description = "Pre-seed a debconf answer, or remove it. Present compares both the answer and its type with what debconf holds. Every value reaches debconf through the environment, so a password answer never appears on a command line or in an error"
     script = "resources/debconf_selection.ws"
     concurrency = "exclusive"
+    lock = "dpkg"
     param "package" { description = "Owning package name" type = "string" required = true }
     param "question" { description = "debconf question name" type = "string" required = true }
     param "ensure" {
@@ -392,10 +396,9 @@ SETUP
     }
   }
 
-  // The apt steps are chained with `requires`: `exclusive` only serializes
-  // steps of the SAME resource type, but package/hold/debconf all contend
-  // for the one dpkg lock, so mixing them concurrently fails.
-  // Playbooks mixing these resources need the same ordering.
+  // No step requires another: the "dpkg" lock group keeps package, hold and
+  // debconf_selection steps from running at once (dpkg_lock_group below
+  // provokes the race it prevents).
   test "apt_state_changes" {
     description = "Removal, holds and debconf selections converge offline on Debian"
     image = "debian:12"
@@ -412,42 +415,36 @@ SETUP
     step "hold" {
       description = "Hold base-files at its current version"
       resource = "hold"
-      requires = ["remove"]
       properties { name = "base-files" }
     }
 
     step "unhold" {
       description = "Release the hold setup placed on gzip"
       resource = "hold"
-      requires = ["hold"]
       properties { name = "gzip" ensure = :absent }
     }
 
     step "debconf" {
       description = "Pre-seed a debconf answer"
       resource = "debconf_selection"
-      requires = ["unhold"]
       properties { package = "cw-test" question = "cw-test/enable" vtype = :boolean value = "true" }
     }
 
     step "debconf_type" {
       description = "An answer with the right value but the wrong type is drift"
       resource = "debconf_selection"
-      requires = ["unhold"]
       properties { package = "cw-test" question = "cw-test/typed" vtype = :boolean value = "true" }
     }
 
     step "debconf_password" {
       description = "A password answer with spaces and quotes reaches debconf intact"
       resource = "debconf_selection"
-      requires = ["unhold"]
       properties { package = "cw-test" question = "cw-test/secret" vtype = :password value = "it's a s3cret; $HOME" }
     }
 
     step "debconf_absent" {
       description = "Remove a seeded question"
       resource = "debconf_selection"
-      requires = ["unhold"]
       properties { package = "cw-test" question = "cw-test/gone" ensure = :absent }
     }
 
@@ -456,6 +453,121 @@ SETUP
       resource = "hold"
       expect = "error"
       properties { name = "--version" }
+    }
+  }
+
+  // The race the "dpkg" lock group prevents. apt-get waits for the dpkg lock
+  // but apt-mark does not, so without the group an unhold step (they run one
+  // after another, being one resource type) overlaps the tzdata removal and
+  // apt-mark fails on the lock. The guest runs as many workers as it has
+  // CPUs, one in a default container, so the steps only overlap under
+  // `config-weave --jobs 4 test . linux_apt:dpkg_lock_group`.
+  test "dpkg_lock_group" {
+    description = "package and hold steps with no requires between them do not fight over the dpkg lock"
+    image = "debian:12"
+    setup = "apt-mark hold sed grep tar hostname login gzip findutils diffutils adduser bsdutils debianutils mawk mount passwd e2fsprogs logsave >/dev/null"
+    verify = "tests/dpkg_lock_verify.ws"
+
+    step "remove" {
+      description = "Remove the preinstalled tzdata package (offline)"
+      resource = "package"
+      properties { name = "tzdata" ensure = :absent }
+    }
+
+    step "unhold_sed" {
+      description = "Release the hold on sed while tzdata is being removed"
+      resource = "hold"
+      properties { name = "sed" ensure = :absent }
+    }
+
+    step "unhold_grep" {
+      description = "Release the hold on grep while tzdata is being removed"
+      resource = "hold"
+      properties { name = "grep" ensure = :absent }
+    }
+
+    step "unhold_tar" {
+      description = "Release the hold on tar while tzdata is being removed"
+      resource = "hold"
+      properties { name = "tar" ensure = :absent }
+    }
+
+    step "unhold_hostname" {
+      description = "Release the hold on hostname while tzdata is being removed"
+      resource = "hold"
+      properties { name = "hostname" ensure = :absent }
+    }
+
+    step "unhold_login" {
+      description = "Release the hold on login while tzdata is being removed"
+      resource = "hold"
+      properties { name = "login" ensure = :absent }
+    }
+
+    step "unhold_gzip" {
+      description = "Release the hold on gzip while tzdata is being removed"
+      resource = "hold"
+      properties { name = "gzip" ensure = :absent }
+    }
+
+    step "unhold_findutils" {
+      description = "Release the hold on findutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "findutils" ensure = :absent }
+    }
+
+    step "unhold_diffutils" {
+      description = "Release the hold on diffutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "diffutils" ensure = :absent }
+    }
+
+    step "unhold_adduser" {
+      description = "Release the hold on adduser while tzdata is being removed"
+      resource = "hold"
+      properties { name = "adduser" ensure = :absent }
+    }
+
+    step "unhold_bsdutils" {
+      description = "Release the hold on bsdutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "bsdutils" ensure = :absent }
+    }
+
+    step "unhold_debianutils" {
+      description = "Release the hold on debianutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "debianutils" ensure = :absent }
+    }
+
+    step "unhold_mawk" {
+      description = "Release the hold on mawk while tzdata is being removed"
+      resource = "hold"
+      properties { name = "mawk" ensure = :absent }
+    }
+
+    step "unhold_mount" {
+      description = "Release the hold on mount while tzdata is being removed"
+      resource = "hold"
+      properties { name = "mount" ensure = :absent }
+    }
+
+    step "unhold_passwd" {
+      description = "Release the hold on passwd while tzdata is being removed"
+      resource = "hold"
+      properties { name = "passwd" ensure = :absent }
+    }
+
+    step "unhold_e2fsprogs" {
+      description = "Release the hold on e2fsprogs while tzdata is being removed"
+      resource = "hold"
+      properties { name = "e2fsprogs" ensure = :absent }
+    }
+
+    step "unhold_logsave" {
+      description = "Release the hold on logsave while tzdata is being removed"
+      resource = "hold"
+      properties { name = "logsave" ensure = :absent }
     }
   }
 }

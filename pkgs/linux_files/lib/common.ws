@@ -145,10 +145,6 @@ fn apply_attrs(p: string, a: Attrs) -> Result[unit, string] {
     Ok(())
 }
 
-// Whether anything is at `p`, a dangling symlink included (fs::exists
-// follows links and reports a dangling one as missing).
-fn lexists(p: string) -> bool { fs::read_link(p).is_ok() || fs::exists(p) }
-
 // File content equals `want`. A file that cannot be read as UTF-8 text
 // cannot equal a string param, so it is drift rather than an error.
 fn content_is(p: string, want: string) -> bool {

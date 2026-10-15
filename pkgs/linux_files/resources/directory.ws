@@ -9,7 +9,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let a = common::attrs(params)?
     if !common::want_present(params)? {
         common::refuse_critical("path", p)?
-        if common::lexists(p) { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !fs::is_dir(p) { return Ok(CheckResult::NotConfigured) }
@@ -25,7 +25,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let a = common::attrs(params)?
     if !common::want_present(params)? {
         common::refuse_critical("path", p)?
-        if !common::lexists(p) { return Ok(ApplyResult::Success) }
+        if !fs::lexists(p) { return Ok(ApplyResult::Success) }
         if fs::read_link(p).is_ok() { return Err("path is a symlink; use linux_files.symlink with ensure = :absent") }
         if !fs::is_dir(p) { return Err("path is not a directory; use linux_files.file with ensure = :absent") }
         log::info("deleting directory " + p)

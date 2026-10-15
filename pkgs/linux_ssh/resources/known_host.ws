@@ -161,7 +161,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // the agent runs as root: hand what it created back to the home's
         // owner, as ssh itself would have created it
         let owner = home_owner(dir)?
-        common::run("securing " + dir, "chmod 700 -- " + common::q(dir) + " && chown -- " + common::q(owner) + " " + common::q(dir) + " " + common::q(p))?
+        common::run("securing " + dir, "chmod 700 -- " + common::q(dir))?
+        common::chown_ids(dir, owner)?
+        common::chown_ids(p, owner)?
     }
     Ok(ApplyResult::Success)
 }

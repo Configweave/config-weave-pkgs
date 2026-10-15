@@ -81,7 +81,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let unit = unit_name(name)
     let p = unit_path(name)
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         if active(unit)? { return Ok(CheckResult::NotConfigured) }
         if is_on(enablement(unit)?) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
@@ -114,7 +114,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         if active(unit)? { systemctl("stop", unit)? }
         let state = enablement(unit)?
         if state == "enabled-runtime" { systemctl("disable --runtime", unit)? } else if state == "enabled" { systemctl("disable", unit)? }
-        if fs::exists(p) || fs::read_link(p).is_ok() {
+        if fs::lexists(p) {
             fs::delete(p)?
             common::daemon_reload()?
         }

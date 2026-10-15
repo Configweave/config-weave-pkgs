@@ -54,9 +54,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         common::run("timedatectl set-timezone", "timedatectl set-timezone -- " + common::q(name))?
     } else {
         log::info("linking /etc/localtime to " + zone_file(name))
-        // read_link too: fs::exists follows the link, so a dangling
+        // lexists, not exists: exists follows the link, so a dangling
         // /etc/localtime would survive and fs::symlink would fail
-        if fs::read_link("/etc/localtime").is_ok() || fs::exists("/etc/localtime") { fs::delete("/etc/localtime")? }
+        if fs::lexists("/etc/localtime") { fs::delete("/etc/localtime")? }
         fs::symlink(zone_file(name), "/etc/localtime")?
     }
     if fs::is_file("/etc/timezone") && !timezone_file_ok(name) {

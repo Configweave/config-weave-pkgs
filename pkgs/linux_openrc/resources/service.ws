@@ -63,7 +63,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     require_openrc()?
     let p = script_path(name)
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         if !runlevel_links(name)?.is_empty() { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
@@ -103,7 +103,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         }
         // Out of every runlevel, not only `runlevel`.
         for l in runlevel_links(name)? { fs::delete(l)? }
-        if fs::exists(p) || fs::read_link(p).is_ok() { fs::delete(p)? }
+        if fs::lexists(p) { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
     let body = common::param_str(params, "script", "")

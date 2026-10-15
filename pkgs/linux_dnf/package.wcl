@@ -1,10 +1,11 @@
 package "linux_dnf" {
-  description = "Manage packages on dnf/yum systems"
+  description = "Manage packages on dnf/yum systems. package, cache_updated, gpg_key and hold all run dnf or rpm against the rpm database, so they share the lock group \"rpmdb\" and their steps never run at the same time. The lock does not order steps: put a repository and its key before cache_updated, and cache_updated before package, with requires"
 
   resource "package" {
     description = "Ensure an rpm package is installed, at a given version if one is set, or absent, through whichever of dnf5, dnf, microdnf or yum the host has. name is resolved the way dnf install resolves it, against what installed packages provide, so a capability or a file path works too. A versionlock (linux_dnf.hold) makes dnf refuse to change the version; release it first"
     script = "resources/package.ws"
     concurrency = "exclusive"
+    lock = "rpmdb"
     param "name" { description = "Package name, capability (python3dist(requests)) or file path (/usr/bin/foo); must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -22,6 +23,7 @@ package "linux_dnf" {
     description = "Refresh the repository metadata (makecache --refresh with dnf5, dnf or microdnf; clean expire-cache then makecache with yum) when the last refresh this resource made with that front-end is older than max_age, or when /etc/yum.repos.d changed since. The refresh is forced, so it happens even while the cached metadata is younger than the repositories' metadata_expire. The refresh time is the mtime of /var/lib/config-weave/dnf-cache-updated-<front-end>"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
+    lock = "rpmdb"
     param "max_age" {
       description = "Refresh when the last update is older than this span"
       type = "duration"
@@ -49,6 +51,7 @@ package "linux_dnf" {
     description = "Ensure an RPM signing key is imported into the rpm database, with its armored copy at /etc/pki/rpm-gpg/<name>.asc, or that both are gone. Present checks the rpm database as well as the file, so a key removed with rpm -e is imported again. Key ids are read with rpm itself (a throwaway rpm database), so no gpg is needed"
     script = "resources/gpg_key.ws"
     concurrency = "exclusive"
+    lock = "rpmdb"
     param "name" { description = "Key file basename under /etc/pki/rpm-gpg; .asc is appended. Letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -65,6 +68,7 @@ package "linux_dnf" {
     description = "Ensure a versionlock on a package is present or absent: present locks the installed version, so dnf neither upgrades nor re-versions it. Needs the versionlock plugin: dnf5-plugins (dnf5), python3-dnf-plugin-versionlock (dnf) or yum-plugin-versionlock (yum); microdnf has none. A missing plugin is an error"
     script = "resources/hold.ws"
     concurrency = "exclusive"
+    lock = "rpmdb"
     param "name" { description = "Package name, matched exactly against the lock list; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present (held) or :absent (not held)"

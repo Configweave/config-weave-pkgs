@@ -995,8 +995,12 @@ The three rpm and deb managers share a shape: `package`, `cache_updated`,
   `gpg_auto_import_keys` opts in to `--gpg-auto-import-keys`.
 
 apt waits up to five minutes for the dpkg lock and zypper for the zypp
-lock, but steps of different resource types in one package can still run
-at the same time, so order them with `requires`.
+lock. Resources that take the manager's lock also share a lock group, so
+their steps never run at the same time, whatever their resource type:
+apt's `package`, `cache_updated`, `hold` and `debconf_selection` (`"dpkg"`);
+dnf's `package`, `cache_updated`, `gpg_key` and `hold` (`"rpmdb"`); every
+zypper resource (`"zypp"`).
+
 ### `linux_apk`
 
 - `package` matches `name` exactly against `/etc/apk/world`, so a pin or
@@ -1012,7 +1016,8 @@ at the same time, so order them with `requires`.
 - `signing_key` writes `/etc/apk/keys/<name>.rsa.pub` from `content`, or from
   a `url` checked against `sha256`.
 
-Every apk call waits up to five minutes for apk's database lock.
+Every apk call waits up to five minutes for apk's database lock, and
+`package` and `cache_updated` share the lock group `"apk-db"`.
 
 ### `linux_pacman`
 
@@ -1034,7 +1039,10 @@ Every apk call waits up to five minutes for apk's database lock.
 - `hold` manages `IgnorePkg` entries in `[options]`.
 
 pacman has no lock wait, so every pacman call first waits up to five minutes
-for `db.lck` to go.
+for `db.lck` to go. `package`, `cache_updated`, `aur_package`,
+`aur_cache_updated` and `key` share the lock group `"pacman-db"`;
+`repository` and `hold`, which both rewrite `pacman.conf`, share
+`"pacman-conf"`.
 
 ### `linux_flatpak`
 
@@ -1052,9 +1060,12 @@ default) or `:user`, which is root's, since config-weave runs as root.
   runtime in the installation. This is not a metadata refresh: running apps
   keep their old version until restarted.
 
+All three share the lock group `"flatpak"`, since flatpak takes one lock per
+installation.
+
 ### Ordering
 
-apk and pacman wait for their own locks, but steps of different resource
-types in one package can still run at the same time. Order them with
-`requires`, for example a repository and its key before `cache_updated`, and
-`cache_updated` before `package`.
+A lock group stops two steps that contend for the manager's lock running at
+once, but it does not order them. Order them with `requires`, for example a
+repository and its key before `cache_updated`, and `cache_updated` before
+`package`.

@@ -8,7 +8,7 @@ use common
 fn gather(params: Value) -> Result[Value, string] {
     let p = common::param_str(params, "path", "")
     if p == "" { return Err("missing 'path' parameter") }
-    if !common::lexists(p) {
+    if !fs::lexists(p) {
         return Ok(Value::Map(#{
             "path": Value::String(p),
             "exists": Value::Bool(false)

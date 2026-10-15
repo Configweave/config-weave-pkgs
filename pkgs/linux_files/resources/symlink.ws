@@ -17,7 +17,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if !common::want_present(params)? {
         // lexists sees a dangling symlink too; it also catches hard links,
         // which are indistinguishable from plain files.
-        if common::lexists(p) { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     let target = common::param_str(params, "target", "")
@@ -41,7 +41,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::want_present(params)? {
         // deletes the link itself, never its target (dropping a hard link
         // only removes one name/refcount)
-        if common::lexists(p) { fs::delete(p)? }
+        if fs::lexists(p) { fs::delete(p)? }
         return Ok(ApplyResult::Success)
     }
     let target = common::param_str(params, "target", "")
@@ -49,12 +49,12 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if common::param_bool(params, "hard", false) {
         if !fs::is_file(target) { return Err("hard link target does not exist: " + target) }
         fs::mkdir(path::parent(p))?
-        if common::lexists(p) { fs::delete(p)? }
+        if fs::lexists(p) { fs::delete(p)? }
         common::run("ln " + p, "ln -- " + common::q(target) + " " + common::q(p))?
         return Ok(ApplyResult::Success)
     }
     fs::mkdir(path::parent(p))?
-    if common::lexists(p) {
+    if fs::lexists(p) {
         if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("a directory is in the way at " + p) }
         fs::delete(p)?
     }

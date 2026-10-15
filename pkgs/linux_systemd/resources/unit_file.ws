@@ -43,7 +43,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     validate(name)?
     let p = unit_path(name)
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { Ok(CheckResult::NotConfigured) } else { Ok(CheckResult::AlreadyConfigured) }
+        if fs::lexists(p) { Ok(CheckResult::NotConfigured) } else { Ok(CheckResult::AlreadyConfigured) }
     } else {
         if !common::has_content(p, content(params)?) { return Ok(CheckResult::NotConfigured) }
         if reloading(params)? && common::needs_reload(owning_unit(name))? { return Ok(CheckResult::NotConfigured) }
@@ -56,7 +56,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     validate(name)?
     let p = unit_path(name)
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { fs::delete(p)? }
+        if fs::lexists(p) { fs::delete(p)? }
         // An emptied drop-in directory goes too.
         if name.contains("/") {
             let dir = path::parent(p)

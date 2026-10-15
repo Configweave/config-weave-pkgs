@@ -80,6 +80,19 @@ fn user_home(user: string) -> Result[string, string] { passwd_field(user, 5) }
 
 fn user_uid(user: string) -> Result[string, string] { passwd_field(user, 2) }
 
+fn user_gid(user: string) -> Result[string, string] { passwd_field(user, 3) }
+
+// Hand `p` to `ids` ("uid:gid", as stat prints it). fs::chown does not
+// follow a final symlink, so a link planted in a user's tree is never a
+// way to hand them some other file.
+fn chown_ids(p: string, ids: string) -> Result[unit, string] {
+    let f = ids.split(":")
+    let uid = f.get(0).unwrap_or("").parse_int()
+    let gid = f.get(1).unwrap_or("").parse_int()
+    if uid.is_none() || gid.is_none() { return Err("invalid owner '" + ids + "' for " + p) }
+    fs::chown(p, Value::Int(uid.unwrap_or(0)), Value::Int(gid.unwrap_or(0)))
+}
+
 // The user this process runs as, by passwd entry rather than $HOME (the
 // guest agent and many service managers run with HOME=/).
 fn current_user() -> Result[string, string] {
