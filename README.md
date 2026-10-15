@@ -855,8 +855,8 @@ resource that creates something takes `ensure = :absent`.
 - `database_cdc`, `cdc_table`: Change Data Capture at the database and table
   level.
 - `tcp`: the TCP/IP protocol and static port (registry on Windows,
-  `mssql-conf` on Linux), then an engine restart that brings SQL Server Agent
-  back if it was running.
+  `mssql-conf` on Linux), then an engine restart that brings SQL Server Agent,
+  and any other running service that depends on the engine, back.
 - `replication_distributor`, `replication_publisher`: a local distributor
   (retried until this server is registered as its publisher) and publishing
   databases.

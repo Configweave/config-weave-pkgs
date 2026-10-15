@@ -217,7 +217,7 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "tcp" {
-    description = "Configure the TCP/IP protocol and static port, clearing any dynamic port (registry on Windows, mssql-conf on Linux), then restart the engine. On Windows the restart is Restart-Service -Force, and SQL Server Agent, which that stops, is started again if it was running"
+    description = "Configure the TCP/IP protocol and static port, clearing any dynamic port (registry on Windows, mssql-conf on Linux), then restart the engine. On Windows the services that depend on the engine and are running (SQL Server Agent) are stopped first and started again after it, and each stop and start waits up to 300s"
     script = "resources/tcp.ws"
     concurrency = "global"
     param "instance" { description = "Instance whose TCP protocol to configure (Windows; Linux has one instance)" type = "string" default = "MSSQLSERVER" }
