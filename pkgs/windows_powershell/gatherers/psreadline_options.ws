@@ -30,9 +30,10 @@ fn gather(params: Value) -> Result[Value, string] {
     let edition = common::param_str(params, "edition", "auto")
     // Only the scalar properties: the colour properties are ConsoleColor
     // objects that do not survive a JSON round trip usefully. A PSReadLine
-    // that cannot be loaded is a fact (unavailable); any other failure is an
-    // error.
-    let script = "try {{ Import-Module PSReadLine -ErrorAction Stop }} catch {{ return }}\n$o = Get-PSReadLineOption\n$m = (Get-Module PSReadLine).Version.ToString()\n$out = [ordered]@{{ module_version = $m }}\nforeach ($p in $o.PSObject.Properties) {{ if ($p.Value -is [string] -or $p.Value -is [int] -or $p.Value -is [bool] -or $p.Value -is [enum]) {{ $out[$p.Name] = [string]$p.Value }} }}\n$out | ConvertTo-Json -Compress -Depth 3"
+    // that cannot be loaded is a fact (unavailable): an explicit `exit 0`
+    // with no output, since a script-level `return` after a caught error
+    // leaves the exit code to `$?`. Any other failure is an error.
+    let script = "try {{ Import-Module PSReadLine -ErrorAction Stop }} catch {{ exit 0 }}\n$o = Get-PSReadLineOption\n$m = (Get-Module PSReadLine).Version.ToString()\n$out = [ordered]@{{ module_version = $m }}\nforeach ($p in $o.PSObject.Properties) {{ if ($p.Value -is [string] -or $p.Value -is [int] -or $p.Value -is [bool] -or $p.Value -is [enum]) {{ $out[$p.Name] = [string]$p.Value }} }}\n$out | ConvertTo-Json -Compress -Depth 3"
     let text = common::query(edition, script)?.unwrap_or("")
     if text == "" { return Ok(unavailable()) }
     let options = json::parse(text)?
