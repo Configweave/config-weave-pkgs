@@ -4,6 +4,8 @@ package "windows_defender" {
   // Every resource needs Microsoft Defender Antivirus installed and its
   // WinDefend service running. When it is missing, or another antivirus
   // product has stopped it, check and apply fail with an error saying so.
+  // Just after boot, while the service is running but Defender does not
+  // answer yet, they wait up to two minutes for it.
   //
   // All three resources rewrite the machine-wide MpPreference store, so they
   // run as global singletons.

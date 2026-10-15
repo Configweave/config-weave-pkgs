@@ -2284,14 +2284,15 @@ package "windows_powershell" {
   }
 
   // Two debian groups rather than one: the :repo method puts pwsh on PATH,
-  // which the :tarball test's absent step must not see.
+  // which the :tarball test's absent step must not see. Setup leaves a
+  // dangling link where the symlink goes, which the install replaces.
   test "pwsh_installs_from_tarball" {
     description = "Installing PowerShell from the release tarball into its own root, and removing it, converge"
     image = "debian:12"
     group = "pwshtar"
     // Seeds an unmarked tarball-style root from an older release — a pwsh
     // that answers with its version — for the :absent step to remove.
-    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-7.4.6 && printf '#!/bin/sh\\necho 7.4.6\\n' > /opt/pwsh-7.4.6/pwsh && chmod +x /opt/pwsh-7.4.6/pwsh"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-7.4.6 && printf '#!/bin/sh\\necho 7.4.6\\n' > /opt/pwsh-7.4.6/pwsh && chmod +x /opt/pwsh-7.4.6/pwsh && ln -s /nonexistent/pwsh /usr/local/bin/pwsh-cwtest"
     verify = "tests/install_verify.ws"
 
     step "install" {

@@ -44,7 +44,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let want = want_sha(params)?
     let content = common::with_line_endings(params, common::param_str(params, "content", ""))?
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     not_a_dir(p)?
@@ -64,7 +64,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let want = want_sha(params)?
     let content = common::with_line_endings(params, common::param_str(params, "content", ""))?
     if !common::want_present(params)? {
-        if !fs::exists(p) && fs::read_link(p).is_err() { return Ok(ApplyResult::Success) }
+        if !fs::lexists(p) { return Ok(ApplyResult::Success) }
         if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("'" + p + "' is a directory; use windows_files.directory with ensure = :absent") }
         log::info("deleting " + p)
         fs::delete(p)?

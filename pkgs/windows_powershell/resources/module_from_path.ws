@@ -121,8 +121,9 @@ fn read_record(target: string) -> Value {
 fn rec(v: Value, key: string) -> string { v.get(key).unwrap_or(Value::String("")).as_string().unwrap_or("") }
 
 // Decodes UTF-16LE through JSON escapes, since scripts have no
-// code-point-to-char conversion. Windows PowerShell's New-ModuleManifest
-// writes UTF-16.
+// code-point-to-char conversion and the encoding module decodes only UTF-8
+// (as of config-weave v0.6.2-alpha). Windows PowerShell's
+// New-ModuleManifest writes UTF-16.
 fn hex4(n: int) -> string {
     let digits = "0123456789abcdef"
     let out = ""

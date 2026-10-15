@@ -46,12 +46,22 @@ fn failure(what: string, out: CmdOutput) -> string {
 // Defender has to be installed and its service running for any of the
 // MpPreference cmdlets to mean anything. A third-party antivirus product
 // stops WinDefend, and Server can have the feature removed entirely.
+//
+// Soon after boot WinDefend reports Running before its RPC endpoint answers,
+// and every MpPreference cmdlet fails with 0x800106ba (RPC server
+// unavailable), so the guard waits up to two minutes for Get-MpPreference to
+// answer. Any other error is raised at once.
 fn guard() -> string {
     "if (-not (Get-Command Get-MpPreference -ErrorAction SilentlyContinue)) {{ " +
     "throw 'Microsoft Defender Antivirus is not installed (no Defender PowerShell module); install the Windows-Defender feature' }}; " +
     "$wd = Get-Service -Name WinDefend -ErrorAction SilentlyContinue; " +
     "if ($null -eq $wd -or [string]$wd.Status -ne 'Running') {{ " +
-    "throw 'the Microsoft Defender Antivirus service (WinDefend) is not running; another antivirus product may have taken over' }}; "
+    "throw 'the Microsoft Defender Antivirus service (WinDefend) is not running; another antivirus product may have taken over' }}; " +
+    "$cwUntil = (Get-Date).AddSeconds(120); " +
+    "while ($true) {{ try {{ $null = Get-MpPreference; break }} catch {{ " +
+    "if ([string]$_.Exception.Message -notmatch '0x800106ba') {{ throw }}; " +
+    "if ((Get-Date) -gt $cwUntil) {{ throw ('Microsoft Defender Antivirus did not answer within 120s of its service running: ' + $_.Exception.Message) }}; " +
+    "Start-Sleep -Seconds 3 }} }}; "
 }
 
 // Run `script` after the guard. A failure is reported as its message alone,
