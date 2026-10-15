@@ -1,10 +1,11 @@
 package "linux_flatpak" {
-  description = "Manage Flatpak applications and remotes. Every command is scoped to one installation, :system (/var/lib/flatpak, the default) or :user (root's, since config-weave runs as root). flatpak subcommands share one lock per installation, and steps of different resource types can run at the same time, so order them with requires"
+  description = "Manage Flatpak applications and remotes. Every command is scoped to one installation, :system (/var/lib/flatpak, the default) or :user (root's, since config-weave runs as root). flatpak subcommands share one lock per installation, so package, remote and updated share the lock group \"flatpak\" and their steps never run at the same time. The lock does not order steps: put a remote before the packages installed from it with requires"
 
   resource "package" {
     description = "Ensure a Flatpak app or runtime is installed in an installation from a given remote, or is not installed. An app installed from another remote is reinstalled from this one (flatpak install --reinstall)"
     script = "resources/package.ws"
     concurrency = "exclusive"
+    lock = "flatpak"
     param "id" { description = "Application or runtime id (org.mozilla.firefox): letters, digits, '_', '-' and '.'. Every installed branch counts" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -37,6 +38,7 @@ package "linux_flatpak" {
     description = "Ensure a Flatpak remote is configured, enabled, at url and with the wanted GPG verification, or is absent. A disabled remote (Fedora ships flathub disabled) is drift and is re-enabled. Changes are made with remote-modify, so apps installed from it stay"
     script = "resources/remote.ws"
     concurrency = "exclusive"
+    lock = "flatpak"
     param "name" { description = "Remote name: letters, digits, '_', '-' and '.'" type = "string" required = true }
     param "url" { description = "Repository URL, or a .flatpakrepo descriptor URL (https://dl.flathub.org/repo/flathub.flatpakrepo); required when present. A repository URL is compared with the remote's (trailing slashes aside) and changed with remote-modify --url. A descriptor is only read when the remote is added: the remote stores the repository URL inside it, so checking it would mean downloading the descriptor on every run, and it is not compared" type = "string" default = "" }
     param "gpg_verify" { description = "Whether flatpak verifies the remote's GPG signatures. A remote added from a plain URL with verification on needs its key imported separately; a .flatpakrepo descriptor carries it" type = "bool" default = true }
@@ -65,6 +67,7 @@ package "linux_flatpak" {
     description = "Run flatpak update, which upgrades every installed app and runtime in the installation to its remote's latest commit, when the last update this resource made is older than max_age. Disruptive: running apps keep their old version until restarted, and an update can change app behaviour. The update time is the mtime of /var/lib/config-weave/flatpak-updated-<installation>"
     script = "resources/updated.ws"
     concurrency = "exclusive"
+    lock = "flatpak"
     param "installation" {
       description = "Which flatpak installation to update"
       type = "symbol"
