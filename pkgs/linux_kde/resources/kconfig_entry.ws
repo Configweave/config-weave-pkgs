@@ -3,7 +3,6 @@ use common
 use fs
 use json
 use path
-use shell
 
 fn hex_digits() -> string { "0123456789abcdef" }
 
@@ -239,7 +238,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let text = fs::read(e.path)
     if text.is_err() { return Ok(CheckResult::NotConfigured) }
     if changed(text.unwrap_or(""), e).is_some() { return Ok(CheckResult::NotConfigured) }
-    if e.present && fs::is_dir(e.home) && uid_of(common::owner(e.path)?) != uid_of(common::owner(e.home)?) {
+    if e.present && fs::is_dir(e.home) && uid_of(common::link_owner(e.path)?) != uid_of(common::owner(e.home)?) {
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
@@ -265,11 +264,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fs::write(e.path, next)?
     }
     if e.present || !existed {
-        if !existed || uid_of(common::owner(e.path)?) != uid_of(home_owner) { fresh.push(e.path) }
+        if !existed || uid_of(common::link_owner(e.path)?) != uid_of(home_owner) { fresh.push(e.path) }
     }
-    if !fresh.is_empty() {
-        let args = fresh.map(|p| common::q(p)).join(" ")
-        let out = common::output("handing " + e.path + " to the owner of " + e.home, "chown -- " + common::q(home_owner) + " " + args)?
-    }
+    for p in fresh { common::chown_ids(p, home_owner)? }
     Ok(ApplyResult::Success)
 }

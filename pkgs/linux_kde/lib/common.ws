@@ -1,5 +1,6 @@
 use value
 use env
+use fs
 use shell
 
 // Helpers shared by linux_kde's resources and gatherers. Imported with
@@ -51,4 +52,21 @@ fn on_path(cmd: string) -> bool {
 // "uid:gid" of a path, following symlinks.
 fn owner(p: string) -> Result[string, string] {
     output("reading the owner of " + p, "stat -L -c '%u:%g' -- " + q(p))
+}
+
+// "uid:gid" of a path itself: a symlink's own owner, not its target's,
+// which is what chown_ids changes.
+fn link_owner(p: string) -> Result[string, string] {
+    output("reading the owner of " + p, "stat -c '%u:%g' -- " + q(p))
+}
+
+// Hand `p` to `ids` ("uid:gid", as stat prints it). fs::chown does not
+// follow a final symlink, so a link planted in a user's tree is never a
+// way to hand them some other file.
+fn chown_ids(p: string, ids: string) -> Result[unit, string] {
+    let f = ids.split(":")
+    let uid = f.get(0).unwrap_or("").parse_int()
+    let gid = f.get(1).unwrap_or("").parse_int()
+    if uid.is_none() || gid.is_none() { return Err("invalid owner '" + ids + "' for " + p) }
+    fs::chown(p, Value::Int(uid.unwrap_or(0)), Value::Int(gid.unwrap_or(0)))
 }
