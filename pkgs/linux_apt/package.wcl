@@ -396,13 +396,9 @@ SETUP
     }
   }
 
-  // No step requires another: package, hold and debconf_selection all
-  // contend for the dpkg (and debconf) locks, and apt-mark and
-  // debconf-set-selections do not wait for them, so this test races unless
-  // the "dpkg" lock group serialises the steps. The guest runs as many
-  // workers as it has CPUs, one in a default container, so run it with
-  // `config-weave --jobs 4 test . linux_apt:apt_state_changes` to exercise
-  // the race.
+  // No step requires another: the "dpkg" lock group keeps package, hold and
+  // debconf_selection steps from running at once (dpkg_lock_group below
+  // provokes the race it prevents).
   test "apt_state_changes" {
     description = "Removal, holds and debconf selections converge offline on Debian"
     image = "debian:12"
@@ -457,6 +453,121 @@ SETUP
       resource = "hold"
       expect = "error"
       properties { name = "--version" }
+    }
+  }
+
+  // The race the "dpkg" lock group prevents. apt-get waits for the dpkg lock
+  // but apt-mark does not, so without the group an unhold step (they run one
+  // after another, being one resource type) overlaps the tzdata removal and
+  // apt-mark fails on the lock. The guest runs as many workers as it has
+  // CPUs, one in a default container, so the steps only overlap under
+  // `config-weave --jobs 4 test . linux_apt:dpkg_lock_group`.
+  test "dpkg_lock_group" {
+    description = "package and hold steps with no requires between them do not fight over the dpkg lock"
+    image = "debian:12"
+    setup = "apt-mark hold sed grep tar hostname login gzip findutils diffutils adduser bsdutils debianutils mawk mount passwd e2fsprogs logsave >/dev/null"
+    verify = "tests/dpkg_lock_verify.ws"
+
+    step "remove" {
+      description = "Remove the preinstalled tzdata package (offline)"
+      resource = "package"
+      properties { name = "tzdata" ensure = :absent }
+    }
+
+    step "unhold_sed" {
+      description = "Release the hold on sed while tzdata is being removed"
+      resource = "hold"
+      properties { name = "sed" ensure = :absent }
+    }
+
+    step "unhold_grep" {
+      description = "Release the hold on grep while tzdata is being removed"
+      resource = "hold"
+      properties { name = "grep" ensure = :absent }
+    }
+
+    step "unhold_tar" {
+      description = "Release the hold on tar while tzdata is being removed"
+      resource = "hold"
+      properties { name = "tar" ensure = :absent }
+    }
+
+    step "unhold_hostname" {
+      description = "Release the hold on hostname while tzdata is being removed"
+      resource = "hold"
+      properties { name = "hostname" ensure = :absent }
+    }
+
+    step "unhold_login" {
+      description = "Release the hold on login while tzdata is being removed"
+      resource = "hold"
+      properties { name = "login" ensure = :absent }
+    }
+
+    step "unhold_gzip" {
+      description = "Release the hold on gzip while tzdata is being removed"
+      resource = "hold"
+      properties { name = "gzip" ensure = :absent }
+    }
+
+    step "unhold_findutils" {
+      description = "Release the hold on findutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "findutils" ensure = :absent }
+    }
+
+    step "unhold_diffutils" {
+      description = "Release the hold on diffutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "diffutils" ensure = :absent }
+    }
+
+    step "unhold_adduser" {
+      description = "Release the hold on adduser while tzdata is being removed"
+      resource = "hold"
+      properties { name = "adduser" ensure = :absent }
+    }
+
+    step "unhold_bsdutils" {
+      description = "Release the hold on bsdutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "bsdutils" ensure = :absent }
+    }
+
+    step "unhold_debianutils" {
+      description = "Release the hold on debianutils while tzdata is being removed"
+      resource = "hold"
+      properties { name = "debianutils" ensure = :absent }
+    }
+
+    step "unhold_mawk" {
+      description = "Release the hold on mawk while tzdata is being removed"
+      resource = "hold"
+      properties { name = "mawk" ensure = :absent }
+    }
+
+    step "unhold_mount" {
+      description = "Release the hold on mount while tzdata is being removed"
+      resource = "hold"
+      properties { name = "mount" ensure = :absent }
+    }
+
+    step "unhold_passwd" {
+      description = "Release the hold on passwd while tzdata is being removed"
+      resource = "hold"
+      properties { name = "passwd" ensure = :absent }
+    }
+
+    step "unhold_e2fsprogs" {
+      description = "Release the hold on e2fsprogs while tzdata is being removed"
+      resource = "hold"
+      properties { name = "e2fsprogs" ensure = :absent }
+    }
+
+    step "unhold_logsave" {
+      description = "Release the hold on logsave while tzdata is being removed"
+      resource = "hold"
+      properties { name = "logsave" ensure = :absent }
     }
   }
 }
