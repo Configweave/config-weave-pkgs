@@ -1,10 +1,9 @@
 // Helpers every windows_registry script shares: params, running Windows
 // PowerShell, quoting, key paths and registry views.
 //
-// Both resources talk to the registry through .NET's RegistryKey in
-// PowerShell rather than the host `registry` module: the host module cannot
-// report a value's kind, cannot read REG_BINARY or REG_NONE, and cannot pick
-// the 32- or 64-bit view (engine gap E1).
+// Values, and a key's existence, go through the host `registry` module with
+// its `{view}` option. Only a key's owner and ACL go through .NET's
+// RegistryKey in PowerShell, since the host has no ACL API.
 use value
 use fs
 use path
@@ -99,8 +98,7 @@ fn failure(what: string, out: CmdOutput) -> string {
 // passes through command-line quoting and may hold any character. The file
 // carries a UTF-8 BOM because 5.1 reads a BOM-less script as the ANSI code
 // page, and output is forced to UTF-8 because 5.1 otherwise re-encodes it
-// to the OEM code page and the host drops output that is not valid UTF-8
-// (engine gap E3). The trap reduces a terminating error to its message.
+// to the OEM code page, which mangles non-ASCII text. The trap reduces a terminating error to its message.
 fn run_ps(script: string) -> Result[CmdOutput, string] {
     let dir = fs::temp_dir()?
     let file = path::join(dir, "config-weave-registry.ps1")
@@ -169,6 +167,22 @@ fn split_key(key: string, min_depth: int) -> Result[List[string], string] {
         return Err("'key' needs at least " + str(min_depth) + " segment(s) below the hive, got '" + key + "'")
     }
     Ok([hive.unwrap_or(""), segs.join("\\")])
+}
+
+// The key path in the host `registry` module's form: the short hive name
+// and the normalised subkey path.
+fn host_key(hive: string, sub: string) -> string {
+    let short = if hive == "LocalMachine" { "HKLM" } else if hive == "CurrentUser" { "HKCU" } else if hive == "ClassesRoot" { "HKCR" } else if hive == "Users" { "HKU" } else { "HKCC" }
+    short + "\\" + sub
+}
+
+// The `{view}` option of the host `registry` module's `_with` functions.
+fn view_opts(params: Value) -> Result[Value, string] {
+    let v = param_str(params, "view", "native")
+    if v != "native" && v != "wow64_32" && v != "wow64_64" {
+        return Err("invalid 'view' value '" + v + "' (expected :native, :wow64_32 or :wow64_64)")
+    }
+    Ok(Value::Map(#{ "view": Value::String(v) }))
 }
 
 fn view_member(params: Value) -> Result[string, string] {

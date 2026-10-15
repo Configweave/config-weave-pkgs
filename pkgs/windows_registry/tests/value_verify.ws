@@ -1,7 +1,8 @@
 use value
 use common
 
-// Reads everything back through .NET and fails with the list of what is
+// Reads everything back through .NET, independently of the host registry
+// module the resources use, and fails with the list of what is
 // wrong: kinds as well as data, the 32-bit view, removals, and the keys'
 // owner and explicit rules by SID and mask.
 fn verify(facts: Value) -> Result[bool, string] {
@@ -22,6 +23,8 @@ fn verify(facts: Value) -> Result[bool, string] {
         "Want 'answer' 'DWord' '42'\n" +
         "Want 'all_bits' 'DWord' '-1'\n" +
         "Want 'big' 'QWord' '-1'\n" +
+        "Want 'neg_q' 'QWord' '-2'\n" +
+        "Want 'top_bit' 'QWord' '-9223372036854775808'\n" +
         "Want 'expand' 'ExpandString' '%SystemRoot%\\cw'\n" +
         "Want 'kindchange' 'ExpandString' 'plain-text'\n" +
         "Want 'multi' 'MultiString' 'one|two words'\n" +
@@ -29,9 +32,12 @@ fn verify(facts: Value) -> Result[bool, string] {
         "Want 'bin_hex' 'Binary' '222|173|190|239'\n" +
         "Want 'bin_bytes' 'Binary' '0|16|255'\n" +
         "Want 'blob2' 'String' 'now a string'\n" +
-        "foreach ($n in 'blob', 'gone', 'never-written', 'too_big') {{ if (@($k.GetValueNames()) -contains $n) {{ $bad.Add($n + ' should not exist') }} }}\n" +
+        "foreach ($n in 'blob', 'nothing', 'gone', 'never-written', 'too_big') {{ if (@($k.GetValueNames()) -contains $n) {{ $bad.Add($n + ' should not exist') }} }}\n" +
         "$k32 = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry32').OpenSubKey('SOFTWARE\\ConfigWeaveTest32')\n" +
         "if ($null -eq $k32 -or $k32.GetValue('bits') -ne '32') {{ $bad.Add('the 32-bit view value is missing') }}\n" +
+        "$hk32 = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry32')\n" +
+        "if ($null -eq $hk32.OpenSubKey('SOFTWARE\\ConfigWeaveTest32\\Sub32')) {{ $bad.Add('the 32-bit view key Sub32 is missing') }}\n" +
+        "if ($null -ne $hk32.OpenSubKey('SOFTWARE\\ConfigWeaveTest32\\Doomed32')) {{ $bad.Add('the 32-bit view key Doomed32 still exists') }}\n" +
         "if ($null -ne $hk.OpenSubKey('SOFTWARE\\ConfigWeaveTest32')) {{ $bad.Add('the 32-bit view value landed in the 64-bit view') }}\n" +
         "if ($null -eq $hk.OpenSubKey('SOFTWARE\\ConfigWeaveTest\\Sub')) {{ $bad.Add('Sub key is missing') }}\n" +
         "if ($null -ne $hk.OpenSubKey('SOFTWARE\\ConfigWeaveTest\\Doomed')) {{ $bad.Add('Doomed key still exists') }}\n" +

@@ -3,6 +3,7 @@ use fs
 use shell
 use sys
 use registry
+use service
 use time
 
 // Shared helpers for the mssql package: parameter access, quoting for the
@@ -205,17 +206,32 @@ fn win_instance_id(inst: string) -> Result[string, string] {
     Ok("")
 }
 
-// Restarts the engine and waits for it. -Force also stops SQL Server Agent,
-// which depends on the engine, so Agent is started again if it was running.
+// Restarts the engine and waits for it. The SCM will not stop a service
+// whose dependents are running (SQL Server Agent depends on the engine), so
+// the running dependents are stopped first and started again afterwards.
+// The host service API cannot list dependents; PowerShell only reads their
+// names, in the order EnumDependentServices gives (safe to stop in).
 fn win_restart_engine(inst: string) -> Result[unit, string] {
     check_instance(inst)?
+    let engine = win_service_name(inst)
+    let opts = Value::Map(#{ "timeout": Value::Int(300) })
     let script = "$ErrorActionPreference = 'Stop'; " +
-        "$agent = Get-Service -Name " + ps_q(win_agent_name(inst)) + " -ErrorAction SilentlyContinue; " +
-        "$wasRunning = $null -ne $agent -and $agent.Status -eq 'Running'; " +
-        "Restart-Service -Name " + ps_q(win_service_name(inst)) + " -Force; " +
-        "if ($wasRunning) {{ Start-Service -Name " + ps_q(win_agent_name(inst)) + " }}"
+        "(Get-Service -Name " + ps_q(engine) + ").DependentServices | " +
+        "Where-Object {{ $_.Status -eq 'Running' }} | ForEach-Object {{ $_.Name }}"
     let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(cmd_error("restarting " + win_service_name(inst), out)) }
+    if !out.success { return Err(cmd_error("listing the services that depend on " + engine, out)) }
+    let dependents: List[string] = []
+    for line in out.stdout.split("\n") {
+        let n = line.trim()
+        if n != "" { dependents.push(n) }
+    }
+    for d in dependents { service::stop_with(d, opts)? }
+    service::restart(engine, opts)?
+    let i = dependents.len() - 1
+    while i >= 0 {
+        service::start_with(dependents.get(i).unwrap_or(""), opts)?
+        i = i - 1
+    }
     Ok(())
 }
 

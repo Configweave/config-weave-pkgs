@@ -4,7 +4,6 @@ use json
 use log
 use registry
 use service
-use time
 use common
 
 // Where the last pushed password_revision is recorded, per service. The
@@ -20,6 +19,8 @@ fn desired_state(params: Value) -> Result[string, string] {
     Err("invalid 'state' value '" + s + "' (expected :running, :stopped or :unmanaged)")
 }
 
+// :automatic and :automatic_delayed are different states: neither matches a
+// service set to the other.
 fn desired_startup(params: Value) -> Result[string, string] {
     let s = common::param_str(params, "startup", "unmanaged")
     if s == "automatic" || s == "automatic_delayed" || s == "manual" || s == "disabled" || s == "unmanaged" { return Ok(s) }
@@ -152,8 +153,8 @@ fn query(params: Value) -> Result[Value, string] {
         "if ($env:CW_CHECK_RIGHT -eq '1' -and $wantSid -ne '') {{\n" + lsa_type() + "  $right = [CwLsa]::Has($wantSid, 'SeServiceLogonRight') }}\n" +
         "[pscustomobject]@{{\n" +
         "  exists = $true; name = [string]$s.Name; display_name = [string]$s.DisplayName; description = [string]$s.Description\n" +
-        "  path_name = [Environment]::ExpandEnvironmentVariables([string]$s.PathName); start_mode = [string]$s.StartMode\n" +
-        "  delayed = [bool]$s.DelayedAutoStart; start_name = [string]$s.StartName; sid = (CwSid ([string]$s.StartName))\n" +
+        "  path_name = [Environment]::ExpandEnvironmentVariables([string]$s.PathName)\n" +
+        "  start_name = [string]$s.StartName; sid = (CwSid ([string]$s.StartName))\n" +
         "  state = [string]$s.State; delete_pending = ($k -and $k.DeleteFlag -eq 1)\n" +
         "  want_sid = $wantSid; want_exe = $wantExe; logon_right = $right\n" +
         "}} | ConvertTo-Json -Compress\n"
@@ -176,13 +177,6 @@ fn get_str(m: Value, key: string) -> string {
 fn get_bool(m: Value, key: string) -> bool {
     if let Some(v) = m.get(key) { if let Some(b) = v.as_bool() { return b } }
     false
-}
-
-// Win32_Service.StartMode plus the delayed flag, in the param's spelling.
-fn current_startup(q: Value) -> string {
-    let mode = get_str(q, "start_mode").to_lower()
-    if mode == "auto" { return if get_bool(q, "delayed") { "automatic_delayed" } else { "automatic" } }
-    mode
 }
 
 // Win32_Service.State ("Running", "Stop Pending", ...) in service::status's
@@ -237,7 +231,7 @@ fn config_drift(params: Value, q: Value) -> Result[List[string], string] {
         if rev != "" && recorded_revision(name)? != rev { drift.push("password_revision") }
     }
     let su = desired_startup(params)?
-    if su != "unmanaged" && current_startup(q) != su { drift.push("startup") }
+    if su != "unmanaged" && service::startup(name)? != su { drift.push("startup") }
     Ok(drift)
 }
 
@@ -278,39 +272,11 @@ fn check(params: Value) -> Result[CheckResult, string] {
 }
 
 // ---------------------------------------------------------------------
-// State changes. service::start/stop return before the SCM has finished
-// (engine gap E2), so every transition is polled to its target here.
+// State changes. service::start_with/stop_with wait out pending states,
+// resume a paused service and wait for the target state, up to `timeout`.
 // ---------------------------------------------------------------------
 
-fn is_pending(st: string) -> bool { st.ends_with("_pending") }
-
-fn wait_until(name: string, target: string, secs: int) -> Result[unit, string] {
-    let deadline = time::now_millis() + secs * 1000
-    let last = ""
-    loop {
-        last = service::status(name)?
-        if last == target { return Ok(()) }
-        if !is_pending(last) && last != "stopped" && last != "running" && last != "paused" { break }
-        if time::now_millis() > deadline { break }
-        time::sleep(250)
-    }
-    Err("timed out after " + str(secs) + "s waiting for service '" + name + "' to become " + target + " (last state: " + last + ")")
-}
-
-// Waits out start_pending, stop_pending, pause_pending and continue_pending,
-// which would otherwise make the next control fail with error 1061.
-fn settle(name: string, secs: int) -> Result[string, string] {
-    let deadline = time::now_millis() + secs * 1000
-    let st = service::status(name)?
-    while is_pending(st) {
-        if time::now_millis() > deadline {
-            return Err("timed out after " + str(secs) + "s waiting for service '" + name + "' to leave " + st)
-        }
-        time::sleep(250)
-        st = service::status(name)?
-    }
-    Ok(st)
-}
+fn wait_opts(secs: int) -> Value { Value::Map(#{ "timeout": Value::Int(secs) }) }
 
 fn sc(args: string, name: string, what: string) -> Result[CmdOutput, string] {
     // Stop would turn sc.exe's own failure into a PowerShell error and lose
@@ -321,20 +287,7 @@ fn sc(args: string, name: string, what: string) -> Result[CmdOutput, string] {
 }
 
 fn drive_to(name: string, target: string, secs: int) -> Result[unit, string] {
-    let st = settle(name, secs)?
-    if st == target { return Ok(()) }
-    if target == "running" {
-        // service::start fails with 1056 on a paused service; a paused
-        // service is resumed instead.
-        if st == "paused" {
-            let resumed = sc("continue $env:CW_NAME", name, "resuming service '" + name + "'")?
-        } else {
-            service::start(name)?
-        }
-    } else {
-        service::stop(name)?
-    }
-    wait_until(name, target, secs)
+    if target == "running" { service::start_with(name, wait_opts(secs)) } else { service::stop_with(name, wait_opts(secs)) }
 }
 
 // ---------------------------------------------------------------------
@@ -348,13 +301,10 @@ fn remove(params: Value) -> Result[ApplyResult, string] {
     if !get_bool(q, "exists") { return Ok(ApplyResult::Success) }
     // Stop first and wait: deleting a running service only marks it for
     // deletion, and the next run would meet error 1072.
-    let st = settle(name, secs)?
-    if st != "stopped" {
-        service::stop(name)?
-        let waited = wait_until(name, "stopped", secs)
-        // A service already marked for deletion vanishes the moment it stops.
-        if waited.is_err() && get_bool(query(params)?, "exists") { return Err(waited.unwrap_err()) }
-    }
+    let stopped = service::stop_with(name, wait_opts(secs))
+    // A service already marked for deletion vanishes the moment it stops, so
+    // the wait loses it.
+    if stopped.is_err() && get_bool(query(params)?, "exists") { return Err(stopped.unwrap_err()) }
     if !get_bool(q, "delete_pending") {
         let out = sc("delete $env:CW_NAME", name, "")?
         if out.code == 1072 {
@@ -443,13 +393,6 @@ fn grant_logon_right(name: string, sid: string) -> Result[unit, string] {
     Ok(())
 }
 
-// sc.exe is the one tool that sets delayed start, and `start= auto` clears it.
-fn set_startup(name: string, su: string) -> Result[unit, string] {
-    let mode = if su == "automatic_delayed" { "delayed-auto" } else if su == "automatic" { "auto" } else if su == "manual" { "demand" } else { "disabled" }
-    sc("config $env:CW_NAME start= " + mode, name, "setting the startup type of service '" + name + "'")?
-    Ok(())
-}
-
 fn apply(params: Value) -> Result[ApplyResult, string] {
     validate(params)?
     if !common::want_present(params)? { return remove(params) }
@@ -487,14 +430,15 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if user != "" && rev != "" && (set_account || created) {
         registry::write(revision_key(name), "PasswordRevision", Value::String(rev), "sz")?
     }
-    if drift.contains("startup") { set_startup(name, su)? }
+    // set_startup(:automatic) also clears the delayed-start flag.
+    if drift.contains("startup") { service::set_startup(name, su)? }
     // ImagePath and account changes only take effect at the next start, so a
     // service meant to be running is restarted onto the new configuration.
     let restart_needed = !created && (drift.contains("path") || set_account)
     let cur = current_state(q)
     if restart_needed && cur != "stopped" {
         if st == "running" {
-            drive_to(name, "stopped", secs)?
+            service::restart(name, wait_opts(secs))?
         } else if st == "unmanaged" {
             log::warn("service '" + name + "' is running; its new path or account takes effect at its next start")
         }

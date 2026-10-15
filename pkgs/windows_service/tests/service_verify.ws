@@ -15,7 +15,7 @@ fn services() -> Result[Value, string] {
         "$r = Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\ConfigWeave\\windows_service\\weave-rotate' -ErrorAction SilentlyContinue\n" +
         "$o['rotate_revision'] = [string]$r.PasswordRevision\n" +
         "$o | ConvertTo-Json -Compress -Depth 4\n"
-    let names = "weave-new,weave-drift,weave-paused,weave-acct,weave-rotate,weave-gone,weave-marked,Spooler"
+    let names = "weave-new,weave-drift,weave-paused,weave-delayed,weave-acct,weave-rotate,weave-gone,weave-marked,Spooler"
     let out = common::run_ps(script, #{ "CW_NAMES": Value::String(names) })?
     if !out.success { return Err(common::failure("querying the test services", out)) }
     json::parse(out.stdout.trim())
@@ -58,6 +58,9 @@ fn verify(facts: Value) -> Result[bool, string] {
     expect(all, "weave-paused", "state", "Running")?
     expect(all, "weave-paused", "mode", "Auto")?
     expect(all, "weave-paused", "delayed", "false")?
+
+    expect(all, "weave-delayed", "mode", "Auto")?
+    expect(all, "weave-delayed", "delayed", "true")?
 
     expect(all, "weave-acct", "account", ".\\weavesvc")?
     expect(all, "weave-acct", "state", "Running")?

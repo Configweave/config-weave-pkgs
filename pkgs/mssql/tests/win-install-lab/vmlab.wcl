@@ -15,6 +15,7 @@ lab "cw-mssql-install" {
     template = "x86_64/windows-server-2025"
     cpus     = 4
     memory   = 8GiB
+    agent_update = false
     nic { segment = "lan" }
   }
 }

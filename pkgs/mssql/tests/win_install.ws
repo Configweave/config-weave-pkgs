@@ -72,9 +72,8 @@ fn run(lab: Lab) -> Result[bool, string] {
         "Dismount-DiskImage -ImagePath C:\\media\\sql.iso | Out-Null; " +
         "if(-not (Test-Path C:\\sqlsetup\\SETUP.EXE)){{throw 'setup.exe not found in media'}}")?
 
-    // Scenario properties reach the engine as strings, and a string is not
-    // accepted for a symbol param, so this driver sticks to the symbol
-    // defaults: Windows authentication, with every T-SQL resource connecting
+    // This driver sticks to the symbol defaults: Windows authentication,
+    // with every T-SQL resource connecting
     // through integrated auth as the guest agent (an Administrators member,
     // hence sysadmin).
     lab.log("installing SQL Server with mssql.instance (silent)")

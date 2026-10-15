@@ -48,8 +48,8 @@ fn failure(what: string, out: CmdOutput) -> string {
 //
 // The file carries a UTF-8 BOM, since Windows PowerShell 5.1 reads a
 // BOM-less script as the ANSI code page. Output is forced to UTF-8 because
-// 5.1 otherwise re-encodes native output to the OEM code page, and the host
-// drops output that is not valid UTF-8.
+// 5.1 otherwise re-encodes native output to the OEM code page, which
+// mangles non-ASCII names and descriptions.
 fn run_ps(script: string, env: Map[string, Value]) -> Result[CmdOutput, string] {
     let dir = fs::temp_dir()?
     let file = path::join(dir, "config-weave-service.ps1")

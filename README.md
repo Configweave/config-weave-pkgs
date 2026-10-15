@@ -511,9 +511,9 @@ and a `view`. `:native` is the 64-bit registry the agent sees, with no
 SYSTEM service is SYSTEM's own hive. To reach a particular user, write to
 `HKU\<sid>`.
 
-The work goes through .NET's `RegistryKey` in Windows PowerShell rather than
-the host `registry` module, because that module cannot report a value's kind,
-read binary values, or choose a view.
+Values and keys go through the host `registry` module. Only a key's owner
+and permissions go through .NET's `RegistryKey` in Windows PowerShell,
+because the host has no ACL API.
 
 ### `windows_files`
 
@@ -629,7 +629,8 @@ binary or account.
   The SCM cannot report a password back, so it is pushed when the service is
   created, when `user` changes, or when `password_revision` changes. Bump
   the revision whenever the password changes.
-- `startup` includes `:automatic_delayed`.
+- `startup` includes `:automatic_delayed`. `:automatic` does not match a
+  delayed-start service: applying it clears the delay.
 - Start, stop and resume wait for the target state, up to `timeout` (60s).
   Pending states are waited out, and a paused service is resumed. A service
   whose `path` or account changed while it should be `:running` is restarted
@@ -854,8 +855,8 @@ resource that creates something takes `ensure = :absent`.
 - `database_cdc`, `cdc_table`: Change Data Capture at the database and table
   level.
 - `tcp`: the TCP/IP protocol and static port (registry on Windows,
-  `mssql-conf` on Linux), then an engine restart that brings SQL Server Agent
-  back if it was running.
+  `mssql-conf` on Linux), then an engine restart that brings SQL Server Agent,
+  and any other running service that depends on the engine, back.
 - `replication_distributor`, `replication_publisher`: a local distributor
   (retried until this server is registered as its publisher) and publishing
   databases.
