@@ -83,6 +83,7 @@ package "windows_service" {
   // converges away from:
   //   weave-drift   unquoted ImagePath, old display name and description, Manual
   //   weave-paused  running then paused, delayed-auto start
+  //   weave-delayed stopped, delayed-auto start (set by sc.exe, not the host)
   //   weave-gone    running (removal must stop it and wait first)
   //   weave-marked  running and already marked for deletion (sc delete)
   //   weave-rotate  runs as .\weavesvc2 with revision 1 recorded; the
@@ -94,7 +95,7 @@ package "windows_service" {
     description = "Service registration, reconcile of every field, state transitions, accounts and removal converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave svc'; $e=$d+'\\weave-svc.exe'; $q=[char]34+$e+[char]34; if (-not (Test-Path $e)) { $null = New-Item -ItemType Directory -Force -Path $d; Add-Type -TypeDefinition 'using System.ServiceProcess; public class S : ServiceBase { public S() { ServiceName = typeof(S).Name; CanPauseAndContinue = true; } public static void Main() { ServiceBase.Run(new S()); } }' -OutputAssembly $e -OutputType ConsoleApplication -ReferencedAssemblies System.ServiceProcess }; function Mk($n) { if (-not (Get-Service -Name $n -ErrorAction SilentlyContinue)) { $null = New-Service -Name $n -BinaryPathName $q -StartupType Manual; Start-Service -Name $n } }; if (-not (Get-Service -Name weave-drift -ErrorAction SilentlyContinue)) { $null = New-Service -Name weave-drift -BinaryPathName $e -DisplayName 'Old Name' -Description 'old' -StartupType Manual }; Mk weave-paused; $null = sc.exe pause weave-paused; $null = sc.exe config weave-paused start= delayed-auto; Mk weave-gone; Mk weave-marked; $null = sc.exe delete weave-marked; $null = net user weavesvc Wv-Pa55w0rd1 /add; $null = net user weavesvc2 Wv-Old-Pa55w1 /add; if (-not (Get-Service -Name weave-rotate -ErrorAction SilentlyContinue)) { $c = New-Object System.Management.Automation.PSCredential('.\\weavesvc2', (ConvertTo-SecureString 'Wv-Old-Pa55w1' -AsPlainText -Force)); $null = New-Service -Name weave-rotate -BinaryPathName $q -StartupType Manual -Credential $c; $k='HKLM:\\SOFTWARE\\ConfigWeave\\windows_service\\weave-rotate'; $null = New-Item -Force -Path $k; Set-ItemProperty -Path $k -Name PasswordRevision -Value '1'; $null = net user weavesvc2 Wv-New-Pa55w2 }"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave svc'; $e=$d+'\\weave-svc.exe'; $q=[char]34+$e+[char]34; if (-not (Test-Path $e)) { $null = New-Item -ItemType Directory -Force -Path $d; Add-Type -TypeDefinition 'using System.ServiceProcess; public class S : ServiceBase { public S() { ServiceName = typeof(S).Name; CanPauseAndContinue = true; } public static void Main() { ServiceBase.Run(new S()); } }' -OutputAssembly $e -OutputType ConsoleApplication -ReferencedAssemblies System.ServiceProcess }; function Mk($n) { if (-not (Get-Service -Name $n -ErrorAction SilentlyContinue)) { $null = New-Service -Name $n -BinaryPathName $q -StartupType Manual; Start-Service -Name $n } }; if (-not (Get-Service -Name weave-drift -ErrorAction SilentlyContinue)) { $null = New-Service -Name weave-drift -BinaryPathName $e -DisplayName 'Old Name' -Description 'old' -StartupType Manual }; Mk weave-paused; $null = sc.exe pause weave-paused; $null = sc.exe config weave-paused start= delayed-auto; if (-not (Get-Service -Name weave-delayed -ErrorAction SilentlyContinue)) { $null = New-Service -Name weave-delayed -BinaryPathName $q -StartupType Manual; $null = sc.exe config weave-delayed start= delayed-auto }; Mk weave-gone; Mk weave-marked; $null = sc.exe delete weave-marked; $null = net user weavesvc Wv-Pa55w0rd1 /add; $null = net user weavesvc2 Wv-Old-Pa55w1 /add; if (-not (Get-Service -Name weave-rotate -ErrorAction SilentlyContinue)) { $c = New-Object System.Management.Automation.PSCredential('.\\weavesvc2', (ConvertTo-SecureString 'Wv-Old-Pa55w1' -AsPlainText -Force)); $null = New-Service -Name weave-rotate -BinaryPathName $q -StartupType Manual -Credential $c; $k='HKLM:\\SOFTWARE\\ConfigWeave\\windows_service\\weave-rotate'; $null = New-Item -Force -Path $k; Set-ItemProperty -Path $k -Name PasswordRevision -Value '1'; $null = net user weavesvc2 Wv-New-Pa55w2 }"
     verify = "tests/service_verify.ws"
 
     step "create_service" {
@@ -127,10 +128,10 @@ package "windows_service" {
     }
 
     step "delayed_reported" {
-      description = "The delayed start set by reconcile_existing reads back as :automatic_delayed"
+      description = "A delayed start seeded with sc.exe reads back as :automatic_delayed"
       resource = "service"
       expect = "already_configured"
-      properties { name = "weave-drift" startup = :automatic_delayed }
+      properties { name = "weave-delayed" startup = :automatic_delayed }
     }
 
     step "resume_paused" {
