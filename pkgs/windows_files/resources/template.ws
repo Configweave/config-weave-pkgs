@@ -21,7 +21,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
     common::require_path("path", p)?
     if !common::want_present(params)? {
-        if fs::exists(p) || fs::read_link(p).is_ok() { return Ok(CheckResult::NotConfigured) }
+        if fs::lexists(p) { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     // Rendering in `check` is what makes a variable change count as drift:
@@ -38,7 +38,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = common::param_str(params, "path", "")
     common::require_path("path", p)?
     if !common::want_present(params)? {
-        if !fs::exists(p) && fs::read_link(p).is_err() { return Ok(ApplyResult::Success) }
+        if !fs::lexists(p) { return Ok(ApplyResult::Success) }
         if fs::read_link(p).is_err() && fs::is_dir(p) { return Err("'" + p + "' is a directory; use windows_files.directory with ensure = :absent") }
         log::info("deleting " + p)
         fs::delete(p)?

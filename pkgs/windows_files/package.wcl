@@ -181,7 +181,7 @@ package "windows_files" {
     // with an explicit Guests rule for exact mode, one with a
     // this-folder-only Users rule, and the gatherer fixtures. Windows test
     // setups run under cmd.exe and must not contain double quotes.
-    setup = "mkdir C:\\weave-files-seed\\rmdir\\sub 2>NUL & mkdir C:\\weave-files-seed\\noinherit 2>NUL & mkdir C:\\weave-files-seed\\exact 2>NUL & mkdir C:\\weave-files-seed\\flagdir 2>NUL & mkdir C:\\weave-files-seed\\protected 2>NUL & mkdir C:\\weave-files-glob 2>NUL & echo old> C:\\weave-files-seed\\drift.txt & echo bye> C:\\weave-files-seed\\remove_me.txt & echo bye> C:\\weave-files-seed\\tpl_remove.txt & echo x> C:\\weave-files-seed\\rmdir\\sub\\x.txt & echo x> C:\\weave-files-seed\\owned.txt & echo a> C:\\weave-files-glob\\a.txt & echo b> C:\\weave-files-glob\\b.txt & echo c> C:\\weave-files-glob\\c.log & mklink /D C:\\weave-files-seed\\oldlink C:\\weave-files-seed\\rmdir & mklink C:\\weave-files-seed\\deadlink C:\\weave-files-seed\\nothing.txt & icacls C:\\weave-files-seed\\exact /grant Guests:(OI)(CI)F & icacls C:\\weave-files-seed\\flagdir /grant Users:M & powershell -NoProfile -Command Set-Content -LiteralPath C:\\weave-files-seed\\utf16.txt -Value old -Encoding Unicode; Set-Content -LiteralPath C:\\weave-files-seed\\gather.txt -Value abc -NoNewline & exit 0"
+    setup = "mkdir C:\\weave-files-seed\\rmdir\\sub 2>NUL & mkdir C:\\weave-files-seed\\noinherit 2>NUL & mkdir C:\\weave-files-seed\\exact 2>NUL & mkdir C:\\weave-files-seed\\flagdir 2>NUL & mkdir C:\\weave-files-seed\\protected 2>NUL & mkdir C:\\weave-files-glob 2>NUL & echo old> C:\\weave-files-seed\\drift.txt & echo bye> C:\\weave-files-seed\\remove_me.txt & echo bye> C:\\weave-files-seed\\tpl_remove.txt & echo x> C:\\weave-files-seed\\rmdir\\sub\\x.txt & echo x> C:\\weave-files-seed\\owned.txt & echo a> C:\\weave-files-glob\\a.txt & echo b> C:\\weave-files-glob\\b.txt & echo c> C:\\weave-files-glob\\c.log & mklink /D C:\\weave-files-seed\\oldlink C:\\weave-files-seed\\rmdir & mklink C:\\weave-files-seed\\deadlink C:\\weave-files-seed\\nothing.txt & mklink C:\\weave-files-seed\\deadfile C:\\weave-files-seed\\nothing.txt & mklink C:\\weave-files-seed\\deadtpl C:\\weave-files-seed\\nothing.txt & icacls C:\\weave-files-seed\\exact /grant Guests:(OI)(CI)F & icacls C:\\weave-files-seed\\flagdir /grant Users:M & powershell -NoProfile -Command Set-Content -LiteralPath C:\\weave-files-seed\\utf16.txt -Value old -Encoding Unicode; Set-Content -LiteralPath C:\\weave-files-seed\\gather.txt -Value abc -NoNewline & exit 0"
 
     gather "seeded_file" {
       description = "A seeded file, with its hash"
@@ -291,6 +291,18 @@ package "windows_files" {
       description = "Delete a seeded file through the template resource"
       resource = "template"
       properties { path = "C:\\weave-files-seed\\tpl_remove.txt" ensure = :absent }
+    }
+
+    step "file_dead_link_absent" {
+      description = "A dangling link at a file path still exists, so :absent deletes it"
+      resource = "file"
+      properties { path = "C:\\weave-files-seed\\deadfile" ensure = :absent }
+    }
+
+    step "template_dead_link_absent" {
+      description = "A dangling link at a template path still exists, so :absent deletes it"
+      resource = "template"
+      properties { path = "C:\\weave-files-seed\\deadtpl" ensure = :absent }
     }
 
     step "dir_absent" {
