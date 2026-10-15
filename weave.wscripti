@@ -13,8 +13,8 @@ enum Value {
 }
 
 impl Value {
-    fn get(self, a0: string) -> Option[Value]
-    fn at(self, a0: int) -> Option[Value]
+    fn get(self, key: string) -> Option[Value]
+    fn at(self, idx: int) -> Option[Value]
     fn keys(self) -> List[string]
     fn len(self) -> int
     fn is_null(self) -> bool
@@ -80,6 +80,28 @@ mod toml {
     fn to_string_pretty(a0: Value) -> Result[string, string]
 }
 
+/// XML parsing and serialization (shared Value type; attributes under "@attrs", text under "#text", repeated children become lists)
+mod xml {
+    fn parse(a0: string) -> Result[Value, string]
+    fn to_string(a0: Value) -> Result[string, string]
+    fn to_string_pretty(a0: Value) -> Result[string, string]
+}
+
+/// Regular expressions (pure; invalid patterns fault)
+mod regex {
+    fn is_match(pattern: string, s: string) -> bool
+    /// First match, or None
+    fn find(pattern: string, s: string) -> Option[string]
+    /// Every non-overlapping match, in order
+    fn find_all(pattern: string, s: string) -> List[string]
+    /// Replace every match; `$1`/`$name` expand capture groups
+    fn replace(pattern: string, s: string, rep: string) -> string
+    /// Capture groups of the first match: group 0 (whole match) first; non-participating groups are empty strings
+    fn captures(pattern: string, s: string) -> Option[List[string]]
+    /// Split around every match
+    fn split(pattern: string, s: string) -> List[string]
+}
+
 /// Clocks and sleeping (capability: clock access, thread blocking)
 mod time {
     fn now_unix() -> float
@@ -124,15 +146,17 @@ mod fs {
     fn delete_dir(a0: string) -> Result[unit, string]
     /// Create a directory, including missing parents
     fn mkdir(a0: string) -> Result[unit, string]
-    /// Whether a path exists
+    /// Whether a path exists. Follows symlinks: a dangling symlink answers false (see lexists)
     fn exists(a0: string) -> bool
+    /// Whether a path exists without following a final symlink: a dangling symlink answers true
+    fn lexists(a0: string) -> bool
     /// Whether a path is a file
     fn is_file(a0: string) -> bool
     /// Whether a path is a directory
     fn is_dir(a0: string) -> bool
     /// List entries of a directory (sorted names)
     fn list_dir(a0: string) -> Result[List[string], string]
-    /// File metadata as a map: size, modified (unix secs), readonly, is_file, is_dir, is_symlink, mode (unix permission bits; 0 elsewhere)
+    /// File metadata as a map: size, modified (unix secs), readonly, is_file, is_dir, is_symlink, mode (unix permission bits; 0 elsewhere). Does not follow a final symlink: for a link it describes the link itself
     fn metadata(a0: string) -> Result[Value, string]
     /// Expand a glob pattern to matching paths (sorted)
     fn glob(a0: string) -> Result[List[string], string]
@@ -144,6 +168,8 @@ mod fs {
     fn symlink(a0: string, a1: string) -> Result[unit, string]
     /// Read the target of a symlink
     fn read_link(a0: string) -> Result[string, string]
+    /// Change a path's owner and group (Unix only). Each is a user/group name, a numeric id, or Value::Null to leave it unchanged. Does not follow a final symlink
+    fn chown(a0: string, a1: Value, a2: Value) -> Result[unit, string]
 }
 
 /// Pure path-string manipulation; no IO
@@ -170,7 +196,7 @@ mod shell {
     fn run_streaming(a0: string, a1: Value) -> Result[CmdOutput, string]
     /// Run a script with `bash -c` (falls back to sh)
     fn bash(a0: string, a1: Value) -> Result[CmdOutput, string]
-    /// Run a script with PowerShell (-NoProfile -NonInteractive)
+    /// Run a script with PowerShell (-NoProfile -NonInteractive), read from a private temp file so it never appears on the command line
     fn powershell(a0: string, a1: Value) -> Result[CmdOutput, string]
 }
 
@@ -198,6 +224,20 @@ mod hash {
     fn md5(a0: string) -> string
     /// MD5 of a file's contents (legacy interop only)
     fn md5_file(a0: string) -> Result[string, string]
+}
+
+/// Base64 and text encodings. Bytes are List[int], as in fs::read_bytes
+mod encoding {
+    /// Base64-encode bytes (standard alphabet, padded)
+    fn base64_encode(a0: List[int]) -> Result[string, string]
+    /// Decode a base64 string (standard alphabet, padded) to bytes
+    fn base64_decode(a0: string) -> Result[List[int], string]
+    /// A string's UTF-8 bytes
+    fn utf8(a0: string) -> List[int]
+    /// Decode UTF-8 bytes to a string
+    fn from_utf8(a0: List[int]) -> Result[string, string]
+    /// A string's UTF-16LE bytes, no BOM
+    fn utf16le(a0: string) -> List[int]
 }
 
 /// Extract archives (no external tar/unzip needed)
@@ -268,36 +308,56 @@ mod template {
 
 /// Windows registry (Windows only). Keys are hive-prefixed paths like HKLM\Software\App
 mod registry {
-    const HKLM: string // = "HKLM"
-    const HKCU: string // = "HKCU"
-    const HKCR: string // = "HKCR"
-    const HKU: string // = "HKU"
-    const HKCC: string // = "HKCC"
+    const HKLM: string = "HKLM"
+    const HKCU: string = "HKCU"
+    const HKCR: string = "HKCR"
+    const HKU: string = "HKU"
+    const HKCC: string = "HKCC"
     /// Read a value (None when the key or value is absent)
     fn read(a0: string, a1: string) -> Result[Option[Value], string]
-    /// Write a value. kind: sz | dword | qword | expand_sz | multi_sz
+    /// Like read, with opts: view (native | wow64_32 | wow64_64)
+    fn read_with(a0: string, a1: string, a2: Value) -> Result[Option[Value], string]
+    /// Read a value with its kind: {kind, data} (None when absent). opts: view (native | wow64_32 | wow64_64)
+    fn read_typed(a0: string, a1: string, a2: Value) -> Result[Option[Value], string]
+    /// Write a value. kind: sz | expand_sz | dword | qword | multi_sz | binary | none
     fn write(a0: string, a1: string, a2: Value, a3: string) -> Result[unit, string]
+    /// Like write, with opts: view (native | wow64_32 | wow64_64)
+    fn write_with(a0: string, a1: string, a2: Value, a3: string, a4: Value) -> Result[unit, string]
     /// Delete a value
     fn delete_value(a0: string, a1: string) -> Result[unit, string]
+    /// Like delete_value, with opts: view (native | wow64_32 | wow64_64)
+    fn delete_value_with(a0: string, a1: string, a2: Value) -> Result[unit, string]
     /// Create a key (and parents)
     fn create_key(a0: string) -> Result[unit, string]
+    /// Like create_key, with opts: view (native | wow64_32 | wow64_64)
+    fn create_key_with(a0: string, a1: Value) -> Result[unit, string]
     /// Delete a key and its subtree
     fn delete_key(a0: string) -> Result[unit, string]
+    /// Like delete_key, with opts: view (native | wow64_32 | wow64_64)
+    fn delete_key_with(a0: string, a1: Value) -> Result[unit, string]
     /// Whether a key exists
     fn key_exists(a0: string) -> Result[bool, string]
+    /// Like key_exists, with opts: view (native | wow64_32 | wow64_64)
+    fn key_exists_with(a0: string, a1: Value) -> Result[bool, string]
 }
 
 /// Windows service management via the SCM (Windows only in v1)
 mod service {
     /// Service status: running | stopped | start_pending | stop_pending | paused | pause_pending | continue_pending
     fn status(a0: string) -> Result[string, string]
-    /// Start a service (no-op when already running)
+    /// Start a service and wait (60s) until it is running. Waits out pending states, continues a paused service; no-op when already running
     fn start(a0: string) -> Result[unit, string]
-    /// Stop a service (no-op when already stopped)
+    /// Like start. opts: timeout (secs, default 60)
+    fn start_with(a0: string, a1: Value) -> Result[unit, string]
+    /// Stop a service and wait (60s) until it is stopped. Waits out pending states; no-op when already stopped
     fn stop(a0: string) -> Result[unit, string]
-    /// Set startup type: automatic | manual | disabled
+    /// Like stop. opts: timeout (secs, default 60)
+    fn stop_with(a0: string, a1: Value) -> Result[unit, string]
+    /// Stop then start a service, waiting for each state. opts: timeout (secs per phase, default 60)
+    fn restart(a0: string, a1: Value) -> Result[unit, string]
+    /// Set startup type: automatic | automatic_delayed | manual | disabled
     fn set_startup(a0: string, a1: string) -> Result[unit, string]
-    /// Startup type of a service: automatic | manual | disabled
+    /// Startup type of a service: automatic | automatic_delayed | manual | disabled | boot | system
     fn startup(a0: string) -> Result[string, string]
 }
 

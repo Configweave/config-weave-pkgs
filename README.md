@@ -219,8 +219,8 @@ action and the merge bar does not claim to prove it.
 
 A Windows test also needs a Windows build of config-weave to copy into the
 guest. config-weave looks for one only in its own build tree, which this repo
-does not have. Download `config-weave-windows-x86_64.exe` from a config-weave
-GitHub release, or run `just release` in a config-weave checkout and use
+does not have. Download `config-weave-windows-x86_64.exe` from the config-weave
+GitHub release this repo pins (`config_weave_version` in the justfile), or run `just release` in a config-weave checkout and use
 `dist/config-weave-windows-x86_64.exe`. Then point the testlab at it:
 
 ```sh

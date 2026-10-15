@@ -17,10 +17,14 @@ main:
 # The merge bar — everything a change must pass before it can merge
 mod ci '.just/ci'
 
+# The config-weave release this repo checks against. Bump it deliberately:
+# packages call host functions that only exist from a given release on.
+config_weave_version := "v0.6.1-alpha"
+
 # Install the config-weave binary this repo checks against, from GitHub.
-[group('check'), doc("Install the config-weave binary from GitHub into ~/.cargo/bin")]
+[group('check'), doc("Install the pinned config-weave release from GitHub into ~/.cargo/bin")]
 install-tool:
-	cargo install --git https://github.com/Configweave/config-weave.git --locked
+	cargo install --git https://github.com/Configweave/config-weave.git --tag {{config_weave_version}} --locked
 
 # Validate every package and the harness playbook
 [group('check')]
