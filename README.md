@@ -511,9 +511,9 @@ and a `view`. `:native` is the 64-bit registry the agent sees, with no
 SYSTEM service is SYSTEM's own hive. To reach a particular user, write to
 `HKU\<sid>`.
 
-The work goes through .NET's `RegistryKey` in Windows PowerShell rather than
-the host `registry` module, because that module cannot report a value's kind,
-read binary values, or choose a view.
+Values and keys go through the host `registry` module. Only a key's owner
+and permissions go through .NET's `RegistryKey` in Windows PowerShell,
+because the host has no ACL API.
 
 ### `windows_files`
 

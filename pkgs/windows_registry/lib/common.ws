@@ -1,10 +1,9 @@
 // Helpers every windows_registry script shares: params, running Windows
 // PowerShell, quoting, key paths and registry views.
 //
-// Both resources talk to the registry through .NET's RegistryKey in
-// PowerShell rather than the host `registry` module: the host module cannot
-// report a value's kind, cannot read REG_BINARY or REG_NONE, and cannot pick
-// the 32- or 64-bit view (engine gap E1).
+// Values, and a key's existence, go through the host `registry` module with
+// its `{view}` option. Only a key's owner and ACL go through .NET's
+// RegistryKey in PowerShell, since the host has no ACL API.
 use value
 use fs
 use path
@@ -169,6 +168,22 @@ fn split_key(key: string, min_depth: int) -> Result[List[string], string] {
         return Err("'key' needs at least " + str(min_depth) + " segment(s) below the hive, got '" + key + "'")
     }
     Ok([hive.unwrap_or(""), segs.join("\\")])
+}
+
+// The key path in the host `registry` module's form: the short hive name
+// and the normalised subkey path.
+fn host_key(hive: string, sub: string) -> string {
+    let short = if hive == "LocalMachine" { "HKLM" } else if hive == "CurrentUser" { "HKCU" } else if hive == "ClassesRoot" { "HKCR" } else if hive == "Users" { "HKU" } else { "HKCC" }
+    short + "\\" + sub
+}
+
+// The `{view}` option of the host `registry` module's `_with` functions.
+fn view_opts(params: Value) -> Result[Value, string] {
+    let v = param_str(params, "view", "native")
+    if v != "native" && v != "wow64_32" && v != "wow64_64" {
+        return Err("invalid 'view' value '" + v + "' (expected :native, :wow64_32 or :wow64_64)")
+    }
+    Ok(Value::Map(#{ "view": Value::String(v) }))
 }
 
 fn view_member(params: Value) -> Result[string, string] {

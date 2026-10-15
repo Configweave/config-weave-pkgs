@@ -1,9 +1,10 @@
 package "windows_registry" {
   description = "Manage Windows registry values and keys, including their kind, owner and permissions"
 
-  // Both resources work through .NET's Microsoft.Win32.RegistryKey in
-  // Windows PowerShell rather than the host `registry` module, which cannot
-  // report a value's kind, read binary values or choose a registry view.
+  // Values and keys go through the host `registry` module, which reports a
+  // value's kind, reads binary values and addresses either registry view. A
+  // key's owner and permissions go through .NET's RegistryKey in Windows
+  // PowerShell, since the host has no ACL API.
   //
   // Paths: `key` starts with a hive, short or long and in any case (HKLM,
   // hklm, HKEY_LOCAL_MACHINE; HKCU, HKCR, HKU, HKCC). Trailing backslashes
@@ -98,11 +99,12 @@ package "windows_registry" {
     group = "win2025"
     verify = "tests/value_verify.ws"
     // Seeds the drift the steps converge away from: a REG_SZ that should be
-    // REG_EXPAND_SZ, a binary value to delete and one to overwrite, a plain
-    // value to delete, a key subtree to delete, and a key carrying an
-    // explicit Guests rule for the exact-mode step to remove. Windows test
+    // REG_EXPAND_SZ, a binary value to delete and one to overwrite, a REG_NONE
+    // and a plain value to delete, a key subtree to delete in each view, and
+    // a key carrying an explicit Guests rule for the exact-mode step to
+    // remove. Windows test
     // setups run under cmd.exe and must not contain double quotes.
-    setup = "reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v kindchange /t REG_SZ /d plain-text /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob /t REG_BINARY /d 0102ff /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob2 /t REG_BINARY /d 0a0b /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v gone /t REG_SZ /d bye /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\Doomed\\Child /v x /t REG_DWORD /d 1 /f & powershell -NoProfile -Command $k=[Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('SOFTWARE\\ConfigWeaveTest\\Exact'); $a=$k.GetAccessControl(); $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule('BUILTIN\\Guests','FullControl','ContainerInherit','None','Allow'))); $k.SetAccessControl($a) & exit 0"
+    setup = "reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v kindchange /t REG_SZ /d plain-text /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob /t REG_BINARY /d 0102ff /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v blob2 /t REG_BINARY /d 0a0b /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v gone /t REG_SZ /d bye /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest /v nothing /t REG_NONE /f & reg add HKLM\\SOFTWARE\\ConfigWeaveTest32\\Doomed32\\Child /v x /t REG_DWORD /d 1 /f /reg:32 & reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\Doomed\\Child /v x /t REG_DWORD /d 1 /f & powershell -NoProfile -Command $k=[Microsoft.Win32.Registry]::LocalMachine.CreateSubKey('SOFTWARE\\ConfigWeaveTest\\Exact'); $a=$k.GetAccessControl(); $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule('BUILTIN\\Guests','FullControl','ContainerInherit','None','Allow'))); $k.SetAccessControl($a) & exit 0"
 
     step "greeting" {
       description = "Write a string value through a lower-case hive prefix and a trailing backslash"
@@ -132,6 +134,18 @@ package "windows_registry" {
       description = "Write a qword above the signed 64-bit range"
       resource = "value"
       properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "big" data = "18446744073709551615" kind = :qword }
+    }
+
+    step "negative_qword" {
+      description = "Write a qword with its signed spelling"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "neg_q" data = "-2" kind = :qword }
+    }
+
+    step "top_bit_qword" {
+      description = "Write a qword with only the top bit set, one above the signed 64-bit range"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "top_bit" data = "9223372036854775808" kind = :qword }
     }
 
     step "expand" {
@@ -182,6 +196,12 @@ package "windows_registry" {
       properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "blob2" data = "now a string" }
     }
 
+    step "none_absent" {
+      description = "Delete a seeded REG_NONE value"
+      resource = "value"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest" name = "nothing" ensure = :absent }
+    }
+
     step "value_absent" {
       description = "Delete a seeded string value"
       resource = "value"
@@ -212,6 +232,18 @@ package "windows_registry" {
       description = "Create a key"
       resource = "key"
       properties { key = "HKLM\\Software\\ConfigWeaveTest\\Sub" }
+    }
+
+    step "wow64_key" {
+      description = "Create a key in the 32-bit view"
+      resource = "key"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest32\\Sub32" view = :wow64_32 }
+    }
+
+    step "wow64_key_absent" {
+      description = "Delete a seeded key and its subtree in the 32-bit view"
+      resource = "key"
+      properties { key = "HKLM\\Software\\ConfigWeaveTest32\\Doomed32" view = :wow64_32 ensure = :absent }
     }
 
     step "acl_key" {

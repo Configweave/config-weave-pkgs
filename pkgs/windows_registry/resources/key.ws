@@ -1,5 +1,6 @@
 use value
 use log
+use registry
 use common
 use acl
 
@@ -54,6 +55,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let hive = parts.get(0).unwrap_or("")
     let sub = parts.get(1).unwrap_or("")
     let view = common::view_member(params)?
+    let opts = common::view_opts(params)?
     let present = common::want_present(params)?
     let owner = common::param_str(params, "owner", "")
     let perms = common::param_strs(params, "permissions")
@@ -61,26 +63,22 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if !present { guard_delete(key, hive, sub)? }
     let managed = present && (owner != "" || !perms.is_empty() || exact)
     let prelude = if managed { acl::ps_prelude(owner, perms, exact)? } else { "" }
-    let st = common::ps_json("reading registry key " + key,
-        common::ps_open(hive, view, sub) + prelude +
-        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree, [System.Security.AccessControl.RegistryRights]::ReadKey)\n" +
-        "if ($null -eq $k) {{ '{{\"exists\":false}}'; exit 0 }}\n" +
-        (if managed {
-            "$acl = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
-            "$drift = CwEval $acl\n" +
-            "$have = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
-            "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
-            "[pscustomobject]@{{ exists = $true; drift = @($drift) }} | ConvertTo-Json -Compress\n"
-        } else {
-            "'{{\"exists\":true}}'\n"
-        })
-    )?
-    let exists = common::get_bool(st, "exists")
+    let exists = registry::key_exists_with(common::host_key(hive, sub), opts)?
     if !present {
         if exists { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     if !exists { return Ok(CheckResult::NotConfigured) }
+    if !managed { return Ok(CheckResult::AlreadyConfigured) }
+    let st = common::ps_json("reading the security of registry key " + key,
+        common::ps_open(hive, view, sub) + prelude +
+        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree, [System.Security.AccessControl.RegistryRights]::ReadKey)\n" +
+        "$acl = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
+        "$drift = CwEval $acl\n" +
+        "$have = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
+        "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
+        "[pscustomobject]@{{ drift = @($drift) }} | ConvertTo-Json -Compress\n"
+    )?
     let drift = common::get_list(st, "drift")
     if !drift.is_empty() {
         for d in drift { log::info(key + ": " + d.as_string().unwrap_or("")) }
@@ -95,19 +93,22 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let hive = parts.get(0).unwrap_or("")
     let sub = parts.get(1).unwrap_or("")
     let view = common::view_member(params)?
-    let open = common::ps_open(hive, view, sub)
+    let opts = common::view_opts(params)?
+    let hkey = common::host_key(hive, sub)
     if !common::want_present(params)? {
         guard_delete(key, hive, sub)?
+        if !registry::key_exists_with(hkey, opts)? { return Ok(ApplyResult::Success) }
         log::info("deleting registry key " + key + " and its subtree")
-        common::ps_run("deleting registry key " + key,
-            open + "if ($null -ne $base.OpenSubKey($sub)) {{ $base.DeleteSubKeyTree($sub, $false) }}\n")?
+        registry::delete_key_with(hkey, opts)?
         return Ok(ApplyResult::Success)
     }
+    log::info("ensuring registry key " + key)
+    registry::create_key_with(hkey, opts)?
     let owner = common::param_str(params, "owner", "")
     let perms = common::param_strs(params, "permissions")
     let exact = mode_exact(params)?
-    let script = open + acl::ps_prelude(owner, perms, exact)? +
-        "$null = $base.CreateSubKey($sub)\n" +
+    if owner == "" && perms.is_empty() && !exact { return Ok(ApplyResult::Success) }
+    let script = common::ps_open(hive, view, sub) + acl::ps_prelude(owner, perms, exact)? +
         "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]'ReadKey, WriteKey, ChangePermissions, TakeOwnership')\n" +
         // The owner and the DACL are written separately, each with only its
         // own section loaded, so neither write touches the other.
@@ -130,7 +131,6 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         "    $k.SetAccessControl($a)\n" +
         "  }}\n" +
         "}}\n"
-    log::info("ensuring registry key " + key)
-    common::ps_run("configuring registry key " + key, script)?
+    common::ps_run("setting the security of registry key " + key, script)?
     Ok(ApplyResult::Success)
 }
