@@ -629,7 +629,8 @@ binary or account.
   The SCM cannot report a password back, so it is pushed when the service is
   created, when `user` changes, or when `password_revision` changes. Bump
   the revision whenever the password changes.
-- `startup` includes `:automatic_delayed`.
+- `startup` includes `:automatic_delayed`. `:automatic` does not match a
+  delayed-start service: applying it clears the delay.
 - Start, stop and resume wait for the target state, up to `timeout` (60s).
   Pending states are waited out, and a paused service is resumed. A service
   whose `path` or account changed while it should be `:running` is restarted
