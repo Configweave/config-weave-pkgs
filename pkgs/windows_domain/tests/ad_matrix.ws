@@ -16,17 +16,12 @@
 // Credentials: the windows-server-2025 template's built-in Administrator is
 // `vmlab123!`; after dc01 promotes, that account becomes CORP\Administrator.
 //
-// Scenario properties reach the engine as quoted strings, which a symbol
-// param refuses (and `machine.apply(dir)` cannot run a playbook: it passes
-// no play name). So the steps that need a symbol (ensure = :absent,
-// mode = :new_forest) are written as a playbook here, copied into the guest
-// beside the package, and run with the guest's own config-weave binary.
+// Symbol params (ensure = :absent, mode = :new_forest) are passed as plain
+// strings: testlab renders a top-level string as a symbol when the param is
+// declared `type = "symbol"`.
 
 use testlab
 use value
-use fs
-use path
-use json
 
 // Small Value builders so the resource property maps stay readable.
 fn s(v: string) -> Value { Value::String(v) }
@@ -50,52 +45,6 @@ fn gv_count(m: Value, key: string) -> int {
 // the scenario asserts through the same lens playbooks will use.
 fn membership(m: Machine) -> Result[Value, string] {
     m.gather("windows_domain.membership", Value::Null)
-}
-
-// ---------------------------------------------------------------- symbols
-
-// Run one step, written as WCL properties (so symbols are allowed), through
-// the guest's config-weave in `mode` ("check" or "apply"), and return its
-// status and message. `tag` names a fresh guest directory for this call.
-fn run_wcl(m: Machine, tag: string, mode: string, resource: string, props: string) -> Result[List[string], string] {
-    let dir = fs::temp_dir()?
-    let pb = path::join(dir, "playbook.wcl")
-    fs::write(pb,
-        "playbook \"ad-matrix\" {{\n  description = \"scenario step\"\n  version = \"0.0.0\"\n" +
-        "  play \"t\" {{\n    description = \"scenario step\"\n" +
-        "    step \"step\" {{\n      description = \"" + tag + "\"\n      resource = \"" + resource + "\"\n" +
-        "      properties {{ " + props + " }}\n    }}\n  }}\n}}\n")?
-    let guest = "C:/weave/sym/" + tag
-    m.copy_in(path::absolutize("pkgs/windows_domain")?, guest + "/pkgs/windows_domain")?
-    m.copy_in(pb, guest + "/playbook.wcl")?
-    fs::delete_dir(dir)?
-    let r = m.exec("C:/weave/config-weave.exe", [mode, guest, "t", "--json", "--continue-on-error"])?
-    let report = json::parse(r.stdout.trim())?
-    if let Some(steps) = report.get("steps") {
-        if let Some(step) = steps.at(0) {
-            return Ok([gv_str(step, "status"), gv_str(step, "message")])
-        }
-    }
-    Err(tag + ": no step in the report: " + r.stdout + r.stderr)
-}
-
-fn expect_wcl(m: Machine, tag: string, mode: string, resource: string, props: string, want: string) -> Result[string, string] {
-    let r = run_wcl(m, tag, mode, resource, props)?
-    if r[0] != want { return Err(tag + ": expected " + want + " after " + mode + ", got " + r[0] + " (" + r[1] + ")") }
-    Ok(r[1])
-}
-
-// The symbol-carrying counterpart of promote() below.
-fn promote_wcl(m: Machine, tag: string, resource: string, props: string) -> Result[bool, string] {
-    expect_wcl(m, tag + "-apply", "apply", resource, props, "reboot_required")?
-    expect_wcl(m, tag + "-pending", "check", resource, props, "reboot_required")?
-    for i in 0..3 {
-        m.reboot()?
-        let r = run_wcl(m, tag + "-after{i}", "apply", resource, props)?
-        if r[0] == "already_configured" { return Ok(true) }
-        if r[0] != "reboot_required" { return Err(tag + ": after reboot {i}, got " + r[0] + " (" + r[1] + ")") }
-    }
-    Err(tag + ": still asking for a reboot after three")
 }
 
 // ---------------------------------------------------------------- helpers
@@ -187,8 +136,6 @@ fn settle(m: Machine) -> Result[bool, string] {
     Err(m.name() + ": the guest agent never answered a command")
 }
 
-fn corp_admin() -> string { "credential_user = \"CORP\\\\Administrator\" credential_password = \"vmlab123!\"" }
-
 fn run(lab: Lab) -> Result[bool, string] {
     // --- dc01: new forest, serving DNS for the corp segment --------------
     // mode defaults to :auto: no credential, no DC answers and the name does
@@ -257,10 +204,13 @@ fn run(lab: Lab) -> Result[bool, string] {
     lab.log("member01 joined as MEMBER01X in OU=Servers, and its moved account was put back")
 
     // A domain that answers is never re-created, even when :new_forest asks.
-    let nf = run_wcl(mem, "new-forest", "apply", "windows_domain.domain_controller",
-        "domain_name = \"corp.example.com\" mode = :new_forest safe_mode_password = \"P@ssw0rd-DSRM!\"")?
-    if nf[0] != "error" || !nf[1].contains("refusing to create a second forest") {
-        return Err("mode = :new_forest for an existing domain: expected the refusal, got " + nf[0] + " (" + nf[1] + ")")
+    let nf = mem.apply_resource("windows_domain.domain_controller", Value::Map(#{
+        "domain_name": s("corp.example.com"),
+        "mode": s("new_forest"),
+        "safe_mode_password": s("P@ssw0rd-DSRM!")
+    }))?
+    if nf.status != "error" || !nf.message.contains("refusing to create a second forest") {
+        return Err("mode = :new_forest for an existing domain: expected the refusal, got " + nf.status + " (" + nf.message + ")")
     }
     // A credential under :auto means "join", so an unknown domain is an error.
     let ad = mem.apply_resource("windows_domain.domain_controller", Value::Map(#{
@@ -300,8 +250,14 @@ fn run(lab: Lab) -> Result[bool, string] {
         "(Split-Path (Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Netlogon\\Parameters').SysVol)")?
     if placed.to_upper() != "BRANCH|C:\\NTDS2|C:\\NTDS2LOG|C:\\SYSVOL2" { return Err("dc02 site and folders are '" + placed + "'") }
     // Demoting "a DC of alt.test" must leave this DC of corp alone.
-    expect_wcl(dc2, "other-domain", "check", "windows_domain.domain_controller",
-        "domain_name = \"alt.test\" ensure = :absent local_admin_password = \"vmlab123!\"", "already_configured")?
+    let od = dc2.check_resource("windows_domain.domain_controller", Value::Map(#{
+        "domain_name": s("alt.test"),
+        "ensure": s("absent"),
+        "local_admin_password": s("vmlab123!")
+    }))?
+    if od.status != "already_configured" {
+        return Err(":absent for another domain on dc02: expected already_configured, got " + od.status + " (" + od.message + ")")
+    }
     lab.log("dc02 replicated into corp.example.com, in site Branch")
 
     // --- dc-alt: a second, independent forest with explicit levels ------
@@ -326,9 +282,14 @@ fn run(lab: Lab) -> Result[bool, string] {
 
     // --- dc-alt again: demote the last DC, taking the domain with it ------
     lab.log("demoting dc-alt as the last DC of alt.test")
-    promote_wcl(alt, "alt-demote", "windows_domain.domain_controller",
-        "domain_name = \"alt.test\" ensure = :absent local_admin_password = \"vmlab123!\" last_dc_in_domain = true " +
-        "credential_user = \"ALT\\\\Administrator\" credential_password = \"vmlab123!\"")?
+    promote(alt, "windows_domain.domain_controller", Value::Map(#{
+        "domain_name": s("alt.test"),
+        "ensure": s("absent"),
+        "local_admin_password": s("vmlab123!"),
+        "last_dc_in_domain": b(true),
+        "credential_user": s("ALT\\Administrator"),
+        "credential_password": s("vmlab123!")
+    }))?
     let ma = membership(alt)?
     if gv_bool(ma, "is_dc") || gv_bool(ma, "part_of_domain") {
         return Err("dc-alt is still a DC or domain member after removing the last DC (role '" + gv_str(ma, "role") + "')")
@@ -337,8 +298,14 @@ fn run(lab: Lab) -> Result[bool, string] {
 
     // --- dc02 again: forced demotion -------------------------------------
     lab.log("demoting dc02 with force_removal")
-    promote_wcl(dc2, "dc02-demote", "windows_domain.domain_controller",
-        "domain_name = \"corp.example.com\" ensure = :absent local_admin_password = \"vmlab123!\" force_removal = true " + corp_admin())?
+    promote(dc2, "windows_domain.domain_controller", Value::Map(#{
+        "domain_name": s("corp.example.com"),
+        "ensure": s("absent"),
+        "local_admin_password": s("vmlab123!"),
+        "force_removal": b(true),
+        "credential_user": s("CORP\\Administrator"),
+        "credential_password": s("vmlab123!")
+    }))?
     let m2 = membership(dc2)?
     if gv_bool(m2, "is_dc") {
         return Err("dc02 is still a DC after demotion (role '" + gv_str(m2, "role") + "')")
@@ -350,8 +317,12 @@ fn run(lab: Lab) -> Result[bool, string] {
 
     // --- member01 again: leave the domain, then change workgroup ----------
     lab.log("member01 leaves corp.example.com")
-    promote_wcl(mem, "leave", "windows_domain.domain_member",
-        "domain_name = \"corp.example.com\" ensure = :absent " + corp_admin())?
+    promote(mem, "windows_domain.domain_member", Value::Map(#{
+        "domain_name": s("corp.example.com"),
+        "ensure": s("absent"),
+        "credential_user": s("CORP\\Administrator"),
+        "credential_password": s("vmlab123!")
+    }))?
     let out = membership(mem)?
     if gv_bool(out, "part_of_domain") || gv_str(out, "workgroup") != "WORKGROUP" {
         return Err("member01 did not land in WORKGROUP (workgroup '" + gv_str(out, "workgroup") + "')")
