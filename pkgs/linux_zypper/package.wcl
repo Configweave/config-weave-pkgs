@@ -1,10 +1,11 @@
 package "linux_zypper" {
-  description = "Manage packages, repositories, signing keys and locks on zypper/SUSE systems"
+  description = "Manage packages, repositories, signing keys and locks on zypper/SUSE systems. Every resource runs zypper or rpm, so all five share the lock group \"zypp\" and no two steps run at the same time; zypper also waits up to five minutes for another zypp process's lock. The lock does not order steps: put a repository and its key before cache_updated, and cache_updated before package, with requires"
 
   resource "package" {
     description = "Ensure an rpm package is installed, at a given version if one is set, or absent, through zypper. name is resolved the way zypper install resolves it, against what installed packages provide, so a capability or a file path works too. Licenses are accepted automatically. zypper exit codes 100-103 count as success, and 102 (reboot needed) is reported as RebootRequired; 107 (a package scriptlet failed) is an error. A lock (linux_zypper.lock) makes zypper refuse to change the package; release it first. zypper waits up to five minutes for another zypp process's lock"
     script = "resources/package.ws"
     concurrency = "exclusive"
+    lock = "zypp"
     param "name" { description = "Package name, capability or file path; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -23,6 +24,7 @@ package "linux_zypper" {
     description = "Run zypper refresh when the last refresh this resource made is older than max_age, or when /etc/zypp/repos.d changed since. A repository that fails to refresh is an error, so a partial refresh is never recorded as fresh. The refresh time is the mtime of /var/lib/config-weave/zypper-cache-updated"
     script = "resources/cache_updated.ws"
     concurrency = "exclusive"
+    lock = "zypp"
     param "max_age" {
       description = "Refresh when the last update is older than this span"
       type = "duration"
@@ -35,6 +37,7 @@ package "linux_zypper" {
     description = "Ensure a zypper repository is defined with exactly these settings, or removed. Settings are read from the repository's section in /etc/zypp/repos.d and reconciled with zypper modifyrepo; a changed url, which modifyrepo cannot change, removes and adds the repository again. The URL is not probed when the repository is added"
     script = "resources/repository.ws"
     concurrency = "exclusive"
+    lock = "zypp"
     param "alias" { description = "Repository alias, its identity: letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -55,6 +58,7 @@ package "linux_zypper" {
     description = "Ensure an RPM signing key is imported into the rpm database, with its armored copy at /etc/pki/rpm-gpg/<name>.asc, or that both are gone. Present checks the rpm database as well as the file, so a key removed with rpm -e is imported again. A url is downloaded once, and its stored copy stands for it afterwards: a key changed at the url is not noticed until the file is deleted"
     script = "resources/gpg_key.ws"
     concurrency = "exclusive"
+    lock = "zypp"
     param "name" { description = "Key file basename under /etc/pki/rpm-gpg; .asc is appended. Letters, digits, '_', '-', '.', '+' and '@', not starting with '.' or '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
@@ -72,6 +76,7 @@ package "linux_zypper" {
     description = "Ensure a zypper package lock (zypper addlock) is present or absent. A lock stops zypper installing, upgrading or removing the package, linux_zypper.package included. The name is matched exactly against the package locks zypper locks lists"
     script = "resources/lock.ws"
     concurrency = "exclusive"
+    lock = "zypp"
     param "name" { description = "Package name to lock; must not start with '-'" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
