@@ -824,7 +824,8 @@ refused, because the cmdlets would expand them to other rules or adapters.
 
 Every resource needs Microsoft Defender Antivirus installed with its
 `WinDefend` service running. When another antivirus product has taken over,
-they fail with an error that says so.
+they fail with an error that says so. Just after boot, while the service is
+running but Defender does not answer yet, they wait up to two minutes for it.
 
 ### `mssql`
 
