@@ -114,12 +114,13 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let ids = common::user_uid(user)? + ":" + common::user_gid(user)?
     if !fs::is_dir(d) {
         fs::mkdir(d)?
-        common::run("securing " + d, "chmod 700 -- " + common::q(d))?
+        fs::chmod(d, Value::String("0700"))?
     }
     let text = read_keys(p)?
     let next = rewrite(text, identity(key), key)
     if next != text || !fs::is_file(p) { common::write_atomic(p, next)? }
-    common::run("securing " + d, "chmod 700 -- " + common::q(d) + " && chmod 600 -- " + common::q(p))?
+    fs::chmod(d, Value::String("0700"))?
+    fs::chmod(p, Value::String("0600"))?
     common::chown_ids(d, ids)?
     common::chown_ids(p, ids)?
     Ok(ApplyResult::Success)
