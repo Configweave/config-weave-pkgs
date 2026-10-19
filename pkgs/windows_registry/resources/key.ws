@@ -3,6 +3,7 @@ use log
 use registry
 use common
 use acl
+use access
 
 // Keys an :absent step may never delete, below the hive (compared
 // case-insensitively). Everything one segment below a hive is refused too.
@@ -49,6 +50,36 @@ fn mode_exact(params: Value) -> Result[bool, string] {
     Err("invalid 'permissions_mode' value '" + m + "' (expected :additive or :exact)")
 }
 
+// The host acl module's options for this key: a registry target in the
+// chosen view.
+fn acl_opts(params: Value) -> Result[Value, string] {
+    let v = common::param_str(params, "view", "native")
+    common::view_member(params)?
+    Ok(Value::Map(#{ "target": Value::String("registry"), "view": Value::String(v) }))
+}
+
+// Rules are written to apply to the key and all subkeys.
+fn flags() -> List[string] { ["container"] }
+
+fn validate_perms(perms: List[string]) -> Result[unit, string] {
+    for spec in perms {
+        let pp = access::spec_parts(spec)?
+        access::parse_rights("registry", pp.get(0).unwrap_or(""), pp.get(1).unwrap_or(""))?
+    }
+    Ok(())
+}
+
+// The drift between the key's owner and explicit rules and the wanted
+// ones, and the rules to write when there is any (see lib/access.ws).
+fn evaluate(hkey: string, aopts: Value, owner: string, perms: List[string], exact: bool) -> Result[List[string], string] {
+    let want_owner = if owner != "" { access::sid_of(owner)? } else { "" }
+    let wants = access::wanted("registry", perms, [], flags())?
+    let cur = access::current("registry", hkey, aopts, true)?
+    let drift = if perms.is_empty() && !exact { [] } else { access::drift(cur, wants, exact, false) }
+    if want_owner != "" && cur.owner != want_owner { drift.push("owner is " + cur.owner + ", wanted " + want_owner) }
+    Ok(drift)
+}
+
 fn check(params: Value) -> Result[CheckResult, string] {
     let key = common::param_str(params, "key", "")
     let parts = common::split_key(key, 1)?
@@ -62,7 +93,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let exact = mode_exact(params)?
     if !present { guard_delete(key, hive, sub)? }
     let managed = present && (owner != "" || !perms.is_empty() || exact)
-    let prelude = if managed { acl::ps_prelude(owner, perms, exact)? } else { "" }
+    let aopts = acl_opts(params)?
+    if managed { validate_perms(perms)? }
     let exists = registry::key_exists_with(common::host_key(hive, sub), opts)?
     if !present {
         if exists { return Ok(CheckResult::NotConfigured) }
@@ -70,18 +102,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
     }
     if !exists { return Ok(CheckResult::NotConfigured) }
     if !managed { return Ok(CheckResult::AlreadyConfigured) }
-    let st = common::ps_json("reading the security of registry key " + key,
-        common::ps_open(hive, view, sub) + prelude +
-        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree, [System.Security.AccessControl.RegistryRights]::ReadKey)\n" +
-        "$acl = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
-        "$drift = CwEval $acl\n" +
-        "$have = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
-        "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
-        "[pscustomobject]@{{ drift = @($drift) }} | ConvertTo-Json -Compress\n"
-    )?
-    let drift = common::get_list(st, "drift")
+    let drift = evaluate(common::host_key(hive, sub), aopts, owner, perms, exact)?
     if !drift.is_empty() {
-        for d in drift { log::info(key + ": " + d.as_string().unwrap_or("")) }
+        for d in drift { log::info(key + ": " + d) }
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
@@ -108,29 +131,25 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let perms = common::param_strs(params, "permissions")
     let exact = mode_exact(params)?
     if owner == "" && perms.is_empty() && !exact { return Ok(ApplyResult::Success) }
-    let script = common::ps_open(hive, view, sub) + acl::ps_prelude(owner, perms, exact)? +
-        "$k = $base.OpenSubKey($sub, [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree, [System.Security.AccessControl.RegistryRights]'ReadKey, WriteKey, ChangePermissions, TakeOwnership')\n" +
-        // The owner and the DACL are written separately, each with only its
-        // own section loaded, so neither write touches the other.
-        "if ($cwOwner -ne '') {{\n" +
-        "  $o = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)\n" +
-        "  if ($o.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $cwOwner) {{\n" +
-        "    CwEnableOwnerPrivileges\n" +
-        "    $o.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($cwOwner)))\n" +
-        "    $k.SetAccessControl($o)\n" +
-        "  }}\n" +
-        "}}\n" +
-        "if ($cwWant.Count -gt 0 -or $cwExact) {{\n" +
-        "  $a = $k.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)\n" +
-        "  $drift = CwEval $a\n" +
-        "  if ($drift.Count -gt 0) {{\n" +
-        "    if ($cwExact) {{ foreach ($r in (CwExplicit $a)) {{ $null = $a.RemoveAccessRuleSpecific($r) }} }}\n" +
-        "    foreach ($w in $cwWant.Values) {{\n" +
-        "      if ($cwExact -or -not $w.ok) {{ $a.AddAccessRule((CwRule $w.sid $w.mask $w.type)) }}\n" +
-        "    }}\n" +
-        "    $k.SetAccessControl($a)\n" +
-        "  }}\n" +
-        "}}\n"
-    common::ps_run("setting the security of registry key " + key, script)?
+    validate_perms(perms)?
+    let aopts = acl_opts(params)?
+    let want_owner = if owner != "" { access::sid_of(owner)? } else { "" }
+    let cur = access::current("registry", hkey, aopts, true)?
+    let rules = cur.explicit.clone()
+    let drift: List[string] = []
+    if !perms.is_empty() || exact {
+        let wants = access::wanted("registry", perms, [], flags())?
+        drift = access::drift(cur, wants, exact, false)
+        if !drift.is_empty() { rules = access::merged(cur, wants, exact, false)? }
+    }
+    let new_owner = if want_owner != "" && cur.owner != want_owner { want_owner } else { "" }
+    if drift.is_empty() && new_owner == "" { return Ok(ApplyResult::Success) }
+    // acl::set always rewrites the explicit entries, and an object or
+    // callback entry cannot be written back.
+    if drift.is_empty() && cur.other > 0 {
+        return Err("registry key " + key + " holds " + str(cur.other) + " object or callback entries, which changing the owner would drop")
+    }
+    log::info("setting the security of registry key " + key)
+    acl::set(hkey, access::spec(rules, new_owner, None), aopts)?
     Ok(ApplyResult::Success)
 }
