@@ -41,6 +41,8 @@ package "windows_powershell" {
   // C++ 2015-2022 runtime plus App Installer) is in place. It asks for the
   // MSI (wix) installer at machine scope, so the build lands in the MSI's
   // root; winget's "restart to finish" exit code reports reboot_required.
+  // winget offers the preview only as MSIX, so :winget with :preview is an
+  // error; use :msi or :zip for it.
   resource "pwsh_installed" {
     description = "Ensure a PowerShell 7 build is installed, at a given version, by MSI, winget, zip, the distro repository or the release tarball"
     script = "resources/pwsh_installed.ws"
@@ -69,7 +71,7 @@ package "windows_powershell" {
       default = :auto
 
       symbol "auto"    { description = "Pick :msi on Windows and :repo on Linux" }
-      symbol "winget"  { description = "Windows: winget install Microsoft.PowerShell" }
+      symbol "winget"  { description = "Windows: winget install Microsoft.PowerShell, as its MSI at machine scope; not for channel :preview, which winget offers only as MSIX" }
       symbol "msi"     { description = "Windows: download the release MSI and run msiexec" }
       symbol "zip"     { description = "Windows: download the release zip and extract it — the side-by-side method" }
       symbol "repo"    { description = "Linux: register packages.microsoft.com and install the distro package" }
@@ -2833,14 +2835,16 @@ package "windows_powershell" {
     }
   }
 
-  // After pwsh7_installs_and_configures, which leaves the 7.5.4 MSI. Setup
-  // installs the Visual C++ runtime, which is what the stock App Installer's
-  // winget lacks to start as SYSTEM; App Installer itself ships with the
-  // template. No double quotes in a Windows setup.
+  // Its own VM: setup installs the 7.5.4 MSI for the :winget step to
+  // upgrade, and the Visual C++ runtime, which is what the stock App
+  // Installer's winget lacks to start as SYSTEM (App Installer itself ships
+  // with the template). The :msi step installs the preview channel beside
+  // it, so every converging step starts from drift. No double quotes in a
+  // Windows setup.
   test "pwsh7_tracks_latest" {
-    description = "version = \"latest\" upgrades the MSI install through winget, is converged for :msi, extracts a zip into a fixed root, and errors when the lookup fails"
+    description = "version = \"latest\" upgrades an older MSI install through winget, installs the latest preview MSI, extracts a zip into a fixed root, and errors when the lookup fails"
     template = "x86_64/windows-server-2025"
-    group = "win2025ps7"
+    group = "win2025ps7latest"
     memory = "4GiB"
     setup = "powershell -NoProfile -NonInteractive -Command $ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path C:\\Windows\\System32\\vcruntime140_1.dll)) { Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile C:\\cw-vcr.exe; $null = Start-Process C:\\cw-vcr.exe -ArgumentList '/install /quiet /norestart' -Wait -PassThru }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }"
     verify = "tests/pwsh7_latest_verify.ws"
@@ -2856,8 +2860,18 @@ package "windows_powershell" {
       }
     }
 
+    step "winget_preview_refused" {
+      description = "winget offers the preview only as MSIX, so :winget with :preview is an error"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :winget
+        channel = :preview
+      }
+    }
+
     step "winget_latest" {
-      description = "winget (found under WindowsApps, as SYSTEM) upgrades the older MSI build to the current release, as the MSI installer"
+      description = "winget (found under WindowsApps, as SYSTEM) upgrades the 7.5.4 MSI install to the current release, as the MSI"
       resource = "pwsh_installed"
       properties {
         method = :winget
@@ -2865,13 +2879,13 @@ package "windows_powershell" {
       }
     }
 
-    step "msi_latest_converged" {
-      description = "The same install is the latest release for :msi too"
+    step "msi_preview_latest" {
+      description = "The current preview release's MSI installs beside stable"
       resource = "pwsh_installed"
-      expect = "already_configured"
       requires = ["winget_latest"]
       properties {
         method = :msi
+        channel = :preview
         version = "latest"
       }
     }
@@ -2879,7 +2893,7 @@ package "windows_powershell" {
     step "zip_latest" {
       description = "The latest release zip is extracted into a fixed root"
       resource = "pwsh_installed"
-      requires = ["msi_latest_converged"]
+      requires = ["msi_preview_latest"]
       properties {
         method = :zip
         version = "latest"

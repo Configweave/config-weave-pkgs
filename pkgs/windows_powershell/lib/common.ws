@@ -9,6 +9,7 @@ use env
 use hash
 use time
 use http
+use regex
 use json
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
@@ -132,10 +133,11 @@ fn pascal(symbol: string) -> string {
 }
 
 // Many tools report failures on stdout, so the error carries stderr, falls
-// back to stdout, and always names the exit code.
+// back to stdout, and always names the exit code. winget redraws a spinner
+// and progress bars with carriage returns; those lines are dropped.
 fn failure(what: string, out: CmdOutput) -> string {
-    let detail = out.stderr.trim()
-    if detail == "" { detail = out.stdout.trim() }
+    let detail = readable(out.stderr)
+    if detail == "" { detail = readable(out.stdout) }
     if detail == "" { return what + " failed (exit " + str(out.code) + ")" }
     what + " failed (exit " + str(out.code) + "): " + detail
 }
@@ -180,6 +182,16 @@ fn run_ps(edition: string, script: string) -> Result[CmdOutput, string] {
 // network and can run for minutes.
 fn run_ps_streaming(edition: string, script: string, seconds: int) -> Result[CmdOutput, string] {
     run_ps_with(edition, script, seconds, true)
+}
+
+fn readable(text: string) -> string {
+    let lines: List[string] = []
+    for line in text.replace("\r", "\n").replace("\u{8}", "\n").split("\n") {
+        let t = line.trim()
+        if t != "" && !t.contains("\u{2588}") && !t.contains("\u{2592}") && regex::is_match("[A-Za-z0-9]", t) { lines.push(t) }
+    }
+    let start = if lines.len() > 20 { lines.len() - 20 } else { 0 }
+    lines.slice(start, lines.len()).join("\n")
 }
 
 fn run_ps_streaming_env(edition: string, script: string, vars: Map[string, Value], seconds: int) -> Result[CmdOutput, string] {

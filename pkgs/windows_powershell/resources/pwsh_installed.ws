@@ -78,6 +78,11 @@ fn method(params: Value) -> Result[string, string] {
     if !windows && !for_linux.contains(resolved) {
         return Err("method :" + resolved + " is a Windows method; use :repo or :tarball on Linux")
     }
+    // winget publishes the preview only as an MSIX package, which never
+    // lands in the MSI root check reads, so it could never converge.
+    if resolved == "winget" && preview(params) {
+        return Err("method :winget cannot install channel :preview: winget offers Microsoft.PowerShell.Preview only as an MSIX package, which does not install into C:\\Program Files\\PowerShell\\7-preview. Use :msi or :zip")
+    }
     Ok(resolved)
 }
 
@@ -220,10 +225,7 @@ fn uninstall_msi(params: Value) -> Result[ApplyResult, string] {
     Ok(ApplyResult::Success)
 }
 
-fn winget_id(params: Value) -> string {
-    if preview(params) { return "Microsoft.PowerShell.Preview" }
-    "Microsoft.PowerShell"
-}
+fn winget_id(params: Value) -> string { "Microsoft.PowerShell" }
 
 // winget is driven through the newest App Installer copy under WindowsApps
 // (common::winget_ps), since SYSTEM has no winget on PATH. The MSI (wix)
