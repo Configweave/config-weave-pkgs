@@ -853,6 +853,10 @@ resource that creates something takes `ensure = :absent`.
   log/temp/backup directories (in `msmdsrv.ini`, with a service restart) and
   server administrators (through AMO), and the edition and sa password
   (Linux).
+- `analysis_services_setting`: one Analysis Services server property, named
+  as SSMS shows it (`ThreadPool\Process\MaxThreads`). It edits that element
+  of the instance's `msmdsrv.ini` in place, keeping the rest of the file's
+  bytes, and restarts the AS service only when the value changed.
 - `server_setting`: any `sp_configure` value. It compares the configured value,
   so a restart-only option converges and warns until SQL Server restarts.
 - `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),

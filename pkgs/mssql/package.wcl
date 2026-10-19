@@ -61,6 +61,16 @@ package "mssql" {
     param "install_timeout"       { description = "Maximum seconds to wait for the installer or mssql-conf" type = "int" default = 3600 }
   }
 
+  resource "analysis_services_setting" {
+    description = "Set one Analysis Services server property in the instance's msmdsrv.ini, then restart the service when the value changed. The file is found through Instance Names\\OLAP and <id>\\Setup\\SQLPath; only the setting's element changes, and the rest of the file keeps its bytes (encoding, BOM, line endings, indentation and comments). A missing element is created along the path, as SSMS does for a setting still at its default. Windows only"
+    script = "resources/analysis_services_setting.ws"
+    concurrency = "exclusive"
+    param "instance" { description = "Analysis Services instance name; MSSQLSERVER is the default instance (service MSSQLServerOLAPService), any other is MSOLAP$<instance>" type = "string" default = "MSSQLSERVER" }
+    param "setting"  { description = "The property path as SSMS Server Properties shows it with 'Show Advanced (All) Properties', e.g. ThreadPool\\Process\\MaxThreads; each segment is an element under ConfigurationSettings" type = "string" required = true }
+    param "value"    { description = "The wanted element text, compared exactly (booleans are 0 or 1, as msmdsrv.ini stores them)" type = "string" required = true }
+    param "restart"  { description = "Restart the Analysis Services service when the value changed (waiting up to 300s for each of stop and start); when false the change waits for the next restart" type = "bool" default = true }
+  }
+
   // ---------------------------------------------------------------------------
   // Server-level configuration (T-SQL via sqlcmd)
   // ---------------------------------------------------------------------------
@@ -873,6 +883,55 @@ SETUP
       description = "Uninstall the engine"
       resource = "instance"
       properties { ensure = :absent }
+    }
+  }
+
+  // Analysis Services settings without Analysis Services: setup registers
+  // two fake instances under Instance Names\\OLAP whose msmdsrv.ini files
+  // differ in encoding and line endings (UTF-8 with a BOM and CRLF; no BOM
+  // and LF), with a comment, tab indentation and a self-closing element.
+  // verify compares both files byte for byte, so a resource that reformats
+  // the file, drops the BOM or the comment, or indents a created element
+  // wrongly fails. restart = false, as there is no service to restart. The
+  // setup script is base64 (powershell -EncodedCommand), since Windows test
+  // setups run under cmd.exe and cannot contain double quotes.
+  test "analysis_services_setting" {
+    description = "Change an existing msmdsrv.ini element, create a missing one, and keep the rest of each file byte for byte"
+    template = "x86_64/windows-server-2025"
+    verify = "tests/as_setting_verify.ws"
+    setup = "powershell -NoProfile -NonInteractive -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAbgBhAG0AZQBzACAAPQAgACcASABLAEwATQA6AFwAUwBPAEYAVABXAEEAUgBFAFwATQBpAGMAcgBvAHMAbwBmAHQAXABNAGkAYwByAG8AcwBvAGYAdAAgAFMAUQBMACAAUwBlAHIAdgBlAHIAXABJAG4AcwB0AGEAbgBjAGUAIABOAGEAbQBlAHMAXABPAEwAQQBQACcACgBOAGUAdwAtAEkAdABlAG0AIAAtAFAAYQB0AGgAIAAkAG4AYQBtAGUAcwAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKAGYAbwByAGUAYQBjAGgAIAAoACQAaQAgAGkAbgAgACcAQwBXAEIATwBNACcALAAgACcAQwBXAEwARgAnACkAIAB7AAoAIAAgAE4AZQB3AC0ASQB0AGUAbQBQAHIAbwBwAGUAcgB0AHkAIAAtAFAAYQB0AGgAIAAkAG4AYQBtAGUAcwAgAC0ATgBhAG0AZQAgACQAaQAgAC0AVgBhAGwAdQBlACAAKAAnAE0AUwBBAFMAMQA1AC4AJwAgACsAIAAkAGkAKQAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKACAAIAAkAHMAZQB0AHUAcAAgAD0AIAAnAEgASwBMAE0AOgBcAFMATwBGAFQAVwBBAFIARQBcAE0AaQBjAHIAbwBzAG8AZgB0AFwATQBpAGMAcgBvAHMAbwBmAHQAIABTAFEATAAgAFMAZQByAHYAZQByAFwATQBTAEEAUwAxADUALgAnACAAKwAgACQAaQAgACsAIAAnAFwAUwBlAHQAdQBwACcACgAgACAATgBlAHcALQBJAHQAZQBtACAALQBQAGEAdABoACAAJABzAGUAdAB1AHAAIAAtAEYAbwByAGMAZQAgAHwAIABPAHUAdAAtAE4AdQBsAGwACgAgACAATgBlAHcALQBJAHQAZQBtAFAAcgBvAHAAZQByAHQAeQAgAC0AUABhAHQAaAAgACQAcwBlAHQAdQBwACAALQBOAGEAbQBlACAAUwBRAEwAUABhAHQAaAAgAC0AVgBhAGwAdQBlACAAKAAnAEMAOgBcAGMAdwAtAGEAcwBcACcAIAArACAAJABpACAAKwAgACcAXABPAEwAQQBQACcAKQAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKACAAIABOAGUAdwAtAEkAdABlAG0AIAAtAEkAdABlAG0AVAB5AHAAZQAgAEQAaQByAGUAYwB0AG8AcgB5ACAALQBGAG8AcgBjAGUAIAAtAFAAYQB0AGgAIAAoACcAQwA6AFwAYwB3AC0AYQBzAFwAJwAgACsAIAAkAGkAIAArACAAJwBcAE8ATABBAFAAXABDAG8AbgBmAGkAZwAnACkAIAB8ACAATwB1AHQALQBOAHUAbABsAAoAfQAKACQAdAAgAD0AIABbAGMAaABhAHIAXQA5AAoAZgB1AG4AYwB0AGkAbwBuACAARABvAGMAKAAkAG4AbAApACAAewAKACAAIAAnADwAQwBvAG4AZgBpAGcAdQByAGEAdABpAG8AbgBTAGUAdAB0AGkAbgBnAHMAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAnADwAIQAtAC0AIABzAGUAZQBkAGUAZAAgAGIAeQAgAHQAaABlACAAbQBzAHMAcQBsACAAdABlAHMAdAAgAC0ALQA+ACcAIAArACAAJABuAGwAIAArAAoAIAAgACQAdAAgACsAIAAnADwAVABoAHIAZQBhAGQAUABvAG8AbAA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwAUAByAG8AYwBlAHMAcwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAkAHQAIAArACAAJwA8AE0AYQB4AFQAaAByAGUAYQBkAHMAPgAwADwALwBNAGEAeABUAGgAcgBlAGEAZABzAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJAB0ACAAKwAgACcAPAAvAFAAcgBvAGMAZQBzAHMAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAnADwALwBUAGgAcgBlAGEAZABQAG8AbwBsAD4AJwAgACsAIAAkAG4AbAAgACsACgAgACAAJAB0ACAAKwAgACcAPABBAGwAbABvAHcAZQBkAEIAcgBvAHcAcwBpAG4AZwBGAG8AbABkAGUAcgBzACAALwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACcAPABMAG8AZwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwARgBsAGkAZwBoAHQAUgBlAGMAbwByAGQAZQByAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwARQBuAGEAYgBsAGUAZAA+ADEAPAAvAEUAbgBhAGIAbABlAGQAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAkAHQAIAArACAAJwA8AC8ARgBsAGkAZwBoAHQAUgBlAGMAbwByAGQAZQByAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJwA8AC8ATABvAGcAPgAnACAAKwAgACQAbgBsACAAKwAKACAAIAAnADwALwBDAG8AbgBmAGkAZwB1AHIAYQB0AGkAbwBuAFMAZQB0AHQAaQBuAGcAcwA+ACcAIAArACAAJABuAGwACgB9AAoAWwBJAE8ALgBGAGkAbABlAF0AOgA6AFcAcgBpAHQAZQBBAGwAbABUAGUAeAB0ACgAJwBDADoAXABjAHcALQBhAHMAXABDAFcAQgBPAE0AXABPAEwAQQBQAFwAQwBvAG4AZgBpAGcAXABtAHMAbQBkAHMAcgB2AC4AaQBuAGkAJwAsACAAKABEAG8AYwAgACgAWwBzAHQAcgBpAG4AZwBdAFsAYwBoAGEAcgBdADEAMwAgACsAIABbAGMAaABhAHIAXQAxADAAKQApACwAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABUAGUAeAB0AC4AVQBUAEYAOABFAG4AYwBvAGQAaQBuAGcAKAAkAHQAcgB1AGUAKQApACkACgBbAEkATwAuAEYAaQBsAGUAXQA6ADoAVwByAGkAdABlAEEAbABsAFQAZQB4AHQAKAAnAEMAOgBcAGMAdwAtAGEAcwBcAEMAVwBMAEYAXABPAEwAQQBQAFwAQwBvAG4AZgBpAGcAXABtAHMAbQBkAHMAcgB2AC4AaQBuAGkAJwAsACAAKABEAG8AYwAgACgAWwBzAHQAcgBpAG4AZwBdAFsAYwBoAGEAcgBdADEAMAApACkALAAgACgATgBlAHcALQBPAGIAagBlAGMAdAAgAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAoACQAZgBhAGwAcwBlACkAKQApAAoA"
+
+    step "existing" {
+      description = "Raise ThreadPool\\Process\\MaxThreads in a UTF-8 BOM, CRLF file"
+      resource = "analysis_services_setting"
+      properties { instance = "CWBOM" setting = "ThreadPool\\Process\\MaxThreads" value = "512" restart = false }
+    }
+
+    step "created" {
+      description = "Create ThreadPool\\Query\\MaxThreads, which the file does not have yet"
+      resource = "analysis_services_setting"
+      requires = ["existing"]
+      properties { instance = "CWBOM" setting = "ThreadPool\\Query\\MaxThreads" value = "32" restart = false }
+    }
+
+    step "lf_file" {
+      description = "Change a value in a file without a BOM and with LF line endings"
+      resource = "analysis_services_setting"
+      properties { instance = "CWLF" setting = "Log\\FlightRecorder\\Enabled" value = "0" restart = false }
+    }
+
+    step "bad_setting" {
+      description = "Reject a setting path that is not a chain of element names"
+      resource = "analysis_services_setting"
+      expect = "error"
+      properties { instance = "CWBOM" setting = "ThreadPool\\1st" value = "1" restart = false }
+    }
+
+    step "no_instance" {
+      description = "Fail on an Analysis Services instance that is not installed"
+      resource = "analysis_services_setting"
+      expect = "error"
+      properties { instance = "CWNONE" setting = "ThreadPool\\Process\\MaxThreads" value = "1" restart = false }
     }
   }
 
