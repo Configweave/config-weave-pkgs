@@ -72,6 +72,70 @@ package "mssql" {
   }
 
   // ---------------------------------------------------------------------------
+  // Reporting Services
+  // ---------------------------------------------------------------------------
+
+  resource "reporting_services" {
+    description = "Install, update or uninstall SQL Server Reporting Services 2017 or later, or Power BI Report Server, from its standalone installer (/quiet /IAcceptLicenseTerms). Detected by its service (SQLServerReportingServices or PowerBIReportServer); the edition and version are compared on an installed server and changed by running the installer again (EditionUpgrade for the edition, an in-place upgrade for a newer version). The install folder cannot change in place, so a different one is an error. Exit code 3010 reports a reboot. SSRS 2016 and older is a SQL Server setup feature instead: use mssql.instance with features = RS. Configure the server with mssql.reporting_services_config. Windows only"
+    script = "resources/reporting_services.ws"
+    concurrency = "global"
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the report server and keep its edition and version" }
+      symbol "absent"  { description = "Uninstall it (/uninstall), with setup_path or the installer cached at install. The catalogue database is left on its SQL Server" }
+    }
+    param "product" {
+      description = "Which report server the installer is"
+      type = "symbol"
+      default = :ssrs
+
+      symbol "ssrs"  { description = "SQL Server Reporting Services (SQLServerReportingServices.exe, service SQLServerReportingServices, WMI instance SSRS)" }
+      symbol "pbirs" { description = "Power BI Report Server (PowerBIReportServer.exe, service PowerBIReportServer, WMI instance PBIRS)" }
+    }
+    param "setup_path"      { description = "Local path or HTTP(S) URL of the installer. A URL is downloaded beside a temp name, size-checked, retried up to three times and checked against setup_sha256 when that is set, then deleted after the run. Required to install; optional for ensure = :absent" type = "string" default = "" }
+    param "setup_sha256"    { description = "Expected SHA-256 of the installer; empty = not checked" type = "string" default = "" }
+    param "edition"         { description = "Dev, Eval or Expr (/Edition=), or a 25-character product key (/PID=, which the installer only takes on its command line). Compared on an installed server; a product key is not compared" type = "string" default = "Dev" }
+    param "install_dir"     { description = "Install folder (/InstallFolder); empty = installer default. Not changeable in place: a different folder on an installed server is an error" type = "string" default = "" }
+    param "version"         { description = "Product version prefix the installed server must have, e.g. 15.0 for SSRS 2019 or 16.0 for 2022; empty = any. A different version runs the installer, which upgrades in place" type = "string" default = "" }
+    param "install_timeout" { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
+  }
+
+  resource "reporting_services_config" {
+    description = "Configure a report server as Report Server Configuration Manager does, through its WMI provider (MSReportServer_ConfigurationSetting, whose namespace version v13 to v16 is found at run time, so SSRS 2016 to 2022 and Power BI Report Server are covered): the service account, the catalogue database (created from the provider's script when it does not exist, never dropped or upgraded), the account's RSExecRole rights on it, the database connection, the web service and web portal virtual directories and URL reservations (exactly one URL each), the enabled features, and initialisation. Every setting is compared on a configured server and only the differing ones are changed, in that order; then the service restarts and apply waits for the web service to answer. The generated SQL runs through sqlcmd on stdin. Windows only; HTTP URLs only (an HTTPS URL needs a certificate binding, which this resource does not manage)"
+    script = "resources/reporting_services_config.ws"
+    concurrency = "global"
+    param "instance"          { description = "Report server instance: the RS_<instance> WMI namespace. SSRS for SSRS 2017+, PBIRS for Power BI Report Server, MSSQLSERVER or the instance name for SSRS 2016 and older" type = "string" default = "SSRS" }
+    param "database_server"   { description = "SQL Server holding the catalogue, host[\\instance]" type = "string" default = "localhost" }
+    param "database_name"     { description = "Catalogue database name (letters, digits, _, - and $); the provider also uses <name>TempDB" type = "string" default = "ReportServer" }
+    param "credentials" {
+      description = "How the report server connects to the catalogue (DatabaseLogonType)"
+      type = "symbol"
+      default = :service_account
+
+      symbol "service_account" { description = "As its service account (logon type 2); on a remote catalogue a built-in or virtual account is its machine account" }
+      symbol "windows"         { description = "As the Windows account db_user (logon type 0)" }
+      symbol "sql"             { description = "As the SQL login db_user (logon type 1)" }
+    }
+    param "db_user"             { description = "Windows account or SQL login for credentials = :windows or :sql; compared with DatabaseLogonAccount" type = "string" default = "" }
+    param "db_password"         { description = "Password for db_user. The provider stores it encrypted and cannot return it, so it is set with the connection and whenever db_password_revision changes. Read by the script from its environment, never placed in the script or on a command line" type = "string" default = "" }
+    param "db_password_revision" { description = "Any label for the current db_password; change it to push a rotated password. Recorded under HKLM\\SOFTWARE\\config-weave\\mssql\\reporting_services_config\\<instance>" type = "string" default = "" }
+    param "web_service_url"   { description = "The web service's URL reservation, http://<host>:<port> (+ for all host names); compared with ListReservedUrls, and other reservations for the web service are released" type = "string" default = "http://+:80" }
+    param "web_service_vdir"  { description = "The web service's virtual directory (VirtualDirectoryReportServer)" type = "string" default = "ReportServer" }
+    param "web_portal_url"    { description = "The web portal's URL reservation (ReportServerWebApp; ReportManager before 2016), like web_service_url" type = "string" default = "http://+:80" }
+    param "web_portal_vdir"   { description = "The web portal's virtual directory (VirtualDirectoryReportManager)" type = "string" default = "Reports" }
+    param "service_account"   { description = "Account the report server service runs as, compared with WindowsServiceIdentityConfigured; empty = leave the installed identity (NT SERVICE\\SQLServerReportingServices). Built-in and virtual accounts (NT SERVICE\\..., NT AUTHORITY\\NetworkService, LocalService, SYSTEM) need no password" type = "string" default = "" }
+    param "service_password"  { description = "Password of a service_account that is not built-in; set with the account and whenever service_password_revision changes. Read from the script's environment" type = "string" default = "" }
+    param "service_password_revision" { description = "Any label for the current service_password; change it to push a rotated password" type = "string" default = "" }
+    param "wait_timeout"      { description = "Seconds apply waits for the web service to answer after the restart" type = "int" default = 300 }
+    param "sql_user"                  { description = "SQL login to connect to the catalogue server as, for creating the database and granting rights; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"              { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate"  { description = "Pass sqlcmd -C to trust the catalogue server's certificate without validating it" type = "bool" default = true }
+  }
+
+  // ---------------------------------------------------------------------------
   // Server-level configuration (T-SQL via sqlcmd)
   // ---------------------------------------------------------------------------
   //

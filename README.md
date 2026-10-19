@@ -857,6 +857,14 @@ resource that creates something takes `ensure = :absent`.
   as SSMS shows it (`ThreadPool\Process\MaxThreads`). It edits that element
   of the instance's `msmdsrv.ini` in place, keeping the rest of the file's
   bytes, and restarts the AS service only when the value changed.
+- `reporting_services`: install, upgrade or uninstall SSRS 2017+ or Power BI
+  Report Server from its standalone installer, with its edition and version
+  compared on an installed server.
+- `reporting_services_config`: what Report Server Configuration Manager
+  does, through the report server's WMI provider: service account, catalogue
+  database (created if missing, never dropped), the account's rights,
+  database connection, web service and portal virtual directories and URLs,
+  and initialisation. Covers SSRS 2016 to 2022 and Power BI Report Server.
 - `server_setting`: any `sp_configure` value. It compares the configured value,
   so a restart-only option converges and warns until SQL Server restarts.
 - `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),
@@ -896,6 +904,7 @@ ignored:
 - a server collation (needs the system databases rebuilt);
 - an Analysis Services server mode (fixed by setup) or data directory
   (moving it would orphan the databases under the old one);
+- a Reporting Services install folder;
 - a Windows edition (needs `setup.exe /ACTION=EditionUpgrade` with a key);
 - a Linux major version (a one-way upgrade);
 - a login's authentication type, unless `recreate_on_auth_change` is set;
