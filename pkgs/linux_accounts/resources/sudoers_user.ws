@@ -54,9 +54,11 @@ fn guard_collision(p: string, user: string) -> Result[unit, string] {
 // sudo refuses (or ignores) a drop-in that is writable by anyone but root,
 // so the mode and owner are part of the state.
 fn attrs_ok(p: string) -> Result[bool, string] {
-    let out = shell::bash("stat -c '%a %u %g' -- " + common::q(p), Value::Null)?
-    if !out.success { return Err(common::cmd_err("stat " + p, out)) }
-    Ok(out.stdout.trim() == "440 0 0")
+    let md = fs::metadata(p)?
+    let mode = md.get("mode").unwrap_or(Value::Null).as_int().unwrap_or(-1)
+    let uid = md.get("uid").unwrap_or(Value::Null).as_int().unwrap_or(-1)
+    let gid = md.get("gid").unwrap_or(Value::Null).as_int().unwrap_or(-1)
+    Ok(mode == 288 && uid == 0 && gid == 0)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -91,7 +93,10 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     // never goes live, and a valid old rule stays in place on failure.
     let tmp = temp_path(p)
     fs::write(tmp, want)?
-    let secured = common::run("securing " + tmp, "chown 0:0 -- " + common::q(tmp) + " && chmod 0440 -- " + common::q(tmp))
+    let secured = match fs::chown(tmp, Value::Int(0), Value::Int(0)) {
+        Ok(_) => fs::chmod(tmp, Value::String("0440")),
+        Err(e) => Err(e)
+    }
     if let Err(e) = secured {
         fs::delete(tmp).unwrap_or(())
         return Err(e)

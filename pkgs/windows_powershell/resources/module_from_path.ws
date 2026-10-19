@@ -6,6 +6,7 @@ use http
 use hash
 use archive
 use json
+use encoding
 use common
 use psget
 
@@ -120,35 +121,11 @@ fn read_record(target: string) -> Value {
 
 fn rec(v: Value, key: string) -> string { v.get(key).unwrap_or(Value::String("")).as_string().unwrap_or("") }
 
-// Decodes UTF-16LE through JSON escapes, since scripts have no
-// code-point-to-char conversion and the encoding module decodes only UTF-8
-// (as of config-weave v0.6.2-alpha). Windows PowerShell's
-// New-ModuleManifest writes UTF-16.
-fn hex4(n: int) -> string {
-    let digits = "0123456789abcdef"
-    let out = ""
-    let v = n
-    for _i in [0, 1, 2, 3] {
-        out = digits.slice(v % 16, v % 16 + 1) + out
-        v = v / 16
-    }
-    out
-}
-
-fn decode_utf16le(bytes: List[int], start: int) -> Result[string, string] {
-    let escaped = ""
-    let i = start
-    while i + 1 < bytes.len() {
-        escaped = escaped + "\\u" + hex4(bytes[i] + bytes[i + 1] * 256)
-        i = i + 2
-    }
-    let decoded = json::parse("\"" + escaped + "\"")?
-    Ok(decoded.as_string().unwrap_or(""))
-}
-
 fn read_manifest(file: string) -> Result[string, string] {
+    // Windows PowerShell's New-ModuleManifest writes UTF-16LE with a BOM,
+    // which from_utf16le strips.
     let bytes = fs::read_bytes(file)?
-    if bytes.len() >= 2 && bytes[0] == 255 && bytes[1] == 254 { return decode_utf16le(bytes, 2) }
+    if bytes.len() >= 2 && bytes[0] == 255 && bytes[1] == 254 { return encoding::from_utf16le(bytes) }
     let text = fs::read(file)?
     if text.starts_with("\u{FEFF}") { return Ok(text.slice(1, text.len())) }
     Ok(text)

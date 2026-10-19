@@ -208,31 +208,13 @@ fn win_instance_id(inst: string) -> Result[string, string] {
 
 // Restarts the engine and waits for it. The SCM will not stop a service
 // whose dependents are running (SQL Server Agent depends on the engine), so
-// the running dependents are stopped first and started again afterwards.
-// The host service API cannot list dependents; PowerShell only reads their
-// names, in the order EnumDependentServices gives (safe to stop in).
+// stop_dependents has the host stop the running dependents first, in the
+// SCM's order, and start them again after the engine is back.
 fn win_restart_engine(inst: string) -> Result[unit, string] {
     check_instance(inst)?
     let engine = win_service_name(inst)
-    let opts = Value::Map(#{ "timeout": Value::Int(300) })
-    let script = "$ErrorActionPreference = 'Stop'; " +
-        "(Get-Service -Name " + ps_q(engine) + ").DependentServices | " +
-        "Where-Object {{ $_.Status -eq 'Running' }} | ForEach-Object {{ $_.Name }}"
-    let out = shell::powershell(script, Value::Null)?
-    if !out.success { return Err(cmd_error("listing the services that depend on " + engine, out)) }
-    let dependents: List[string] = []
-    for line in out.stdout.split("\n") {
-        let n = line.trim()
-        if n != "" { dependents.push(n) }
-    }
-    for d in dependents { service::stop_with(d, opts)? }
-    service::restart(engine, opts)?
-    let i = dependents.len() - 1
-    while i >= 0 {
-        service::start_with(dependents.get(i).unwrap_or(""), opts)?
-        i = i - 1
-    }
-    Ok(())
+    let opts = Value::Map(#{ "timeout": Value::Int(300), "stop_dependents": Value::Bool(true) })
+    service::restart(engine, opts)
 }
 
 // Polls until the engine accepts a connection, for up to `secs` seconds.
