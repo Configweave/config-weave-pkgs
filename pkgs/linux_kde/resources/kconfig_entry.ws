@@ -261,7 +261,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let text = if existed { fs::read(e.path)? } else { "" }
     if let Some(next) = changed(text, e) {
         fs::mkdir(path::parent(e.path))?
-        fs::write(e.path, next)?
+        // the agent runs as root in a user's tree: a symlink planted at the
+        // path is refused, never written through
+        fs::write_with(e.path, next, Value::Map(#{ "follow_symlinks": Value::Bool(false) }))?
     }
     if e.present || !existed {
         if !existed || uid_of(common::link_owner(e.path)?) != uid_of(home_owner) { fresh.push(e.path) }
