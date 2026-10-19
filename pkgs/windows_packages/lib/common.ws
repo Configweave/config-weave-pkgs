@@ -8,6 +8,7 @@ use time
 use http
 use hash
 use log
+use regex
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
     if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
@@ -131,10 +132,14 @@ fn query(script: string, env: Map[string, Value]) -> Result[CmdOutput, string] {
 // An install or upgrade: two hours.
 fn action(script: string, env: Map[string, Value]) -> Result[CmdOutput, string] { run_ps(script, env, 7200) }
 
+// winget redraws a spinner and progress bars with carriage returns, so
+// lines are split on \r too, and a line with no letter or with a bar's
+// block characters is dropped: what is left is what winget said.
 fn last_lines(text: string, n: int) -> string {
     let lines: List[string] = []
-    for line in text.split("\n") {
-        if line.trim() != "" { lines.push(line.trim()) }
+    for line in text.replace("\r", "\n").replace("\u{8}", "\n").split("\n") {
+        let t = line.trim()
+        if t != "" && !t.contains("\u{2588}") && !t.contains("\u{2592}") && regex::is_match("[A-Za-z]", t) { lines.push(t) }
     }
     let start = if lines.len() > n { lines.len() - n } else { 0 }
     lines.slice(start, lines.len()).join(" / ")
