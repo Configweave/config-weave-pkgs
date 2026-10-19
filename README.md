@@ -930,8 +930,11 @@ SMTP password, so bump `password_revision` to push a new one.
 Tests: five container tests (`config_converges`, `reconcile`, `replication`,
 `replication_absent`, `availability_group`) run against the official 2022
 image. Two Ubuntu 24.04 VM tests cover the Linux install and removal, and the
-`win_install` vmlab scenario covers the Windows install, instance reconcile,
-TCP restart and availability group.
+`analysis_services_setting` Windows VM test edits two seeded `msmdsrv.ini`
+files and compares them byte for byte. The `win_install` vmlab scenario
+covers the Windows install, instance reconcile, TCP restart and availability
+group; `win_bi` covers Analysis Services, Reporting Services and Master Data
+Services on SQL Server 2019 (about 28 minutes, 1.5 GB of media).
 
 ## Development
 
