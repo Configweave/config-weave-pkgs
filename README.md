@@ -333,7 +333,13 @@ policy keys) live in `pkgs/windows_powershell/lib/`.
   channel, by product code from the Uninstall key. The MSI method carries the
   documented properties (`add_path`, `enable_remoting`, `register_manifest`,
   the two context-menu items, Microsoft Update) and reports `RebootRequired`
-  on msiexec 3010.
+  on msiexec 3010. `version = "latest"` tracks the channel's current
+  release, read from PowerShell's `tools/metadata.json` on
+  raw.githubusercontent.com (or `latest_url`) by check and apply alike: an older build is drift, and a
+  failed lookup is an error that names the URL. The archive methods need an
+  explicit `install_root` with `"latest"`. `:winget` runs the newest
+  `winget.exe` under `WindowsApps`, so it works as SYSTEM, and asks for the
+  MSI installer at machine scope so the build lands in the MSI's root.
 - `psremoting` and `session_configuration` — the WinRM endpoints. Which
   endpoint `Enable-PSRemoting` registers depends on the PowerShell that runs
   it, so `edition` is what picks between `microsoft.powershell` and
