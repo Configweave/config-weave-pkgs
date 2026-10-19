@@ -865,6 +865,14 @@ resource that creates something takes `ensure = :absent`.
   database (created if missing, never dropped), the account's rights,
   database connection, web service and portal virtual directories and URLs,
   and initialisation. Covers SSRS 2016 to 2022 and Power BI Report Server.
+- `mds_database`, `mds_web_application` (SQL Server 2019 and older): a
+  Master Data Services database and its IIS web application, created the way
+  MDS Configuration Manager creates them. MDS has no command line, so both
+  call the internal classes of `Microsoft.MasterDataServices.Configuration.dll`
+  through reflection, kept in `lib/mds.ws`. A newer MDS is refused with an
+  error rather than guessed at. The web application needs the IIS role
+  services Microsoft lists for MDS (it names any that are missing) and a
+  Windows user as the pool identity.
 - `server_setting`: any `sp_configure` value. It compares the configured value,
   so a restart-only option converges and warns until SQL Server restarts.
 - `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),
@@ -905,6 +913,7 @@ ignored:
 - an Analysis Services server mode (fixed by setup) or data directory
   (moving it would orphan the databases under the old one);
 - a Reporting Services install folder;
+- an MDS database's collation or system administrator;
 - a Windows edition (needs `setup.exe /ACTION=EditionUpgrade` with a key);
 - a Linux major version (a one-way upgrade);
 - a login's authentication type, unless `recreate_on_auth_change` is set;

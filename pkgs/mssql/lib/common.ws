@@ -288,7 +288,10 @@ fn ps(what: string, script: string) -> Result[string, string] { ps_env(what, scr
 
 // A script whose stdout is one JSON document.
 fn ps_json(what: string, script: string, env: Map[string, Value]) -> Result[Value, string] {
-    let text = ps_env(what, script, env, 0)?
+    ps_json_text(what, ps_env(what, script, env, 0)?)
+}
+
+fn ps_json_text(what: string, text: string) -> Result[Value, string] {
     if text == "" { return Err(what + " printed nothing") }
     match json::parse(text) {
         Ok(v) => Ok(v),

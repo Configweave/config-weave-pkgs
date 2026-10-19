@@ -136,6 +136,61 @@ package "mssql" {
   }
 
   // ---------------------------------------------------------------------------
+  // Master Data Services (SQL Server 2019 and older)
+  // ---------------------------------------------------------------------------
+  //
+  // MDS Configuration Manager has no command line, so both resources call the
+  // classes it uses in Microsoft.MasterDataServices.Configuration.dll through
+  // reflection (lib/mds.ws). Those members are internal, so only SQL Server
+  // 2019 (MDS folder 150) and older are accepted; a newer MDS is refused with
+  // an error rather than guessed at. Both connect to SQL Server with
+  // integrated authentication as the account config-weave runs as, which must
+  // be sysadmin there.
+
+  resource "mds_database" {
+    description = "Create a Master Data Services database as MDS Configuration Manager does (ConfigurationAdministration.CreateDatabase), or drop one. On an existing database it checks that it is an MDS database (mdm.tblModel), that its collation is the wanted one and that its system administrator (mdm.tblUser ID 1) is `administrator`; neither can change in place, so a difference is an error. It never upgrades an existing database. Windows only; SQL Server 2019 and older"
+    script = "resources/mds_database.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Database name (letters, digits, _, - and $)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the MDS database" }
+      symbol "absent"  { description = "Drop it, after forcing SINGLE_USER. A database that is not an MDS one is never dropped" }
+    }
+    param "server"        { description = "SQL Server to create it on, host[\\instance]" type = "string" default = "localhost" }
+    param "collation"     { description = "Database collation; empty = the server's. Not changeable on an existing database" type = "string" default = "" }
+    param "administrator" { description = "Windows account (DOMAIN\\user) that becomes the MDS system administrator; required when present. Not changeable on an existing database" type = "string" default = "" }
+    param "mds_version"   { description = "MDS install folder under C:\\Program Files\\Microsoft SQL Server: 150 (2019), 140, 130, 120 or 110; empty = the newest installed, which must be 150 or older" type = "string" default = "" }
+  }
+
+  resource "mds_web_application" {
+    description = "Create the Master Data Services web application as MDS Configuration Manager does: the pool identity added to MDS_ServiceAccounts, MDSTempDir and the web.config permissions, an IIS site with its own application pool (WebUtilities.CreateSite), the pool's db access (mds_exec) and the MDS configuration pointing web.config at the database (ApplyMdsConfiguration); or remove the site. On an existing site the HTTP binding, application pool and its identity, the group membership, the database and server web.config points at, and the pool identity's database access are compared and changed in place; the pool is recycled after every change. Fails with the list of missing IIS role services when an MDS prerequisite is not installed. Windows only; SQL Server 2019 and older"
+    script = "resources/mds_web_application.ws"
+    concurrency = "exclusive"
+    param "site" { description = "IIS site name" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create and converge the site" }
+      symbol "absent"  { description = "Remove the site's MDS settings from web.config, the site, and its application pool when nothing else uses it" }
+    }
+    param "port"              { description = "HTTP port the site binds on all addresses (*:<port>:); it becomes the site's only binding" type = "int" default = 80 }
+    param "app_pool"          { description = "Application pool name" type = "string" default = "MDS Application Pool" }
+    param "identity"          { description = "Windows account the application pool runs as (DOMAIN\\user); required. MDS refuses SYSTEM and the other built-in accounts" type = "string" default = "" }
+    param "password"          { description = "Password of identity; required to create the pool and whenever password_revision changes. IIS stores it encrypted, so it cannot be compared. Read by the script from its environment" type = "string" default = "" }
+    param "password_revision" { description = "Any label for the current password; change it to push a rotated one. Recorded under HKLM\\SOFTWARE\\config-weave\\mssql\\mds_web_application\\<site>" type = "string" default = "" }
+    param "database"          { description = "MDS database the site uses (mssql.mds_database); required" type = "string" default = "" }
+    param "server"            { description = "SQL Server holding the database, host[\\instance]" type = "string" default = "localhost" }
+    param "url"               { description = "The web application URL MDS records; empty = http://<computer name>:<port>" type = "string" default = "" }
+    param "mds_version"       { description = "MDS install folder: 150 (2019), 140, 130, 120 or 110; empty = the newest installed, which must be 150 or older" type = "string" default = "" }
+  }
+
+  // ---------------------------------------------------------------------------
   // Server-level configuration (T-SQL via sqlcmd)
   // ---------------------------------------------------------------------------
   //
