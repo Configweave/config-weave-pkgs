@@ -3,8 +3,8 @@ package "windows_registry" {
 
   // Values and keys go through the host `registry` module, which reports a
   // value's kind, reads binary values and addresses either registry view. A
-  // key's owner and permissions go through .NET's RegistryKey in Windows
-  // PowerShell, since the host has no ACL API.
+  // key's owner and permissions go through the host `acl` module (no
+  // PowerShell), so the package needs config-weave v0.9.1 or later.
   //
   // Paths: `key` starts with a hive, short or long and in any case (HKLM,
   // hklm, HKEY_LOCAL_MACHINE; HKCU, HKCR, HKU, HKCC). Trailing backslashes

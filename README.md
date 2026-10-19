@@ -70,6 +70,7 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
 `windows_account`,
 `windows_service`, `windows_network`, `windows_share`, `windows_files`,
+`windows_storage`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
 `visual_studio` installs Visual Studio itself and `vsix` installs
@@ -82,9 +83,13 @@ Files, directories, links, archives and modes. 6 resources and 2 gatherers:
 - `file` — exact `content`, or fetched from `url`. Writes go to a temp file
   beside the target and are renamed into place, keeping the old file's owner
   and mode unless `mode`/`owner`/`group` say otherwise. A download is
-  verified against `sha256` before it replaces anything. Without `sha256`, a
-  url is fetched once and never re-checked, so set it whenever the content
-  matters.
+  verified against `size` and `sha256` before it replaces anything, and a
+  failed or short download is retried (`retries`, default 3), so an
+  interrupted run never leaves a file that `check` accepts. `size` is
+  checked first and costs nothing, so a large file with only `size` set is
+  never hashed. Without either, a url is fetched once and never re-checked,
+  so set one whenever the content matters. With no `mode`, `owner` or
+  `group`, `check` runs no shell command.
 - `template` — a Tera template rendered the same way as `file`; takes
   `ensure`.
 - `directory` — creates missing parents. `:absent` is recursive and refuses
@@ -522,8 +527,14 @@ because the host has no ACL API.
 Files, directories, links and NTFS permissions, the Windows counterpart of
 `linux_files`:
 
-- `file` — exact `content`, or a `url` download checked against `sha256`.
-  `template` renders a Tera template. Both take `line_endings` (`:preserve`,
+- `file` — exact `content`, or a `url` download kept at `path`: it goes to
+  `<path>.config-weave-download`, is checked against `size` and `sha256`,
+  retried when it fails or comes up short (`retries`, default 3), and only
+  then renamed into place (or swapped in with `ReplaceFile` over an existing
+  file, which keeps its NTFS permissions). An interrupted download never
+  leaves a file that `check` accepts, and `size` alone checks a
+  multi-gigabyte ISO without hashing it on every run. `template` renders a
+  Tera template. Both take `line_endings` (`:preserve`,
   `:crlf`, `:lf`). Text is written as UTF-8 without a BOM, in place, so the
   file keeps its own permissions. A file that is not valid UTF-8 (UTF-16
   from Notepad or Windows PowerShell's `Out-File`) is drift and is
@@ -548,6 +559,41 @@ Files, directories, links and NTFS permissions, the Windows counterpart of
 - `path_info` and `paths_matching` gatherers — a path's type, size,
   attributes, owner, link target and optional SHA-256, and a wildcard
   listing.
+- `iso_mount` — mounts an ISO (`Mount-DiskImage`) at an optional
+  `drive_letter`, moving a mount at another letter there; `ensure = :absent`
+  dismounts it. A mount does not survive a reboot, which the next run
+  reports as drift.
+- `iso_extract` — copies an ISO's contents to `destination` with
+  `robocopy /MIR`, clearing the read-only flag optical media carries, then
+  writes `<destination>\.config-weave-iso` recording the image's path, size
+  and modification time. A copy that stopped part way, or a different image,
+  is drift. An image it mounted itself is always dismounted; one that was
+  already mounted is left alone. `destination` is mirrored, so the
+  directory `:absent` refuses to delete are refused here too.
+- `xml_value` — sets one element's text or an attribute (`xpath`, `value`,
+  `attribute`, `namespaces`), creates missing elements with `create = true`,
+  changes every match with `all = true`, or removes nodes with
+  `ensure = :absent`. The file keeps its encoding, BOM, line endings,
+  comments and declaration, and is swapped in with `ReplaceFile`.
+  `restart_service` restarts a running service only when the file changed;
+  a restart that fails is retried by the next run.
+
+### `windows_storage`
+
+- `volume` — brings a data disk into use: online and writable, initialised
+  (`partition_style`, `:gpt` or `:mbr`), one partition of the whole disk at
+  `drive_letter`, formatted `:ntfs` or `:refs` with `label` and
+  `allocation_unit_size`. `disk` selects it: `"raw"` for the only blank
+  disk, a disk number, or a serial number or UniqueId (stable across
+  reboots; vmlab and VHD disks have only a UniqueId). A changed label is
+  fixed in place, and a selected disk whose only volume matches is moved
+  back to `drive_letter`.
+
+The safety rules are fixed: the boot and system disks are never touched,
+`disk = "raw"` fails unless exactly one blank disk is attached, and a disk
+that is not blank is only wiped with `allow_reformat = true`. That covers a
+changed file system, cluster size or partition style, and `ensure = :absent`,
+which clears the disk back to RAW.
 
 ### `windows_share`
 
@@ -920,10 +966,39 @@ resource that creates something takes `ensure = :absent`.
   (`install_tools`: go-sqlcmd on Windows, mssql-tools18 on Linux). Windows
   setup reads a generated `ConfigurationFile.ini` that only SYSTEM and
   Administrators can read, so `sa_password` never reaches a command line.
-  Linux derives the repository from `/etc/os-release` and sets the collation
-  at `mssql-conf setup`. On an existing instance it reconciles security mode,
-  TCP, default directories, sysadmin accounts and the sa password (Windows),
-  and the edition and sa password (Linux).
+  On Windows each component in `features` is detected under its own
+  `Instance Names` key (`SQL` for the engine, `OLAP` for Analysis Services,
+  `RS` for the Reporting Services feature of 2016 and older), and a component
+  missing from an existing instance is installed on its own. Analysis
+  Services takes `as_server_mode`, `as_collation`, `as_sysadmin_accounts`
+  and `as_data_dir`/`as_log_dir`/`as_temp_dir`/`as_backup_dir`; an AS-only
+  install gets no engine options. Linux derives the repository from
+  `/etc/os-release` and sets the collation at `mssql-conf setup`. On an
+  existing instance it reconciles security mode, TCP, default directories,
+  sysadmin accounts and the sa password (Windows engine), the AS collation,
+  log/temp/backup directories (in `msmdsrv.ini`, with a service restart) and
+  server administrators (through AMO), and the edition and sa password
+  (Linux).
+- `analysis_services_setting`: one Analysis Services server property, named
+  as SSMS shows it (`ThreadPool\Process\MaxThreads`). It edits that element
+  of the instance's `msmdsrv.ini` in place, keeping the rest of the file's
+  bytes, and restarts the AS service only when the value changed.
+- `reporting_services`: install, upgrade or uninstall SSRS 2017+ or Power BI
+  Report Server from its standalone installer, with its edition and version
+  compared on an installed server.
+- `reporting_services_config`: what Report Server Configuration Manager
+  does, through the report server's WMI provider: service account, catalogue
+  database (created if missing, never dropped), the account's rights,
+  database connection, web service and portal virtual directories and URLs,
+  and initialisation. Covers SSRS 2016 to 2022 and Power BI Report Server.
+- `mds_database`, `mds_web_application` (SQL Server 2019 and older): a
+  Master Data Services database and its IIS web application, created the way
+  MDS Configuration Manager creates them. MDS has no command line, so both
+  call the internal classes of `Microsoft.MasterDataServices.Configuration.dll`
+  through reflection, kept in `lib/mds.ws`. A newer MDS is refused with an
+  error rather than guessed at. The web application needs the IIS role
+  services Microsoft lists for MDS (it names any that are missing) and a
+  Windows user as the pool identity.
 - `server_setting`: any `sp_configure` value. It compares the configured value,
   so a restart-only option converges and warns until SQL Server restarts.
 - `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),
@@ -961,6 +1036,10 @@ yourself.
 ignored:
 
 - a server collation (needs the system databases rebuilt);
+- an Analysis Services server mode (fixed by setup) or data directory
+  (moving it would orphan the databases under the old one);
+- a Reporting Services install folder;
+- an MDS database's collation or system administrator;
 - a Windows edition (needs `setup.exe /ACTION=EditionUpgrade` with a key);
 - a Linux major version (a one-way upgrade);
 - a login's authentication type, unless `recreate_on_auth_change` is set;
@@ -968,14 +1047,20 @@ ignored:
 - an availability group's cluster type;
 - the distribution database of a configured publisher.
 
-Windows `features` apply at install only. Database Mail cannot read back an
+Engine sub-features (`REPLICATION`, `FULLTEXT`, …) and shared features
+(`IS`, `MDS`, …) in `features` apply only when their component is installed;
+a whole missing component (engine, AS or RS) is added to an existing
+instance. Database Mail cannot read back an
 SMTP password, so bump `password_revision` to push a new one.
 
 Tests: five container tests (`config_converges`, `reconcile`, `replication`,
 `replication_absent`, `availability_group`) run against the official 2022
 image. Two Ubuntu 24.04 VM tests cover the Linux install and removal, and the
-`win_install` vmlab scenario covers the Windows install, instance reconcile,
-TCP restart and availability group.
+`analysis_services_setting` Windows VM test edits two seeded `msmdsrv.ini`
+files and compares them byte for byte. The `win_install` vmlab scenario
+covers the Windows install, instance reconcile, TCP restart and availability
+group; `win_bi` covers Analysis Services, Reporting Services and Master Data
+Services on SQL Server 2019 (about 28 minutes, 1.5 GB of media).
 
 ## Development
 
