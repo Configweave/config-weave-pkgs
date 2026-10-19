@@ -2838,11 +2838,12 @@ package "windows_powershell" {
   // Its own VM: setup installs the 7.5.4 MSI for the :winget step to
   // upgrade, and the Visual C++ runtime, which is what the stock App
   // Installer's winget lacks to start as SYSTEM (App Installer itself ships
-  // with the template). The :msi step installs the preview channel beside
-  // it, so every converging step starts from drift. No double quotes in a
-  // Windows setup.
+  // with the template). Every converging step starts from drift, so the
+  // :msi step is the floor check: the LTS release is older than any build
+  // here, so it is already configured throughout. The preview goes by zip:
+  // 7.7 previews ship no MSI. No double quotes in a Windows setup.
   test "pwsh7_tracks_latest" {
-    description = "version = \"latest\" upgrades an older MSI install through winget, installs the latest preview MSI, extracts a zip into a fixed root, and errors when the lookup fails"
+    description = "version = \"latest\" upgrades an older MSI install through winget, treats the release as a floor, extracts the latest preview zip into a fixed root, and errors when the lookup fails"
     template = "x86_64/windows-server-2025"
     group = "win2025ps7latest"
     memory = "4GiB"
@@ -2879,25 +2880,26 @@ package "windows_powershell" {
       }
     }
 
-    step "msi_preview_latest" {
-      description = "The current preview release's MSI installs beside stable"
+    step "lts_floor" {
+      description = "The latest LTS release is older than the installed build, which is not downgraded"
       resource = "pwsh_installed"
-      requires = ["winget_latest"]
+      expect = "already_configured"
       properties {
         method = :msi
-        channel = :preview
+        channel = :lts
         version = "latest"
       }
     }
 
-    step "zip_latest" {
-      description = "The latest release zip is extracted into a fixed root"
+    step "zip_preview_latest" {
+      description = "The latest preview zip is extracted into a fixed root"
       resource = "pwsh_installed"
-      requires = ["msi_preview_latest"]
+      requires = ["winget_latest"]
       properties {
         method = :zip
+        channel = :preview
         version = "latest"
-        install_root = "C:\\cw-pwsh-latest"
+        install_root = "C:\\cw-pwsh-preview"
       }
     }
   }

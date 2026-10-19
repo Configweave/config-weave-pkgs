@@ -143,11 +143,13 @@ fn artefact_url(params: Value, how: string) -> Result[string, string] {
     if explicit != "" { return Ok(explicit) }
     let v = version(params)?
     if v == "" { return Err("'version' or 'url' is required for the :" + how + " method — set version = \"latest\" to install the channel's current release") }
-    let base = "https://github.com/PowerShell/PowerShell/releases/download/v" + v + "/PowerShell-" + v + "-"
+    // The Windows artefacts are named PowerShell-…, the Linux tarball
+    // powershell-….
+    let base = "https://github.com/PowerShell/PowerShell/releases/download/v" + v + "/"
     let arch = arch_tag()?
-    if how == "msi" { return Ok(base + "win-" + arch + ".msi") }
-    if how == "zip" { return Ok(base + "win-" + arch + ".zip") }
-    Ok(base + "linux-" + arch + ".tar.gz")
+    if how == "msi" { return Ok(base + "PowerShell-" + v + "-win-" + arch + ".msi") }
+    if how == "zip" { return Ok(base + "PowerShell-" + v + "-win-" + arch + ".zip") }
+    Ok(base + "powershell-" + v + "-linux-" + arch + ".tar.gz")
 }
 
 fn verify_hash(params: Value, file: string) -> Result[unit, string] {
@@ -181,6 +183,7 @@ fn download(params: Value, how: string, file: string) -> Result[unit, string] {
         attempt = attempt + 1
         if attempt <= 3 { time::sleep(5000) }
     }
+    if last.contains("404") { return Err("downloading " + url + " failed: the release has no such artefact (HTTP 404). PowerShell 7.7 previews, for example, ship no MSI; use :zip for them") }
     Err("downloading " + url + " failed after 3 attempts: " + last)
 }
 
