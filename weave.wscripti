@@ -347,10 +347,22 @@ mod registry {
     fn delete_key(a0: string) -> Result[unit, string]
     /// Like delete_key, with opts: view (native | wow64_32 | wow64_64)
     fn delete_key_with(a0: string, a1: Value) -> Result[unit, string]
+    /// The names of a key's values, sorted case-insensitively. The default value is "" and is listed only when set. A missing key is an Err. opts: view (native | wow64_32 | wow64_64)
+    fn value_names(a0: string, a1: Value) -> Result[List[string], string]
     /// Whether a key exists (any failure other than not-found is an Err)
     fn key_exists(a0: string) -> Result[bool, string]
     /// Like key_exists, with opts: view (native | wow64_32 | wow64_64)
     fn key_exists_with(a0: string, a1: Value) -> Result[bool, string]
+}
+
+/// Windows security descriptors (Windows only): the owner and DACL of files, directories and registry keys
+mod acl {
+    /// Read the owner and DACL: {owner: {sid, name}, protected, entries: [{sid, name, kind, rights, mask, inherit, inherited}]}, entries in stored order. opts: null or {target: file | registry, view: native | wow64_32 | wow64_64}
+    fn read(a0: string, a1: Value) -> Result[Value, string]
+    /// Replace every explicit entry with spec.entries (deny before allow); spec: {owner?, protected?, entries: [{principal, kind, rights?, mask?, inherit?}]}. protected true disables inheritance and drops inherited entries; omitted owner and protected are left as they are. opts as for read
+    fn set(a0: string, a1: Value, a2: Value) -> Result[unit, string]
+    /// What set(path, spec, opts) would change, one line per difference; [] means converged. Explicit entries compare as a set by SID, kind, mask and inherit flags
+    fn diff(a0: string, a1: Value, a2: Value) -> Result[List[string], string]
 }
 
 /// Windows service management via the SCM (Windows only in v1)
