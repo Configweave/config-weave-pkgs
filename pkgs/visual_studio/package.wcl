@@ -1,0 +1,213 @@
+package "visual_studio" {
+  description = "Install Visual Studio 2017 to 2026 and manage its workloads and components"
+
+  // Instances are found with vswhere, which ships with the Visual Studio
+  // Installer. Every installer operation goes through the product's
+  // bootstrapper (vs_<product>.exe) with --wait, which is the only form of
+  // the installer that waits for the operation and returns its exit code.
+  resource "instance" {
+    description = "Install, modify or uninstall one Visual Studio instance"
+    script = "resources/instance.ws"
+    concurrency = "exclusive"
+    lock = "vs_installer"
+    param "version" {
+      description = "Which Visual Studio: a major version (15 = 2017, 16 = 2019, 17 = 2022, 18 = 2026) or a vswhere version range such as [16.0,17.0) or [17.8,). An instance whose installationVersion is in the range counts. The range's lower bound also picks the default bootstrapper, so a range with no lower bound needs 'bootstrapper'"
+      type = "string"
+      required = true
+    }
+    param "product" {
+      description = "The edition to install"
+      type = "symbol"
+      default = :community
+
+      symbol "community"    { description = "Visual Studio Community (Microsoft.VisualStudio.Product.Community)" }
+      symbol "professional" { description = "Visual Studio Professional (Microsoft.VisualStudio.Product.Professional)" }
+      symbol "enterprise"   { description = "Visual Studio Enterprise (Microsoft.VisualStudio.Product.Enterprise)" }
+      symbol "build_tools"  { description = "Build Tools for Visual Studio (Microsoft.VisualStudio.Product.BuildTools)" }
+      symbol "test_agent"   { description = "Agents for Visual Studio, the test agent (Microsoft.VisualStudio.Product.TestAgent); 2017 to 2022 only" }
+    }
+    param "workloads" {
+      description = "Workload ids to have installed, e.g. Microsoft.VisualStudio.Workload.ManagedDesktop. Missing ones are added with --add, on a new instance or an existing one"
+      type = "list"
+    }
+    param "components" {
+      description = "Component ids to have installed, e.g. Microsoft.VisualStudio.Component.SQL.SSDT. Treated exactly like workloads"
+      type = "list"
+    }
+    param "exact" {
+      description = "Also remove (--remove) every workload and component that was selected for the instance (its state.json selectedPackages) but is not in workloads or components. Dependencies of listed items are never selected, so they stay, and the product's own core workload is never removed. Off by default: an instance may carry selections made by hand or by another step"
+      type = "bool"
+      default = false
+    }
+    param "include_recommended" {
+      description = "Pass --includeRecommended whenever workloads are added, so they bring their recommended components. Add-time only: the installer records no per-workload marker, so recommended components removed later are not detected"
+      type = "bool"
+      default = false
+    }
+    param "channel_url" {
+      description = "The channel to install from (--channelUri): a channel URL such as https://aka.ms/vs/17/release.ltsc.17.8/channel, or a layout's ChannelManifest.json. Empty = the bootstrapper's own channel. On an existing instance it is compared with the instance's channelUri, and a difference is an error: moving an instance to another channel (setup.exe modifySettings) can change its version line, so it is never done implicitly"
+      type = "string"
+      default = ""
+    }
+    param "bootstrapper" {
+      description = "Local path or http(s) URL of the bootstrapper. Empty = https://aka.ms/vs/<major>/release/vs_<product>.exe (stable instead of release for 18). It must carry a valid Authenticode signature. Used for the install and for every later modify, repair and uninstall"
+      type = "string"
+      default = ""
+    }
+    param "product_key" {
+      description = "Product key (25 characters, dashes optional) for Professional or Enterprise. Passed in a response file that only SYSTEM and Administrators can read, never on a command line; use a secret. Install-time only: the installer cannot read a key back, so it is not compared on an existing instance"
+      type = "string"
+      default = ""
+    }
+    param "install_path" {
+      description = "Where the instance lives (--installPath). Empty = the product's default directory, and the first instance of the product in the version range is the one managed. Set it to manage one of several side-by-side instances: only the instance at this path counts, so a different path installs a second instance"
+      type = "string"
+      default = ""
+    }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the instance, or modify it until every listed workload and component is installed (and, with exact, nothing else selected). An incomplete instance is repaired" }
+      symbol "absent"  { description = "Uninstall the instance (bootstrapper uninstall --force, which closes running Visual Studio processes). The Visual Studio Installer itself stays" }
+    }
+  }
+
+  gatherer "instances" {
+    description = "List the installed Visual Studio instances of every product, from vswhere"
+    script = "gatherers/instances.ws"
+    param "version" { description = "Only instances in this major version or vswhere range; empty = all" type = "string" default = "" }
+    returns "count" { description = "Number of instances; 0 when the Visual Studio Installer is not installed" type = "int" }
+    returns "instances" { description = "One map per instance: instance_id, name, product (product id), version, path, channel_id, channel_uri, complete, prerelease, workloads (installed workload ids) and selected (the workload and component ids selected for it)" type = "list" }
+  }
+
+  // The tests install Build Tools 2022 with only its MSBuild workload, the
+  // smallest real product (about 30 minutes on the lab's network), then
+  // modify, trim and uninstall that one instance. The four tests share one
+  // VM and run in order, each on the state the previous one left.
+  test "install" {
+    description = "Install Build Tools 2022 from the Microsoft bootstrapper, on its release channel"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/install_verify.ws"
+
+    gather "before" {
+      description = "No Visual Studio instance yet"
+      from = "instances"
+      expect { count = 0 }
+    }
+
+    step "build_tools" {
+      description = "Build Tools 2022 with the MSBuild workload, channel_url matching the release channel"
+      resource = "instance"
+      properties {
+        version = "17"
+        product = :build_tools
+        workloads = ["Microsoft.VisualStudio.Workload.MSBuildTools"]
+        channel_url = "https://aka.ms/vs/17/release/channel"
+      }
+    }
+
+    step "no_professional" {
+      description = "A product that was never installed is already absent"
+      resource = "instance"
+      expect = "already_configured"
+      properties {
+        version = "[17.0,18.0)"
+        product = :professional
+        ensure = :absent
+      }
+    }
+
+    step "bad_version" {
+      description = "A version that is neither a major nor a range is refused"
+      resource = "instance"
+      expect = "error"
+      properties { version = "17.x" product = :build_tools }
+    }
+
+    step "bad_component" {
+      description = "A component id that would be read as an installer switch is refused"
+      resource = "instance"
+      expect = "error"
+      properties { version = "17" product = :build_tools components = ["--quiet"] }
+    }
+  }
+
+  test "modify" {
+    description = "Add a component to the existing instance with the bootstrapper's modify"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/modify_verify.ws"
+
+    gather "after_install" {
+      description = "The Build Tools instance from the install test"
+      from = "instances"
+      params { version = "17" }
+      expect { count = 1 }
+    }
+
+    step "add_clickonce" {
+      description = "Add the ClickOnce MSBuild component, with --includeRecommended"
+      resource = "instance"
+      properties {
+        version = "17"
+        product = :build_tools
+        workloads = ["Microsoft.VisualStudio.Workload.MSBuildTools"]
+        components = ["Microsoft.Component.ClickOnce.MSBuild"]
+        include_recommended = true
+      }
+    }
+
+    step "channel_drift" {
+      description = "An instance on another channel than channel_url is reported, not moved"
+      resource = "instance"
+      expect = "error"
+      properties {
+        version = "17"
+        product = :build_tools
+        channel_url = "https://aka.ms/vs/17/release.ltsc.17.8/channel"
+      }
+    }
+  }
+
+  test "exact" {
+    description = "Exact mode removes the component that is no longer listed"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/exact_verify.ws"
+
+    step "only_msbuild" {
+      description = "Only the MSBuild workload, exactly: ClickOnce goes"
+      resource = "instance"
+      properties {
+        version = "17"
+        product = :build_tools
+        workloads = ["Microsoft.VisualStudio.Workload.MSBuildTools"]
+        exact = true
+      }
+    }
+  }
+
+  test "uninstall" {
+    description = "Uninstall the instance"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/uninstall_verify.ws"
+
+    step "remove" {
+      description = "Uninstall Build Tools 2022"
+      resource = "instance"
+      properties {
+        version = "17"
+        product = :build_tools
+        ensure = :absent
+      }
+    }
+  }
+}
