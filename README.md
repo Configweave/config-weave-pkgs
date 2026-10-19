@@ -733,14 +733,41 @@ Chocolatey, Scoop and winget, one set of resources per manager:
   put scoop's own git first on `PATH` (every bucket operation needs git).
   Apps installed for SYSTEM still have broken shims, so prefer Chocolatey
   or winget there.
-- winget: `winget_package` (with a `version` hold), `winget_source` (URL
-  and `type`), `winget_cache_updated` and the `winget_packages` gatherer.
-  Detection uses the `Microsoft.WinGet.Client` module if it is installed,
-  else `winget export`. The `winget list` table is never parsed, because
-  its headers are localized and its columns are truncated. When winget is
-  not on `PATH` (it never is for SYSTEM), the newest App Installer copy
-  under `WindowsApps` is used. That copy starts for SYSTEM only after the
-  Visual C++ 2015-2022 x64 runtime is installed machine-wide.
+- winget: `winget_installed`, `winget_package`, `winget_source` (URL and
+  `type`), `winget_cache_updated` and the `winget_packages` gatherer.
+  - `winget_installed` makes winget usable as SYSTEM. It installs the Visual
+    C++ 2015-2022 runtime when it is missing (winget.exe run outside its
+    package, as SYSTEM runs it, exits 0xC0000135 without it), provisions App
+    Installer for every user when winget is missing, cannot start, is below
+    `version` or is not provisioned, and writes a marked
+    `C:\Windows\System32\winget.cmd` shim (`system_shim`). `method =
+    :release` provisions the latest `microsoft/winget-cli` msixbundle and its
+    dependencies (about 320 MB, size- and sha256-checked, retried);
+    `:gallery` uses `Microsoft.WinGet.Client` and
+    `Repair-WinGetPackageManager`, which needs PowerShell 7 and refuses
+    `-AllUsers` as SYSTEM; `:auto` takes `:gallery` only where it can work
+    and falls back to `:release`. `ensure = :absent` removes App Installer
+    and the shim, and leaves the runtime. Windows marks App Installer
+    `NonRemovable` wherever it is present (Server 2025 as shipped, Server
+    2022 once provisioned), and there `:absent` is an error that changes
+    nothing; `system_shim = false` drops just the shim.
+  - `winget_package` holds a `version` (compared numerically), or tracks the
+    newest with `ensure = :latest` (`winget list --upgrade-available`). It
+    takes `scope` (`:user`, `:machine`, compared through `winget list
+    --scope`) and `installer_type` (`--installer-type`, e.g. `:wix` for the
+    MSI build of `Microsoft.PowerShell`). `installer_type` and `source` pick
+    how a package is installed and are not compared, because winget does
+    not report either for an installed package. Exit code 0x8A150109
+    reports `RebootRequired`, and 0x8A15002B (no applicable upgrade) is
+    success.
+  - Detection uses the `Microsoft.WinGet.Client` module if Windows
+    PowerShell can load it, else `winget export`. The `winget list` table is
+    never parsed, because its headers are localized and its columns are
+    truncated; only its exit code is read.
+  - Every winget resource and the gatherer run the newest `winget.exe`
+    under `WindowsApps`, and use `PATH` only when there is none, so they need
+    neither the shim nor an App Execution Alias. Put `winget_installed`
+    first on a server.
 
 Every source and bucket resource takes `ensure`. Names compare
 case-insensitively, as the managers compare them. Every script forces UTF-8
