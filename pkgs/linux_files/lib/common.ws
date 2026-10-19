@@ -151,6 +151,15 @@ fn content_is(p: string, want: string) -> bool {
     if let Ok(text) = fs::read(p) { text == want } else { false }
 }
 
+// Give `to` the owner, group and mode of `from`.
+fn copy_owner_mode(from: string, to: string) -> Result[unit, string] {
+    let md = fs::metadata(from)?
+    let uid = md.get("uid").unwrap_or(Value::Null)
+    let gid = md.get("gid").unwrap_or(Value::Null)
+    fs::chown(to, uid, gid)?
+    fs::chmod(to, md.get("mode").unwrap_or(Value::Int(0)))
+}
+
 // A temp file beside `p`: same filesystem, so a rename onto `p` is atomic
 // (fs::temp_file lives in /tmp, which is often another filesystem).
 fn tmp_sibling(p: string) -> string {
@@ -169,9 +178,7 @@ fn install_tmp(tmp: string, p: string) -> Result[unit, string] {
         return r
     }
     if fs::is_file(p) {
-        // stat -c rather than --reference, which busybox lacks
-        let keep = "chown -- \"$(stat -c '%u:%g' -- " + q(p) + ")\" " + q(tmp) + " && chmod -- \"$(stat -c '%a' -- " + q(p) + ")\" " + q(tmp)
-        if let Err(e) = run("copying owner and mode of " + p, keep) {
+        if let Err(e) = copy_owner_mode(p, tmp) {
             fs::delete(tmp).unwrap_or(())
             return Err(e)
         }
