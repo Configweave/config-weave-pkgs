@@ -116,16 +116,24 @@ fn with_installer(params: Value, w: Want, args: string, what: string) -> Result[
     r
 }
 
-// The installer exits 3010 without installing anything while another
-// install's reboot is pending, and has been seen to exit 0 the same way, so
-// the outcome is judged by whether the service exists afterwards.
+// While another install's reboot is pending the installer installs nothing
+// and exits 3010, or sometimes 0, so the outcome is judged by whether the
+// service exists afterwards: missing with a reboot pending asks for the
+// reboot, after which apply runs the installer again.
 fn installed_or_reboot(w: Want, r: ApplyResult) -> Result[ApplyResult, string] {
     if ssrs::service_exists(w.svc)? { return Ok(r) }
-    if r == ApplyResult::RebootRequired {
-        log::warn("the installer needs a reboot before it installs " + w.svc + " (a reboot is pending); apply again after it")
-        return Ok(r)
+    if r == ApplyResult::RebootRequired || reboot_pending()? {
+        log::warn("a reboot is pending, so the installer did not install " + w.svc + "; apply again after the reboot")
+        return Ok(ApplyResult::RebootRequired)
     }
-    Err("the installer finished but service " + w.svc + " does not exist; a pending reboot (PendingFileRenameOperations) makes it skip the install, so reboot and apply again")
+    Err("the installer finished but service " + w.svc + " does not exist")
+}
+
+// The markers Windows and its installers leave while a reboot is pending.
+fn reboot_pending() -> Result[bool, string] {
+    if registry::read("HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager", "PendingFileRenameOperations")?.is_some() { return Ok(true) }
+    if registry::key_exists("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending")? { return Ok(true) }
+    registry::key_exists("HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired")
 }
 
 // The uninstall command the installer registered, used when no setup_path is given.
