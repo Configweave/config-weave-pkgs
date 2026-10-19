@@ -1,5 +1,5 @@
 package "windows_files" {
-  description = "Manage Windows files, directories, links and NTFS permissions"
+  description = "Manage Windows files, downloads, directories, links, NTFS permissions, ISO media and XML values"
 
   // Paths are absolute Windows paths (C:\dir\file or \\server\share\file);
   // "." and ".." segments are rejected. Text is written as UTF-8 without a
@@ -8,7 +8,7 @@ package "windows_files" {
   // Out-File, say) counts as drift and is rewritten as UTF-8.
 
   resource "file" {
-    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written in place, so the file keeps its own NTFS permissions; content that is not valid UTF-8 counts as drift and is replaced. A directory at path is an error"
+    description = "Ensure a file exists with exact content or downloaded from a URL (verified by size and SHA-256, retried, never left half-written), or is absent. Content is written in place, so the file keeps its own NTFS permissions; content that is not valid UTF-8 counts as drift and is replaced. A directory at path is an error"
     script = "resources/file.ws"
     concurrency = "exclusive"
     param "path" { description = "Absolute Windows path of the file, e.g. C:\\app\\app.conf; parent directories are created" type = "string" required = true }
@@ -21,8 +21,10 @@ package "windows_files" {
       symbol "absent"  { description = "Delete the file" }
     }
     param "content" { description = "Exact file content; mutually exclusive with url" type = "string" default = "" }
-    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded beside the target and only copied over it once it passes sha256. Without sha256 it is fetched once and never re-checked: a changed upstream file is not drift, so set sha256 whenever the content matters" type = "string" default = "" }
-    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error and leaves the existing file untouched" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded to <path>.config-weave-download beside the target, checked against size and sha256, and only then put in place (renamed when new, swapped in with ReplaceFile when it replaces a file, so the old file's NTFS permissions are kept). An interrupted download never leaves a file at path. Without size or sha256 a file at path is never re-checked: a changed upstream file is not drift, so set sha256 (or size, for files too big to hash on every run) whenever the content matters" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error, is not retried, and leaves the existing file untouched" type = "string" default = "" }
+    param "size" { description = "Optional expected size in bytes (url mode); 0 leaves it unchecked. Compared on every check before the digest and costs nothing, so with size alone a multi-gigabyte file is never hashed. A download of the wrong size is retried" type = "int" default = 0 }
+    param "retries" { description = "How many times a download that fails (a transport error, or a file whose size differs from size) is retried, waiting 5 s, 10 s, ... between attempts; 0 to 10" type = "int" default = 3 }
     param "line_endings" {
       description = "Line endings applied to `content` before it is compared and written (not to url downloads)"
       type = "symbol"
@@ -136,6 +138,70 @@ package "windows_files" {
       symbol "copy"   { description = "Keep them as explicit rules, so nobody loses access they had" }
       symbol "remove" { description = "Drop them, leaving only the explicit rules; this can lock out SYSTEM and Administrators" }
     }
+  }
+
+  // Disk images through the Storage module (Mount-DiskImage), so any
+  // image Windows mounts natively works: ISO 9660, Joliet and UDF media.
+  // A mount does not survive a reboot; iso_mount reports that as drift and
+  // mounts it again.
+  resource "iso_mount" {
+    description = "Ensure an ISO image is mounted, at a given drive letter if one is set, or dismounted. An image that does not exist yet (a download in a later-running step) is drift on check and an error on apply"
+    script = "resources/iso_mount.ws"
+    concurrency = "exclusive"
+    param "path" { description = "Absolute Windows path of the .iso file" type = "string" required = true }
+    param "drive_letter" { description = "Drive letter the image is mounted at, e.g. S; a mount at another letter is moved there. Must not be in use by another volume or drive. Empty takes the letter Windows assigns and accepts any" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Mount the image" }
+      symbol "absent"  { description = "Dismount the image; a missing image is already absent" }
+    }
+  }
+
+  resource "iso_extract" {
+    description = "Ensure a directory holds an exact copy of an ISO image's contents, or is absent. The image is mounted for the copy (and always dismounted afterwards, unless it was already mounted, which is left as it was), copied with robocopy /MIR and with the read-only attribute cleared, then a completion marker recording the image's path, size and modification time is written to <destination>\\.config-weave-iso. A copy that stopped part way, or a different image at path, is drift. The marker is all check reads: files changed after the extract are not drift"
+    script = "resources/iso_extract.ws"
+    concurrency = "exclusive"
+    param "path" { description = "Absolute Windows path of the .iso file. Once extracted it may be deleted: with no image to compare against, a finished extract from the same path stands" type = "string" required = true }
+    param "destination" { description = "Absolute Windows path of the directory to fill; it is created. The copy mirrors the image, deleting anything else in it, so it must be a directory of its own: drive roots, system directories and profile roots are refused, as for directory with ensure = :absent" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Extract the image into destination" }
+      symbol "absent"  { description = "Delete destination recursively" }
+    }
+  }
+
+  // XML through .NET's XmlDocument with PreserveWhitespace: indentation,
+  // line endings, comments, the BOM and the XML declaration are kept as
+  // they were. XmlDocument does re-spell a few things on the way out
+  // (`<a/>` becomes `<a />`, single-quoted attributes become double-quoted,
+  // character references are written as the characters), which never counts
+  // as a change on its own.
+  resource "xml_value" {
+    description = "Ensure one element's text or attribute in an XML file has a value, or is absent, optionally restarting a service when the file changed. Everything else in the file is kept: whitespace, line endings, comments, encoding and BOM. The file is written to a temp file beside it and swapped in with ReplaceFile, so its NTFS permissions stay"
+    script = "resources/xml_value.ws"
+    concurrency = "exclusive"
+    param "path" { description = "Absolute Windows path of an existing XML file. A missing file is drift on check and an error on apply" type = "string" required = true }
+    param "xpath" { description = "XPath 1.0 expression selecting the element (or attribute) to set, e.g. /ConfigurationSettings/ThreadPool/Process/MaxThreads or /configuration/appSettings/add[@key='Mode']/@value. Matching more than one node is an error unless all = true; matching none is an error unless create = true" type = "string" required = true }
+    param "value" { description = "Wanted text of the selected element (it must have no child elements), or of the attribute named by `attribute`, or of a selected attribute. Compared case-sensitively and exactly; ignored when ensure = :absent" type = "string" default = "" }
+    param "attribute" { description = "Set this attribute (a local name, no prefix) on the selected elements instead of their text; empty sets the text" type = "string" default = "" }
+    param "namespaces" { description = "Prefix to namespace URI map for the prefixes xpath uses. A document with a default namespace (xmlns=\"...\") needs one, because an unprefixed XPath name only matches elements in no namespace: { c: \"urn:example\" } with xpath /c:root/c:item" type = "map" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The selected node holds value" }
+      symbol "absent"  { description = "Remove the selected elements (with the whitespace before them) or attributes; with `attribute` set, remove that attribute from the selected elements. A missing file or node is already absent" }
+    }
+    param "create" { description = "When xpath matches nothing, create the missing elements along it (and a final @name attribute) and set value. Needs an absolute path of plain element names such as /a/b/c or /a/b/@c; a new element is indented like its last element sibling" type = "bool" default = false }
+    param "all" { description = "Set (or remove) every node xpath matches, instead of failing when it matches more than one" type = "bool" default = false }
+    param "restart_service" { description = "Windows service name (MSOLAP$ASMD, W3SVC, ...) restarted after apply changed the file, waiting up to 180 s per phase (running dependents are stopped first and started again afterwards); empty restarts nothing. A stopped service is left stopped. The service must exist, or check fails. A restart that fails is retried by the next run even though the file is already right (a marker under %ProgramData%\\config-weave\\xml_value-restart records it)" type = "string" default = "" }
   }
 
   gatherer "path_info" {
@@ -420,6 +486,321 @@ package "windows_files" {
       resource = "directory"
       expect = "error"
       properties { path = "c:\\windows\\" ensure = :absent }
+    }
+  }
+  // rfc2549.txt is 9519 bytes; its digest is in files_converge.
+  test "download_converges" {
+    description = "url downloads check size before digest, retry a short download, replace a truncated file, discard an interrupted run's temp file and keep a replaced file's NTFS rules"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/download_verify.ws"
+    // A truncated download at a target, an interrupted run's temp file, and
+    // a file carrying an explicit Guests rule that the replacement must
+    // keep. No double quotes: setups run under cmd.exe.
+    setup = "mkdir C:\\weave-dl 2>NUL & echo short> C:\\weave-dl\\truncated.txt & echo junk> C:\\weave-dl\\fresh.txt.config-weave-download & echo old> C:\\weave-dl\\keep.txt & icacls C:\\weave-dl\\keep.txt /grant Guests:R & exit 0"
+
+    step "size_only" {
+      description = "A size alone verifies the download and the file on every check"
+      resource = "file"
+      properties { path = "C:\\weave-dl\\size.txt" url = "https://www.rfc-editor.org/rfc/rfc2549.txt" size = 9519 }
+    }
+
+    step "truncated" {
+      description = "A file of the wrong size at the target is drift and is replaced"
+      resource = "file"
+      properties { path = "C:\\weave-dl\\truncated.txt" url = "https://www.rfc-editor.org/rfc/rfc2549.txt" size = 9519 }
+    }
+
+    step "after_interruption" {
+      description = "An interrupted run's temp file is not the target and is discarded before downloading again"
+      resource = "file"
+      properties { path = "C:\\weave-dl\\fresh.txt" url = "https://www.rfc-editor.org/rfc/rfc2549.txt" size = 9519 }
+    }
+
+    step "replace_keeps_acl" {
+      description = "Replacing an existing file keeps its explicit NTFS rules"
+      resource = "file"
+      properties {
+        path = "C:\\weave-dl\\keep.txt"
+        url = "https://www.rfc-editor.org/rfc/rfc2549.txt"
+        size = 9519
+        sha256 = "646b43b5d718913d6211e2c18b2b3b667cf6eaa76a2493e55b1de5ca04c2578e"
+      }
+    }
+
+    step "short_download" {
+      description = "A download whose size never matches is retried, then fails, leaving neither the target nor a temp file"
+      resource = "file"
+      expect = "error"
+      properties { path = "C:\\weave-dl\\wrong-size.txt" url = "https://www.rfc-editor.org/rfc/rfc2549.txt" size = 99 retries = 1 }
+    }
+
+    step "size_needs_url" {
+      description = "size without url is a validation error"
+      resource = "file"
+      expect = "error"
+      properties { path = "C:\\weave-dl\\content.txt" content = "x" size = 1 }
+    }
+  }
+
+  // The images are built in the guest by the first step (IMAPI2, no
+  // media download): a.iso, b.iso and c.iso, each a two-file tree.
+  test "iso_converges" {
+    description = "ISO images mount at a letter and extract (mounted or not), and a partial copy or a marker from another image is drift"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/iso_verify.ws"
+    // Destination b holds a partial copy with no marker and a stray file
+    // the mirror removes; destination c holds a marker from another image.
+    setup = "mkdir C:\\weave-media\\b 2>NUL & mkdir C:\\weave-media\\c 2>NUL & echo partial> C:\\weave-media\\b\\setup.txt & echo stray> C:\\weave-media\\b\\stray.txt & echo c:\\weave-iso\\other.iso^|1^|1> C:\\weave-media\\c\\.config-weave-iso & exit 0"
+
+    step "make_isos" {
+      description = "Build three tiny ISO images in the guest"
+      resource = "weave.execute"
+      properties {
+        shell = :powershell
+        check = "if ((Test-Path C:\\weave-iso\\a.iso) -and (Test-Path C:\\weave-iso\\b.iso) -and (Test-Path C:\\weave-iso\\c.iso)) { exit 0 } else { exit 1 }"
+        run = <<'PS'
+          $ErrorActionPreference = 'Stop'
+          $cs = 'using System; using System.IO; using System.Runtime.InteropServices; using System.Runtime.InteropServices.ComTypes; public static class CwIso { public static void Save(object o, string path) { IStream s = (IStream)o; byte[] buf = new byte[65536]; IntPtr n = Marshal.AllocHGlobal(4); try { using (FileStream f = File.Create(path)) { while (true) { s.Read(buf, buf.Length, n); int got = Marshal.ReadInt32(n); if (got == 0) break; f.Write(buf, 0, got); } } } finally { Marshal.FreeHGlobal(n); } } }'
+          if (-not ('CwIso' -as [type])) { Add-Type -TypeDefinition $cs }
+          foreach ($n in 'a', 'b', 'c') {
+            $src = "C:\weave-iso\src-$n"
+            New-Item -ItemType Directory -Force "$src\sub\deep" | Out-Null
+            Set-Content -LiteralPath "$src\setup.txt" -Value "media $n"
+            Set-Content -LiteralPath "$src\sub\deep\file.txt" -Value 'deep'
+            $fsi = New-Object -ComObject IMAPI2FS.MsftFileSystemImage
+            $fsi.FileSystemsToCreate = 7
+            $fsi.VolumeName = 'CW' + $n.ToUpper()
+            $fsi.Root.AddTree($src, $false)
+            [CwIso]::Save($fsi.CreateResultImage().ImageStream, "C:\weave-iso\$n.iso")
+          }
+        PS
+      }
+    }
+
+    step "mount_a" {
+      description = "Mount an image at a chosen drive letter"
+      resource = "iso_mount"
+      requires = ["make_isos"]
+      properties { path = "C:\\weave-iso\\a.iso" drive_letter = "S" }
+    }
+
+    step "mount_c" {
+      description = "Mount an image at whatever letter Windows assigns"
+      resource = "iso_mount"
+      requires = ["make_isos"]
+      properties { path = "C:\\weave-iso\\c.iso" }
+    }
+
+    step "extract_mounted" {
+      description = "Extract an image that is already mounted, leaving it mounted"
+      resource = "iso_extract"
+      requires = ["mount_a"]
+      properties { path = "C:\\weave-iso\\a.iso" destination = "C:\\weave-media\\a" }
+    }
+
+    step "extract_partial" {
+      description = "Redo a partial copy (no marker), mirroring away a stray file, and dismount the image afterwards"
+      resource = "iso_extract"
+      requires = ["make_isos"]
+      properties { path = "C:\\weave-iso\\b.iso" destination = "C:\\weave-media\\b" }
+    }
+
+    step "extract_other_image" {
+      description = "A marker recording another image is drift"
+      resource = "iso_extract"
+      requires = ["mount_a"]
+      properties { path = "C:\\weave-iso\\a.iso" destination = "C:\\weave-media\\c" }
+    }
+
+    step "letter_in_use" {
+      description = "Mounting at a letter another volume holds is an error"
+      resource = "iso_mount"
+      requires = ["make_isos"]
+      expect = "error"
+      properties { path = "C:\\weave-iso\\b.iso" drive_letter = "C" }
+    }
+
+    step "extract_to_root" {
+      description = "Extracting over a drive root is refused"
+      resource = "iso_extract"
+      expect = "error"
+      properties { path = "C:\\weave-iso\\b.iso" destination = "C:\\" }
+    }
+  }
+
+  // Runs after iso_converges in the same guest, which left a.iso mounted
+  // at S: and c.iso mounted at an assigned letter.
+  test "iso_remount" {
+    description = "A mounted image moves to a new drive letter, ensure = :absent dismounts one, and an extract is removed"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/iso_remount_verify.ws"
+
+    step "move_a" {
+      description = "Move a mounted image to another drive letter"
+      resource = "iso_mount"
+      properties { path = "C:\\weave-iso\\a.iso" drive_letter = "T" }
+    }
+
+    step "dismount_c" {
+      description = "Dismount a mounted image"
+      resource = "iso_mount"
+      properties { path = "C:\\weave-iso\\c.iso" ensure = :absent }
+    }
+
+    step "extract_absent" {
+      description = "Remove an extracted tree"
+      resource = "iso_extract"
+      properties { path = "C:\\weave-iso\\b.iso" destination = "C:\\weave-media\\c" ensure = :absent }
+    }
+  }
+
+  // The fixtures are written by the first step, because the setup cannot
+  // hold the double quotes XML needs; until then xml_value reports drift.
+  test "xml_converges" {
+    description = "xml_value sets text and attributes, creates and removes nodes, handles namespaces and several matches, keeps encoding, BOM, line endings and comments, and restarts a service only after a change"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/xml_verify.ws"
+    // A pending-restart marker for ready.xml + Spooler, as a restart that
+    // failed after the file was written leaves it: the next run must
+    // restart the service although the file is already right. The name is
+    // sha256("c:\weave-xml\ready.xml|spooler"). remove.xml holds no
+    // quotes, so setup writes it and the removal step sees it on check.
+    setup = "mkdir C:\\weave-xml 2>NUL & (echo ^<config^>& echo   ^<old^>x^</old^>& echo ^</config^>)> C:\\weave-xml\\remove.xml & mkdir C:\\ProgramData\\config-weave\\xml_value-restart 2>NUL & echo C:\\weave-xml\\ready.xml> C:\\ProgramData\\config-weave\\xml_value-restart\\519f0d53b2e4d41d7d52330800add0af758ed6fe0a4136c217fdf08310b1745c & exit 0"
+
+    step "fixtures" {
+      description = "Write the XML fixtures"
+      resource = "weave.execute"
+      properties {
+        shell = :powershell
+        check = "if (Test-Path C:\\weave-xml\\ready.xml) { exit 0 } else { exit 1 }"
+        run = <<'PS'
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force C:\weave-xml | Out-Null
+          $crlf = [char]13 + [char]10
+          $bom = New-Object Text.UTF8Encoding $true
+          $nobom = New-Object Text.UTF8Encoding $false
+          $ini = '<?xml version="1.0" encoding="UTF-8"?>' + $crlf + '<!-- keep me -->' + $crlf + '<ConfigurationSettings>' + $crlf + '  <ThreadPool>' + $crlf + '    <Process>' + $crlf + '      <MaxThreads>64</MaxThreads>' + $crlf + '    </Process>' + $crlf + '  </ThreadPool>' + $crlf + '  <Log Level="info"/>' + $crlf + '</ConfigurationSettings>' + $crlf
+          [IO.File]::WriteAllText('C:\weave-xml\ini.xml', $ini, $bom)
+          [IO.File]::WriteAllText('C:\weave-xml\lf.xml', "<config>`n  <a>1</a>`n</config>`n", $nobom)
+          [IO.File]::WriteAllText('C:\weave-xml\utf16.xml', '<?xml version="1.0" encoding="utf-16"?>' + $crlf + '<config><name>old</name></config>', (New-Object Text.UnicodeEncoding $false, $true))
+          [IO.File]::WriteAllText('C:\weave-xml\ns.xml', '<root xmlns="urn:cw"><item k="a">1</item><item k="b">2</item></root>', $nobom)
+          [IO.File]::WriteAllText('C:\weave-xml\ready.xml', '<config><mode>on</mode></config>', $nobom)
+        PS
+      }
+    }
+
+    step "threads" {
+      description = "Set an element's text in a BOM'd CRLF file and restart a service after the change"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      properties {
+        path = "C:\\weave-xml\\ini.xml"
+        xpath = "/ConfigurationSettings/ThreadPool/Process/MaxThreads"
+        value = "512"
+        restart_service = "Spooler"
+      }
+    }
+
+    step "create" {
+      description = "Create missing elements, indented like their siblings"
+      resource = "xml_value"
+      requires = ["threads"]
+      properties {
+        path = "C:\\weave-xml\\ini.xml"
+        xpath = "/ConfigurationSettings/ThreadPool/Process/MinThreads"
+        value = "8"
+        create = true
+      }
+    }
+
+    step "attribute" {
+      description = "Set an attribute"
+      resource = "xml_value"
+      requires = ["create"]
+      properties {
+        path = "C:\\weave-xml\\ini.xml"
+        xpath = "/ConfigurationSettings/Log"
+        attribute = "Level"
+        value = "debug"
+      }
+    }
+
+    step "remove" {
+      description = "Remove an element with the whitespace before it"
+      resource = "xml_value"
+      properties {
+        path = "C:\\weave-xml\\remove.xml"
+        xpath = "/config/old"
+        ensure = :absent
+      }
+    }
+
+    step "lf_file" {
+      description = "A BOM-less LF file without a declaration stays that way"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      properties { path = "C:\\weave-xml\\lf.xml" xpath = "/config/a" value = "2" }
+    }
+
+    step "utf16_file" {
+      description = "A UTF-16 file stays UTF-16"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      properties { path = "C:\\weave-xml\\utf16.xml" xpath = "/config/name" value = "new" }
+    }
+
+    step "namespaced_all" {
+      description = "Set an attribute on every match in a default-namespace document"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      properties {
+        path = "C:\\weave-xml\\ns.xml"
+        xpath = "/c:root/c:item"
+        namespaces = { c: "urn:cw" }
+        attribute = "k"
+        value = "z"
+        all = true
+      }
+    }
+
+    step "pending_restart" {
+      description = "A restart left pending by an earlier run happens although the file is already right"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      properties {
+        path = "C:\\weave-xml\\ready.xml"
+        xpath = "/config/mode"
+        value = "on"
+        restart_service = "Spooler"
+      }
+    }
+
+    step "several_matches" {
+      description = "An xpath matching several nodes without all = true is an error"
+      resource = "xml_value"
+      requires = ["namespaced_all"]
+      expect = "error"
+      properties { path = "C:\\weave-xml\\ns.xml" xpath = "/c:root/c:item" namespaces = { c: "urn:cw" } value = "9" }
+    }
+
+    step "no_match" {
+      description = "An xpath matching nothing without create = true is an error"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      expect = "error"
+      properties { path = "C:\\weave-xml\\lf.xml" xpath = "/config/missing" value = "1" }
+    }
+
+    step "not_a_leaf" {
+      description = "Setting the text of an element with child elements is an error"
+      resource = "xml_value"
+      requires = ["fixtures"]
+      expect = "error"
+      properties { path = "C:\\weave-xml\\ini.xml" xpath = "/ConfigurationSettings/ThreadPool" value = "1" }
     }
   }
 }

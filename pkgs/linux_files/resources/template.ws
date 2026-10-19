@@ -49,7 +49,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     fs::mkdir(path::parent(p))?
     let tmp = common::tmp_sibling(p)
     fs::write(tmp, body)?
-    common::install_tmp(tmp, p)?
+    common::install_tmp(tmp, p, a)?
     common::apply_attrs(p, a)?
     Ok(ApplyResult::Success)
 }
