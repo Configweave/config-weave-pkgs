@@ -201,7 +201,7 @@ package "windows_files" {
     }
     param "create" { description = "When xpath matches nothing, create the missing elements along it (and a final @name attribute) and set value. Needs an absolute path of plain element names such as /a/b/c or /a/b/@c; a new element is indented like its last element sibling" type = "bool" default = false }
     param "all" { description = "Set (or remove) every node xpath matches, instead of failing when it matches more than one" type = "bool" default = false }
-    param "restart_service" { description = "Windows service name (MSOLAP$ASMD, W3SVC, ...) restarted after apply changed the file, waiting up to 180 s per phase; empty restarts nothing. A stopped service is left stopped. The service must exist, or check fails. A restart that fails is retried by the next run even though the file is already right (a marker under %ProgramData%\\config-weave\\xml_value-restart records it)" type = "string" default = "" }
+    param "restart_service" { description = "Windows service name (MSOLAP$ASMD, W3SVC, ...) restarted after apply changed the file, waiting up to 180 s per phase (running dependents are stopped first and started again afterwards); empty restarts nothing. A stopped service is left stopped. The service must exist, or check fails. A restart that fails is retried by the next run even though the file is already right (a marker under %ProgramData%\\config-weave\\xml_value-restart records it)" type = "string" default = "" }
   }
 
   gatherer "path_info" {

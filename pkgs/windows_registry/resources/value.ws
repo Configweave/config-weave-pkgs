@@ -206,16 +206,11 @@ fn target(params: Value) -> Result[List[string], string] {
 
 // The value as `{kind, data}`, or None when it or its key is absent. A value
 // of a kind the host module cannot decode (REG_LINK, REG_RESOURCE_LIST, ...)
-// is reported with kind "unsupported", so it counts as drift rather than an
-// error and :absent can still delete it.
-fn read(hkey: string, name: string, opts: Value) -> Option[Value] {
-    match registry::read_typed(hkey, name, opts) {
-        Ok(v) => v,
-        Err(e) => {
-            log::info("reading " + hkey + "\\" + name + ": " + e)
-            Some(Value::Map(#{ "kind": Value::String("unsupported"), "data": Value::Null }))
-        }
-    }
+// arrives as kind "other" with its raw bytes, so it counts as drift rather
+// than an error and :absent can still delete it. Any other failure, such as
+// access denied on the key, is a real error and is propagated.
+fn read(hkey: string, name: string, opts: Value) -> Result[Option[Value], string] {
+    registry::read_typed(hkey, name, opts)
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -226,7 +221,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let present = common::want_present(params)?
     let kind = common::param_str(params, "kind", "sz")
     let want = if present { desired(params, kind)? } else { Value::Null }
-    let have = read(hkey, name, opts)
+    let have = read(hkey, name, opts)?
     if !present {
         if have.is_some() { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)

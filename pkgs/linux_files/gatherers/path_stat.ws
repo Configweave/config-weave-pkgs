@@ -15,9 +15,9 @@ fn gather(params: Value) -> Result[Value, string] {
         }))
     }
     let md = fs::metadata(p)?
-    // st_mode carries the file-type bits too (33188 for a 0644 file); keep
-    // the permission bits only — there is no bitwise and, so take mod 0o10000.
-    let mode = if let Some(m) = md.get("mode") { m.as_int().unwrap_or(0) % 4096 } else { 0 }
+    // mode is the permission bits only (st_mode & 0o7777), as of
+    // config-weave v0.7.0-alpha
+    let mode = if let Some(m) = md.get("mode") { m.as_int().unwrap_or(0) } else { 0 }
     Ok(Value::Map(#{
         "path": Value::String(p),
         "exists": Value::Bool(true),

@@ -227,7 +227,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         // A stopped service picks the change up when it next starts.
         if service::status(svc)? != "stopped" {
             log::info("restarting " + svc)
-            service::restart(svc, Value::Map(#{ "timeout": Value::Int(180) }))?
+            service::restart(svc, Value::Map(#{ "timeout": Value::Int(180), "stop_dependents": Value::Bool(true) }))?
         }
         fs::delete(marker)?
     }

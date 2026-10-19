@@ -130,10 +130,18 @@ mod fs {
     fn read(a0: string) -> Result[string, string]
     /// Read a file as bytes
     fn read_bytes(a0: string) -> Result[List[int], string]
+    /// Read a file as text, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of reading through it
+    fn read_with(a0: string, a1: Value) -> Result[string, string]
+    /// Read a file as bytes, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of reading through it
+    fn read_bytes_with(a0: string, a1: Value) -> Result[List[int], string]
     /// Write text to a file, replacing its contents
     fn write(a0: string, a1: string) -> Result[unit, string]
     /// Write bytes to a file, replacing its contents
     fn write_bytes(a0: string, a1: List[int]) -> Result[unit, string]
+    /// Write text to a file, replacing its contents, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of writing through it
+    fn write_with(a0: string, a1: string, a2: Value) -> Result[unit, string]
+    /// Write bytes to a file, replacing its contents, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of writing through it
+    fn write_bytes_with(a0: string, a1: List[int], a2: Value) -> Result[unit, string]
     /// Append text to a file, creating it if absent
     fn append(a0: string, a1: string) -> Result[unit, string]
     /// Copy a file
@@ -156,7 +164,7 @@ mod fs {
     fn is_dir(a0: string) -> bool
     /// List entries of a directory (sorted names)
     fn list_dir(a0: string) -> Result[List[string], string]
-    /// File metadata as a map: size, modified (unix secs), readonly, is_file, is_dir, is_symlink, mode (unix permission bits; 0 elsewhere). Does not follow a final symlink: for a link it describes the link itself
+    /// File metadata as a map: size, modified (unix secs), readonly, is_file, is_dir, is_symlink, mode (unix permission bits, st_mode & 0o7777; 0 elsewhere), uid and gid (unix owner ids; null elsewhere). Does not follow a final symlink: for a link it describes the link itself
     fn metadata(a0: string) -> Result[Value, string]
     /// Expand a glob pattern to matching paths (sorted)
     fn glob(a0: string) -> Result[List[string], string]
@@ -170,6 +178,8 @@ mod fs {
     fn read_link(a0: string) -> Result[string, string]
     /// Change a path's owner and group (Unix only). Each is a user/group name, a numeric id, or Value::Null to leave it unchanged. Does not follow a final symlink
     fn chown(a0: string, a1: Value, a2: Value) -> Result[unit, string]
+    /// Change a path's permission bits (Unix only). mode is an int (448 for 0o700) or a string of octal digits ("0700"), at most 0o7777. Refuses a final symlink rather than following it
+    fn chmod(a0: string, a1: Value) -> Result[unit, string]
 }
 
 /// Pure path-string manipulation; no IO
@@ -238,6 +248,8 @@ mod encoding {
     fn from_utf8(a0: List[int]) -> Result[string, string]
     /// A string's UTF-16LE bytes, no BOM
     fn utf16le(a0: string) -> List[int]
+    /// Decode UTF-16LE bytes to a string, stripping a leading BOM
+    fn from_utf16le(a0: List[int]) -> Result[string, string]
 }
 
 /// Extract archives (no external tar/unzip needed)
@@ -313,11 +325,11 @@ mod registry {
     const HKCR: string = "HKCR"
     const HKU: string = "HKU"
     const HKCC: string = "HKCC"
-    /// Read a value (None when the key or value is absent)
+    /// Read a value (None when the key or value is absent; any other failure, such as access denied, is an Err)
     fn read(a0: string, a1: string) -> Result[Option[Value], string]
     /// Like read, with opts: view (native | wow64_32 | wow64_64)
     fn read_with(a0: string, a1: string, a2: Value) -> Result[Option[Value], string]
-    /// Read a value with its kind: {kind, data} (None when absent). opts: view (native | wow64_32 | wow64_64)
+    /// Read a value with its kind: {kind, data} (None when absent). A type read cannot decode is {kind: "other", type: REG_* number, data: raw bytes}. opts: view (native | wow64_32 | wow64_64)
     fn read_typed(a0: string, a1: string, a2: Value) -> Result[Option[Value], string]
     /// Write a value. kind: sz | expand_sz | dword | qword | multi_sz | binary | none
     fn write(a0: string, a1: string, a2: Value, a3: string) -> Result[unit, string]
@@ -335,7 +347,7 @@ mod registry {
     fn delete_key(a0: string) -> Result[unit, string]
     /// Like delete_key, with opts: view (native | wow64_32 | wow64_64)
     fn delete_key_with(a0: string, a1: Value) -> Result[unit, string]
-    /// Whether a key exists
+    /// Whether a key exists (any failure other than not-found is an Err)
     fn key_exists(a0: string) -> Result[bool, string]
     /// Like key_exists, with opts: view (native | wow64_32 | wow64_64)
     fn key_exists_with(a0: string, a1: Value) -> Result[bool, string]
@@ -351,10 +363,12 @@ mod service {
     fn start_with(a0: string, a1: Value) -> Result[unit, string]
     /// Stop a service and wait (60s) until it is stopped. Waits out pending states; no-op when already stopped
     fn stop(a0: string) -> Result[unit, string]
-    /// Like stop. opts: timeout (secs, default 60)
+    /// Like stop. opts: timeout (secs, default 60), stop_dependents (bool, default false: stop running dependents first)
     fn stop_with(a0: string, a1: Value) -> Result[unit, string]
-    /// Stop then start a service, waiting for each state. opts: timeout (secs per phase, default 60)
+    /// Stop then start a service, waiting for each state. opts: timeout (secs per phase, default 60), stop_dependents (bool, default false: stop running dependents first, start them again afterwards)
     fn restart(a0: string, a1: Value) -> Result[unit, string]
+    /// Names of the services that depend on a service, directly or through another dependent, sorted
+    fn dependents(a0: string) -> Result[List[string], string]
     /// Set startup type: automatic | automatic_delayed | manual | disabled
     fn set_startup(a0: string, a1: string) -> Result[unit, string]
     /// Startup type of a service: automatic | automatic_delayed | manual | disabled | boot | system
