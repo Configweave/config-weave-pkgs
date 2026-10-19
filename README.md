@@ -886,10 +886,39 @@ resource that creates something takes `ensure = :absent`.
   (`install_tools`: go-sqlcmd on Windows, mssql-tools18 on Linux). Windows
   setup reads a generated `ConfigurationFile.ini` that only SYSTEM and
   Administrators can read, so `sa_password` never reaches a command line.
-  Linux derives the repository from `/etc/os-release` and sets the collation
-  at `mssql-conf setup`. On an existing instance it reconciles security mode,
-  TCP, default directories, sysadmin accounts and the sa password (Windows),
-  and the edition and sa password (Linux).
+  On Windows each component in `features` is detected under its own
+  `Instance Names` key (`SQL` for the engine, `OLAP` for Analysis Services,
+  `RS` for the Reporting Services feature of 2016 and older), and a component
+  missing from an existing instance is installed on its own. Analysis
+  Services takes `as_server_mode`, `as_collation`, `as_sysadmin_accounts`
+  and `as_data_dir`/`as_log_dir`/`as_temp_dir`/`as_backup_dir`; an AS-only
+  install gets no engine options. Linux derives the repository from
+  `/etc/os-release` and sets the collation at `mssql-conf setup`. On an
+  existing instance it reconciles security mode, TCP, default directories,
+  sysadmin accounts and the sa password (Windows engine), the AS collation,
+  log/temp/backup directories (in `msmdsrv.ini`, with a service restart) and
+  server administrators (through AMO), and the edition and sa password
+  (Linux).
+- `analysis_services_setting`: one Analysis Services server property, named
+  as SSMS shows it (`ThreadPool\Process\MaxThreads`). It edits that element
+  of the instance's `msmdsrv.ini` in place, keeping the rest of the file's
+  bytes, and restarts the AS service only when the value changed.
+- `reporting_services`: install, upgrade or uninstall SSRS 2017+ or Power BI
+  Report Server from its standalone installer, with its edition and version
+  compared on an installed server.
+- `reporting_services_config`: what Report Server Configuration Manager
+  does, through the report server's WMI provider: service account, catalogue
+  database (created if missing, never dropped), the account's rights,
+  database connection, web service and portal virtual directories and URLs,
+  and initialisation. Covers SSRS 2016 to 2022 and Power BI Report Server.
+- `mds_database`, `mds_web_application` (SQL Server 2019 and older): a
+  Master Data Services database and its IIS web application, created the way
+  MDS Configuration Manager creates them. MDS has no command line, so both
+  call the internal classes of `Microsoft.MasterDataServices.Configuration.dll`
+  through reflection, kept in `lib/mds.ws`. A newer MDS is refused with an
+  error rather than guessed at. The web application needs the IIS role
+  services Microsoft lists for MDS (it names any that are missing) and a
+  Windows user as the pool identity.
 - `server_setting`: any `sp_configure` value. It compares the configured value,
   so a restart-only option converges and warns until SQL Server restarts.
 - `login`: SQL or Windows logins with password (compared with `PWDCOMPARE`),
@@ -927,6 +956,10 @@ yourself.
 ignored:
 
 - a server collation (needs the system databases rebuilt);
+- an Analysis Services server mode (fixed by setup) or data directory
+  (moving it would orphan the databases under the old one);
+- a Reporting Services install folder;
+- an MDS database's collation or system administrator;
 - a Windows edition (needs `setup.exe /ACTION=EditionUpgrade` with a key);
 - a Linux major version (a one-way upgrade);
 - a login's authentication type, unless `recreate_on_auth_change` is set;
@@ -934,14 +967,20 @@ ignored:
 - an availability group's cluster type;
 - the distribution database of a configured publisher.
 
-Windows `features` apply at install only. Database Mail cannot read back an
+Engine sub-features (`REPLICATION`, `FULLTEXT`, …) and shared features
+(`IS`, `MDS`, …) in `features` apply only when their component is installed;
+a whole missing component (engine, AS or RS) is added to an existing
+instance. Database Mail cannot read back an
 SMTP password, so bump `password_revision` to push a new one.
 
 Tests: five container tests (`config_converges`, `reconcile`, `replication`,
 `replication_absent`, `availability_group`) run against the official 2022
 image. Two Ubuntu 24.04 VM tests cover the Linux install and removal, and the
-`win_install` vmlab scenario covers the Windows install, instance reconcile,
-TCP restart and availability group.
+`analysis_services_setting` Windows VM test edits two seeded `msmdsrv.ini`
+files and compares them byte for byte. The `win_install` vmlab scenario
+covers the Windows install, instance reconcile, TCP restart and availability
+group; `win_bi` covers Analysis Services, Reporting Services and Master Data
+Services on SQL Server 2019 (about 28 minutes, 1.5 GB of media).
 
 ## Development
 

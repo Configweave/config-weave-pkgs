@@ -6,7 +6,7 @@ package "mssql" {
   // ---------------------------------------------------------------------------
 
   resource "instance" {
-    description = "Install, reconcile or uninstall a SQL Server instance (Windows setup.exe, Linux mssql-server + mssql-conf), with sqlcmd. On an existing instance it compares and fixes security mode, TCP, default directories, sysadmin accounts and the sa password (Windows), and the edition and sa password (Linux). Collation, the Windows edition, the Linux major version and the Windows feature list are not changed in place: a differing collation, Windows edition or Linux version is reported as an error, and features are only applied at install. T-SQL comparisons connect with integrated auth on Windows (the account config-weave runs as must be sysadmin, which the default BUILTIN\\Administrators covers) and as sa on Linux"
+    description = "Install, reconcile or uninstall a SQL Server instance (Windows setup.exe, Linux mssql-server + mssql-conf), with sqlcmd. On Windows the instance is found under the Instance Names key of each component its features install: SQL for the engine, OLAP for Analysis Services, RS for the Reporting Services feature of SQL Server 2016 and older; a component that is missing from an existing instance is added with a setup run for its features alone. On an existing instance it compares and fixes security mode, TCP, default directories, sysadmin accounts and the sa password (Windows engine), the Analysis Services collation, log/temp/backup directories and server administrators (Windows AS), and the edition and sa password (Linux). Collation, the Windows edition, the Linux major version, the AS server mode and the AS data directory are not changed in place: a difference is reported as an error. T-SQL comparisons connect with integrated auth on Windows (the account config-weave runs as must be sysadmin, which the default BUILTIN\\Administrators covers) and as sa on Linux"
     script = "resources/instance.ws"
     concurrency = "global"
     param "ensure" {
@@ -19,7 +19,7 @@ package "mssql" {
     }
     param "setup_path"            { description = "Windows only: local path or HTTP(S) URL of SQL Server setup.exe (or an extracted media root); needed to install, and for ensure = :absent (runs the uninstall)" type = "string" default = "" }
     param "instance"              { description = "Instance name; MSSQLSERVER is the default instance. Letters, digits, _ and $" type = "string" default = "MSSQLSERVER" }
-    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT; with ensure = :absent, the features to remove (SQLENGINE removes the whole instance). Applied at install only: features are not compared on an existing instance" type = "string" default = "SQLENGINE" }
+    param "features"              { description = "Windows /FEATURES list, e.g. SQLENGINE,REPLICATION,FULLTEXT or AS. It must name at least one instance feature: SQLENGINE (or SQL, or an engine sub-feature), AS or RS. Each of those components is detected under its own Instance Names key, and one missing from an existing instance is installed with only its own features; engine sub-features (REPLICATION, FULLTEXT, ...) and shared features (IS, MDS, ...) are not compared once their component exists. With ensure = :absent, the features to remove" type = "string" default = "SQLENGINE" }
     param "edition"               { description = "Edition name (Developer, Express, Evaluation, Standard, Enterprise, EnterpriseCore, Web) or a 25-character product key. Compared on an existing instance: Linux changes it with mssql-conf set-edition (stopping the service), Windows reports a difference as an error because an edition upgrade needs setup.exe and a key. A product key is not compared" type = "string" default = "Developer" }
     param "security_mode" {
       description = "Windows authentication mode. Reconciled on an existing instance by setting LoginMode and restarting the engine. Linux engines are always mixed mode, so it has no effect there"
@@ -30,20 +30,164 @@ package "mssql" {
       symbol "sql"     { description = "Mixed mode: Windows and SQL logins; needs sa_password, which is then kept enabled and in sync" }
     }
     param "sa_password"           { description = "sa password: required for security_mode = :sql and for every Linux engine. Compared with PWDCOMPARE (Windows) or by logging in (Linux) and reset when it differs. Never placed on a command line: Windows setup reads it from a temporary ConfigurationFile.ini that only SYSTEM and Administrators can read, Linux mssql-conf from its environment" type = "string" default = "" }
-    param "sql_sysadmin_accounts" { description = "Windows only: comma separated Windows accounts that must be sysadmin members; added on an existing instance too (accounts not listed are left alone)" type = "string" default = "BUILTIN\\Administrators" }
+    param "sql_sysadmin_accounts" { description = "Windows only: comma separated Windows accounts that must be sysadmin members; added on an existing instance too (accounts not listed are left alone). Only used when features installs the engine" type = "string" default = "BUILTIN\\Administrators" }
     param "collation"             { description = "Server collation; empty = the setup default. Set at install (Windows SQLCOLLATION, Linux MSSQL_COLLATION). A different collation on an existing instance is an error: changing it means rebuilding the system databases" type = "string" default = "" }
+    param "as_server_mode" {
+      description = "Analysis Services server mode (features = AS): ASSERVERMODE at install, compared with DeploymentMode in msmdsrv.ini on an existing instance. The mode is fixed by setup, so a difference is an error"
+      type = "symbol"
+      default = :multidimensional
+
+      symbol "multidimensional" { description = "Multidimensional and data mining (DeploymentMode 0), the setup default" }
+      symbol "tabular"          { description = "Tabular (DeploymentMode 2)" }
+      symbol "powerpivot"       { description = "PowerPivot for SharePoint (DeploymentMode 1)" }
+    }
+    param "as_collation"          { description = "Analysis Services server collation (ASCOLLATION; letters, digits and _); empty = setup default, not managed. On an existing instance CollationName in msmdsrv.ini is changed and the service restarted; it applies to databases created afterwards" type = "string" default = "" }
+    param "as_sysadmin_accounts"  { description = "Analysis Services: comma separated Windows accounts that must be server administrators (ASSYSADMINACCOUNTS, which AS setup requires). On an existing instance missing accounts are added to the server Administrators role through AMO; accounts not listed are left alone" type = "string" default = "BUILTIN\\Administrators" }
+    param "as_data_dir"           { description = "Analysis Services data directory (ASDATADIR); empty = setup default, not managed. A different DataDir on an existing instance is an error: moving it would orphan the databases stored under the old one" type = "string" default = "" }
+    param "as_log_dir"            { description = "Analysis Services log directory (ASLOGDIR); empty = setup default, not managed. Reconciled in msmdsrv.ini with a service restart; the directory must exist and be writable by the AS service" type = "string" default = "" }
+    param "as_temp_dir"           { description = "Analysis Services temp directory (ASTEMPDIR); empty = setup default, not managed. Reconciled like as_log_dir" type = "string" default = "" }
+    param "as_backup_dir"         { description = "Analysis Services backup directory (ASBACKUPDIR); empty = setup default, not managed. Reconciled like as_log_dir" type = "string" default = "" }
     param "tcp_enabled"           { description = "Windows only: whether the TCP/IP protocol is enabled; reconciled on an existing instance with an engine restart (mssql.tcp manages the port)" type = "bool" default = true }
     param "data_dir"              { description = "Windows only: default data directory (SQLUSERDBDIR, then the DefaultData registry value; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
     param "log_dir"               { description = "Windows only: default log directory (SQLUSERDBLOGDIR, then DefaultLog; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
     param "backup_dir"            { description = "Windows only: backup directory (SQLBACKUPDIR, then BackupDirectory; a change restarts the engine); empty = setup default, not managed" type = "string" default = "" }
     param "version"               { description = "Linux only: major version to install from Microsoft's repository, e.g. 2022 or 2025. A different installed major version is an error: the upgrade is one-way and left to you" type = "string" default = "2022" }
     param "repo_url"              { description = "Linux only: URL of the mssql-server apt .list or yum/zypper .repo file; empty = derived from /etc/os-release (ubuntu/<version>, rhel/<major>, sles/<major>)" type = "string" default = "" }
-    param "install_tools"         { description = "Also install sqlcmd, which every T-SQL resource in this package needs: mssql-tools18 on Linux, go-sqlcmd on Windows" type = "bool" default = true }
+    param "install_tools"         { description = "Also install sqlcmd, which every T-SQL resource in this package needs: mssql-tools18 on Linux, go-sqlcmd on Windows (only when features installs the engine)" type = "bool" default = true }
     param "tools_repo_url"        { description = "Linux only: URL of the repository file providing mssql-tools18; empty = Microsoft's prod repository for this distribution" type = "string" default = "" }
     param "tools_msi_url"         { description = "Windows only: URL of the go-sqlcmd MSI; empty = the latest amd64 MSI from github.com/microsoft/go-sqlcmd" type = "string" default = "" }
     param "config_file"           { description = "Windows only: path to a complete ConfigurationFile.ini passed to setup.exe /ConfigurationFile; it replaces the generated one, so the install-time params above are ignored at install" type = "string" default = "" }
     param "extra_args"            { description = "Windows only: extra setup.exe arguments appended verbatim" type = "string" default = "" }
     param "install_timeout"       { description = "Maximum seconds to wait for the installer or mssql-conf" type = "int" default = 3600 }
+  }
+
+  resource "analysis_services_setting" {
+    description = "Set one Analysis Services server property in the instance's msmdsrv.ini, then restart the service when the value changed. The file is found through Instance Names\\OLAP and <id>\\Setup\\SQLPath; only the setting's element changes, and the rest of the file keeps its bytes (encoding, BOM, line endings, indentation and comments). A missing element is created along the path, as SSMS does for a setting still at its default. Windows only"
+    script = "resources/analysis_services_setting.ws"
+    concurrency = "exclusive"
+    param "instance" { description = "Analysis Services instance name; MSSQLSERVER is the default instance (service MSSQLServerOLAPService), any other is MSOLAP$<instance>" type = "string" default = "MSSQLSERVER" }
+    param "setting"  { description = "The property path as SSMS Server Properties shows it with 'Show Advanced (All) Properties', e.g. ThreadPool\\Process\\MaxThreads; each segment is an element under ConfigurationSettings" type = "string" required = true }
+    param "value"    { description = "The wanted element text, compared exactly (booleans are 0 or 1, as msmdsrv.ini stores them)" type = "string" required = true }
+    param "restart"  { description = "Restart the Analysis Services service when the value changed (waiting up to 300s for each of stop and start); when false the change waits for the next restart" type = "bool" default = true }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reporting Services
+  // ---------------------------------------------------------------------------
+
+  resource "reporting_services" {
+    description = "Install, update or uninstall SQL Server Reporting Services 2017 or later, or Power BI Report Server, from its standalone installer (/quiet /IAcceptLicenseTerms). Detected by its service (SQLServerReportingServices or PowerBIReportServer); the edition and version are compared on an installed server and changed by running the installer again (EditionUpgrade for the edition, an in-place upgrade for a newer version). The install folder cannot change in place, so a different one is an error. Exit code 3010 reports a reboot. SSRS 2016 and older is a SQL Server setup feature instead: use mssql.instance with features = RS. Configure the server with mssql.reporting_services_config. Windows only"
+    script = "resources/reporting_services.ws"
+    concurrency = "global"
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the report server and keep its edition and version" }
+      symbol "absent"  { description = "Uninstall it (/uninstall), with setup_path or the installer cached at install. The catalogue database is left on its SQL Server" }
+    }
+    param "product" {
+      description = "Which report server the installer is"
+      type = "symbol"
+      default = :ssrs
+
+      symbol "ssrs"  { description = "SQL Server Reporting Services (SQLServerReportingServices.exe, service SQLServerReportingServices, WMI instance SSRS)" }
+      symbol "pbirs" { description = "Power BI Report Server (PowerBIReportServer.exe, service PowerBIReportServer, WMI instance PBIRS)" }
+    }
+    param "setup_path"      { description = "Local path or HTTP(S) URL of the installer. A URL is downloaded beside a temp name, size-checked, retried up to three times and checked against setup_sha256 when that is set, then deleted after the run. Required to install; optional for ensure = :absent" type = "string" default = "" }
+    param "setup_sha256"    { description = "Expected SHA-256 of the installer; empty = not checked" type = "string" default = "" }
+    param "edition"         { description = "Dev, Eval or Expr (/Edition=), or a 25-character product key (/PID=, which the installer only takes on its command line). Compared on an installed server; a product key is not compared" type = "string" default = "Dev" }
+    param "install_dir"     { description = "Install folder (/InstallFolder); empty = installer default. Not changeable in place: a different folder on an installed server is an error" type = "string" default = "" }
+    param "version"         { description = "Product version prefix the installed server must have, e.g. 15.0 for SSRS 2019 or 16.0 for 2022; empty = any. A different version runs the installer, which upgrades in place" type = "string" default = "" }
+    param "install_timeout" { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
+  }
+
+  resource "reporting_services_config" {
+    description = "Configure a report server as Report Server Configuration Manager does, through its WMI provider (MSReportServer_ConfigurationSetting, whose namespace version v13 to v16 is found at run time, so SSRS 2016 to 2022 and Power BI Report Server are covered): the service account, the catalogue database (created from the provider's script when it does not exist, never dropped or upgraded), the account's RSExecRole rights on it, the database connection, the web service and web portal virtual directories and URL reservations (exactly one URL each), the enabled features, and initialisation. Every setting is compared on a configured server and only the differing ones are changed, in that order; then the service restarts and apply waits for the web service to answer. The generated SQL runs through sqlcmd on stdin. Windows only; HTTP URLs only (an HTTPS URL needs a certificate binding, which this resource does not manage)"
+    script = "resources/reporting_services_config.ws"
+    concurrency = "global"
+    param "instance"          { description = "Report server instance: the RS_<instance> WMI namespace. SSRS for SSRS 2017+, PBIRS for Power BI Report Server, MSSQLSERVER or the instance name for SSRS 2016 and older" type = "string" default = "SSRS" }
+    param "database_server"   { description = "SQL Server holding the catalogue, host[\\instance]" type = "string" default = "localhost" }
+    param "database_name"     { description = "Catalogue database name (letters, digits, _, - and $); the provider also uses <name>TempDB" type = "string" default = "ReportServer" }
+    param "credentials" {
+      description = "How the report server connects to the catalogue (DatabaseLogonType)"
+      type = "symbol"
+      default = :service_account
+
+      symbol "service_account" { description = "As its service account (logon type 2); on a remote catalogue a built-in or virtual account is its machine account" }
+      symbol "windows"         { description = "As the Windows account db_user (logon type 0)" }
+      symbol "sql"             { description = "As the SQL login db_user (logon type 1)" }
+    }
+    param "db_user"             { description = "Windows account or SQL login for credentials = :windows or :sql; compared with DatabaseLogonAccount" type = "string" default = "" }
+    param "db_password"         { description = "Password for db_user. The provider stores it encrypted and cannot return it, so it is set with the connection and whenever db_password_revision changes. Read by the script from its environment, never placed in the script or on a command line" type = "string" default = "" }
+    param "db_password_revision" { description = "Any label for the current db_password; change it to push a rotated password. Recorded under HKLM\\SOFTWARE\\config-weave\\mssql\\reporting_services_config\\<instance>" type = "string" default = "" }
+    param "web_service_url"   { description = "The web service's URL reservation, http://<host>:<port> (+ for all host names); compared with ListReservedUrls, and other reservations for the web service are released" type = "string" default = "http://+:80" }
+    param "web_service_vdir"  { description = "The web service's virtual directory (VirtualDirectoryReportServer)" type = "string" default = "ReportServer" }
+    param "web_portal_url"    { description = "The web portal's URL reservation (ReportServerWebApp; ReportManager before 2016), like web_service_url" type = "string" default = "http://+:80" }
+    param "web_portal_vdir"   { description = "The web portal's virtual directory (VirtualDirectoryReportManager)" type = "string" default = "Reports" }
+    param "service_account"   { description = "Account the report server service runs as, compared with WindowsServiceIdentityConfigured; empty = leave the installed identity (NT SERVICE\\SQLServerReportingServices). Built-in and virtual accounts (NT SERVICE\\..., NT AUTHORITY\\NetworkService, LocalService, SYSTEM) need no password" type = "string" default = "" }
+    param "service_password"  { description = "Password of a service_account that is not built-in; set with the account and whenever service_password_revision changes. Read from the script's environment" type = "string" default = "" }
+    param "service_password_revision" { description = "Any label for the current service_password; change it to push a rotated password" type = "string" default = "" }
+    param "wait_timeout"      { description = "Seconds apply waits for the web service to answer after the restart" type = "int" default = 300 }
+    param "sql_user"                  { description = "SQL login to connect to the catalogue server as, for creating the database and granting rights; empty = integrated (Windows) authentication" type = "string" default = "" }
+    param "sql_password"              { description = "Password for sql_user, required with it. Passed to sqlcmd in the SQLCMDPASSWORD environment variable, never on its command line" type = "string" default = "" }
+    param "trust_server_certificate"  { description = "Pass sqlcmd -C to trust the catalogue server's certificate without validating it" type = "bool" default = true }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Master Data Services (SQL Server 2019 and older)
+  // ---------------------------------------------------------------------------
+  //
+  // MDS Configuration Manager has no command line, so both resources call the
+  // classes it uses in Microsoft.MasterDataServices.Configuration.dll through
+  // reflection (lib/mds.ws). Those members are internal, so only SQL Server
+  // 2019 (MDS folder 150) and older are accepted; a newer MDS is refused with
+  // an error rather than guessed at. Both connect to SQL Server with
+  // integrated authentication as the account config-weave runs as, which must
+  // be sysadmin there.
+
+  resource "mds_database" {
+    description = "Create a Master Data Services database as MDS Configuration Manager does (ConfigurationAdministration.CreateDatabase), or drop one. On an existing database it checks that it is an MDS database (mdm.tblModel), that its collation is the wanted one and that its system administrator (mdm.tblUser ID 1) is `administrator`; neither can change in place, so a difference is an error. It never upgrades an existing database. Windows only; SQL Server 2019 and older"
+    script = "resources/mds_database.ws"
+    concurrency = "exclusive"
+    param "name" { description = "Database name (letters, digits, _, - and $)" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create the MDS database" }
+      symbol "absent"  { description = "Drop it, after forcing SINGLE_USER. A database that is not an MDS one is never dropped" }
+    }
+    param "server"        { description = "SQL Server to create it on, host[\\instance]" type = "string" default = "localhost" }
+    param "collation"     { description = "Database collation; empty = the server's. Not changeable on an existing database" type = "string" default = "" }
+    param "administrator" { description = "Windows account (DOMAIN\\user) that becomes the MDS system administrator; required when present. Not changeable on an existing database" type = "string" default = "" }
+    param "mds_version"   { description = "MDS install folder under C:\\Program Files\\Microsoft SQL Server: 150 (2019), 140, 130, 120 or 110; empty = the newest installed, which must be 150 or older" type = "string" default = "" }
+  }
+
+  resource "mds_web_application" {
+    description = "Create the Master Data Services web application as MDS Configuration Manager does: the pool identity added to MDS_ServiceAccounts, MDSTempDir and the web.config permissions, an IIS site with its own application pool (WebUtilities.CreateSite), the pool's db access (mds_exec) and the MDS configuration pointing web.config at the database (ApplyMdsConfiguration); or remove the site. On an existing site the HTTP binding, application pool and its identity, the group membership, the database and server web.config points at, and the pool identity's database access are compared and changed in place; the pool is recycled after every change. Fails with the list of missing IIS role services when an MDS prerequisite is not installed. Windows only; SQL Server 2019 and older"
+    script = "resources/mds_web_application.ws"
+    concurrency = "exclusive"
+    param "site" { description = "IIS site name" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Create and converge the site" }
+      symbol "absent"  { description = "Remove the site's MDS settings from web.config, the site, and its application pool when nothing else uses it" }
+    }
+    param "port"              { description = "HTTP port the site binds on all addresses (*:<port>:); it becomes the site's only binding" type = "int" default = 80 }
+    param "app_pool"          { description = "Application pool name" type = "string" default = "MDS Application Pool" }
+    param "identity"          { description = "Windows account the application pool runs as (DOMAIN\\user); required. MDS refuses SYSTEM and the other built-in accounts" type = "string" default = "" }
+    param "password"          { description = "Password of identity; required to create the pool and whenever password_revision changes. IIS stores it encrypted, so it cannot be compared. Read by the script from its environment" type = "string" default = "" }
+    param "password_revision" { description = "Any label for the current password; change it to push a rotated one. Recorded under HKLM\\SOFTWARE\\config-weave\\mssql\\mds_web_application\\<site>" type = "string" default = "" }
+    param "database"          { description = "MDS database the site uses (mssql.mds_database); required" type = "string" default = "" }
+    param "server"            { description = "SQL Server holding the database, host[\\instance]" type = "string" default = "localhost" }
+    param "url"               { description = "The web application URL MDS records; empty = http://<computer name>:<port>" type = "string" default = "" }
+    param "mds_version"       { description = "MDS install folder: 150 (2019), 140, 130, 120 or 110; empty = the newest installed, which must be 150 or older" type = "string" default = "" }
   }
 
   // ---------------------------------------------------------------------------
@@ -861,6 +1005,55 @@ SETUP
     }
   }
 
+  // Analysis Services settings without Analysis Services: setup registers
+  // two fake instances under Instance Names\\OLAP whose msmdsrv.ini files
+  // differ in encoding and line endings (UTF-8 with a BOM and CRLF; no BOM
+  // and LF), with a comment, tab indentation and a self-closing element.
+  // verify compares both files byte for byte, so a resource that reformats
+  // the file, drops the BOM or the comment, or indents a created element
+  // wrongly fails. restart = false, as there is no service to restart. The
+  // setup script is base64 (powershell -EncodedCommand), since Windows test
+  // setups run under cmd.exe and cannot contain double quotes.
+  test "analysis_services_setting" {
+    description = "Change an existing msmdsrv.ini element, create a missing one, and keep the rest of each file byte for byte"
+    template = "x86_64/windows-server-2025"
+    verify = "tests/as_setting_verify.ws"
+    setup = "powershell -NoProfile -NonInteractive -EncodedCommand JABFAHIAcgBvAHIAQQBjAHQAaQBvAG4AUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAdABvAHAAJwAKACQAbgBhAG0AZQBzACAAPQAgACcASABLAEwATQA6AFwAUwBPAEYAVABXAEEAUgBFAFwATQBpAGMAcgBvAHMAbwBmAHQAXABNAGkAYwByAG8AcwBvAGYAdAAgAFMAUQBMACAAUwBlAHIAdgBlAHIAXABJAG4AcwB0AGEAbgBjAGUAIABOAGEAbQBlAHMAXABPAEwAQQBQACcACgBOAGUAdwAtAEkAdABlAG0AIAAtAFAAYQB0AGgAIAAkAG4AYQBtAGUAcwAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKAGYAbwByAGUAYQBjAGgAIAAoACQAaQAgAGkAbgAgACcAQwBXAEIATwBNACcALAAgACcAQwBXAEwARgAnACkAIAB7AAoAIAAgAE4AZQB3AC0ASQB0AGUAbQBQAHIAbwBwAGUAcgB0AHkAIAAtAFAAYQB0AGgAIAAkAG4AYQBtAGUAcwAgAC0ATgBhAG0AZQAgACQAaQAgAC0AVgBhAGwAdQBlACAAKAAnAE0AUwBBAFMAMQA1AC4AJwAgACsAIAAkAGkAKQAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKACAAIAAkAHMAZQB0AHUAcAAgAD0AIAAnAEgASwBMAE0AOgBcAFMATwBGAFQAVwBBAFIARQBcAE0AaQBjAHIAbwBzAG8AZgB0AFwATQBpAGMAcgBvAHMAbwBmAHQAIABTAFEATAAgAFMAZQByAHYAZQByAFwATQBTAEEAUwAxADUALgAnACAAKwAgACQAaQAgACsAIAAnAFwAUwBlAHQAdQBwACcACgAgACAATgBlAHcALQBJAHQAZQBtACAALQBQAGEAdABoACAAJABzAGUAdAB1AHAAIAAtAEYAbwByAGMAZQAgAHwAIABPAHUAdAAtAE4AdQBsAGwACgAgACAATgBlAHcALQBJAHQAZQBtAFAAcgBvAHAAZQByAHQAeQAgAC0AUABhAHQAaAAgACQAcwBlAHQAdQBwACAALQBOAGEAbQBlACAAUwBRAEwAUABhAHQAaAAgAC0AVgBhAGwAdQBlACAAKAAnAEMAOgBcAGMAdwAtAGEAcwBcACcAIAArACAAJABpACAAKwAgACcAXABPAEwAQQBQACcAKQAgAC0ARgBvAHIAYwBlACAAfAAgAE8AdQB0AC0ATgB1AGwAbAAKACAAIABOAGUAdwAtAEkAdABlAG0AIAAtAEkAdABlAG0AVAB5AHAAZQAgAEQAaQByAGUAYwB0AG8AcgB5ACAALQBGAG8AcgBjAGUAIAAtAFAAYQB0AGgAIAAoACcAQwA6AFwAYwB3AC0AYQBzAFwAJwAgACsAIAAkAGkAIAArACAAJwBcAE8ATABBAFAAXABDAG8AbgBmAGkAZwAnACkAIAB8ACAATwB1AHQALQBOAHUAbABsAAoAfQAKACQAdAAgAD0AIABbAGMAaABhAHIAXQA5AAoAZgB1AG4AYwB0AGkAbwBuACAARABvAGMAKAAkAG4AbAApACAAewAKACAAIAAnADwAQwBvAG4AZgBpAGcAdQByAGEAdABpAG8AbgBTAGUAdAB0AGkAbgBnAHMAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAnADwAIQAtAC0AIABzAGUAZQBkAGUAZAAgAGIAeQAgAHQAaABlACAAbQBzAHMAcQBsACAAdABlAHMAdAAgAC0ALQA+ACcAIAArACAAJABuAGwAIAArAAoAIAAgACQAdAAgACsAIAAnADwAVABoAHIAZQBhAGQAUABvAG8AbAA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwAUAByAG8AYwBlAHMAcwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAkAHQAIAArACAAJwA8AE0AYQB4AFQAaAByAGUAYQBkAHMAPgAwADwALwBNAGEAeABUAGgAcgBlAGEAZABzAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJAB0ACAAKwAgACcAPAAvAFAAcgBvAGMAZQBzAHMAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAnADwALwBUAGgAcgBlAGEAZABQAG8AbwBsAD4AJwAgACsAIAAkAG4AbAAgACsACgAgACAAJAB0ACAAKwAgACcAPABBAGwAbABvAHcAZQBkAEIAcgBvAHcAcwBpAG4AZwBGAG8AbABkAGUAcgBzACAALwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACcAPABMAG8AZwA+ACcAIAArACAAJABuAGwAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwARgBsAGkAZwBoAHQAUgBlAGMAbwByAGQAZQByAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJAB0ACAAKwAgACQAdAAgACsAIAAnADwARQBuAGEAYgBsAGUAZAA+ADEAPAAvAEUAbgBhAGIAbABlAGQAPgAnACAAKwAgACQAbgBsACAAKwAgACQAdAAgACsAIAAkAHQAIAArACAAJwA8AC8ARgBsAGkAZwBoAHQAUgBlAGMAbwByAGQAZQByAD4AJwAgACsAIAAkAG4AbAAgACsAIAAkAHQAIAArACAAJwA8AC8ATABvAGcAPgAnACAAKwAgACQAbgBsACAAKwAKACAAIAAnADwALwBDAG8AbgBmAGkAZwB1AHIAYQB0AGkAbwBuAFMAZQB0AHQAaQBuAGcAcwA+ACcAIAArACAAJABuAGwACgB9AAoAWwBJAE8ALgBGAGkAbABlAF0AOgA6AFcAcgBpAHQAZQBBAGwAbABUAGUAeAB0ACgAJwBDADoAXABjAHcALQBhAHMAXABDAFcAQgBPAE0AXABPAEwAQQBQAFwAQwBvAG4AZgBpAGcAXABtAHMAbQBkAHMAcgB2AC4AaQBuAGkAJwAsACAAKABEAG8AYwAgACgAWwBzAHQAcgBpAG4AZwBdAFsAYwBoAGEAcgBdADEAMwAgACsAIABbAGMAaABhAHIAXQAxADAAKQApACwAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABUAGUAeAB0AC4AVQBUAEYAOABFAG4AYwBvAGQAaQBuAGcAKAAkAHQAcgB1AGUAKQApACkACgBbAEkATwAuAEYAaQBsAGUAXQA6ADoAVwByAGkAdABlAEEAbABsAFQAZQB4AHQAKAAnAEMAOgBcAGMAdwAtAGEAcwBcAEMAVwBMAEYAXABPAEwAQQBQAFwAQwBvAG4AZgBpAGcAXABtAHMAbQBkAHMAcgB2AC4AaQBuAGkAJwAsACAAKABEAG8AYwAgACgAWwBzAHQAcgBpAG4AZwBdAFsAYwBoAGEAcgBdADEAMAApACkALAAgACgATgBlAHcALQBPAGIAagBlAGMAdAAgAFQAZQB4AHQALgBVAFQARgA4AEUAbgBjAG8AZABpAG4AZwAoACQAZgBhAGwAcwBlACkAKQApAAoA"
+
+    step "existing" {
+      description = "Raise ThreadPool\\Process\\MaxThreads in a UTF-8 BOM, CRLF file"
+      resource = "analysis_services_setting"
+      properties { instance = "CWBOM" setting = "ThreadPool\\Process\\MaxThreads" value = "512" restart = false }
+    }
+
+    step "created" {
+      description = "Create ThreadPool\\Query\\MaxThreads, which the file does not have yet"
+      resource = "analysis_services_setting"
+      requires = ["existing"]
+      properties { instance = "CWBOM" setting = "ThreadPool\\Query\\MaxThreads" value = "32" restart = false }
+    }
+
+    step "lf_file" {
+      description = "Change a value in a file without a BOM and with LF line endings"
+      resource = "analysis_services_setting"
+      properties { instance = "CWLF" setting = "Log\\FlightRecorder\\Enabled" value = "0" restart = false }
+    }
+
+    step "bad_setting" {
+      description = "Reject a setting path that is not a chain of element names"
+      resource = "analysis_services_setting"
+      expect = "error"
+      properties { instance = "CWBOM" setting = "ThreadPool\\1st" value = "1" restart = false }
+    }
+
+    step "no_instance" {
+      description = "Fail on an Analysis Services instance that is not installed"
+      resource = "analysis_services_setting"
+      expect = "error"
+      properties { instance = "CWNONE" setting = "ThreadPool\\Process\\MaxThreads" value = "1" restart = false }
+    }
+  }
+
   // Full silent install on a real Windows VM, then reconcile configuration
   // over the install. Heavy (multi-GB media); needs vmlab, the
   // windows-server-2025 template and the SQL Server media (set in the driver).
@@ -868,5 +1061,15 @@ SETUP
     description = "Silent SQL Server install on Windows, then reconcile the instance, TCP, database, setting, CDC and an availability group"
     lab = "tests/win-install-lab"
     script = "tests/win_install.ws"
+  }
+
+  // Analysis Services, Reporting Services and Master Data Services on a real
+  // Windows VM with SQL Server 2019 Developer (MDS rules out anything newer).
+  // Heavy: about 1.5 GB of media, fetched on the host and checked against
+  // its SHA-256 (MSSQL2019_ISO and SSRS2019_EXE point at local copies).
+  scenario "win_bi" {
+    description = "Install the engine with MDS and two Analysis Services instances, reconcile AS, set an AS property, install, configure and reconfigure SSRS 2019, create and move an MDS database and site, check the refusals, then remove MDS, SSRS and an AS instance"
+    lab = "tests/win-bi-lab"
+    script = "tests/win_bi.ws"
   }
 }
