@@ -130,6 +130,10 @@ mod fs {
     fn read(a0: string) -> Result[string, string]
     /// Read a file as bytes
     fn read_bytes(a0: string) -> Result[List[int], string]
+    /// Read a file as text, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of reading through it
+    fn read_with(a0: string, a1: Value) -> Result[string, string]
+    /// Read a file as bytes, with options {follow_symlinks: bool}. follow_symlinks false refuses a final symlink instead of reading through it
+    fn read_bytes_with(a0: string, a1: Value) -> Result[List[int], string]
     /// Write text to a file, replacing its contents
     fn write(a0: string, a1: string) -> Result[unit, string]
     /// Write bytes to a file, replacing its contents

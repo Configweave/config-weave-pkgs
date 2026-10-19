@@ -19,7 +19,7 @@ mod ci '.just/ci'
 
 # The config-weave release this repo checks against. Bump it deliberately:
 # packages call host functions that only exist from a given release on.
-config_weave_version := "v0.7.0-alpha"
+config_weave_version := "v0.8.0-alpha"
 
 # Install the config-weave binary this repo checks against, from GitHub.
 [group('check'), doc("Install the pinned config-weave release from GitHub into ~/.cargo/bin")]
