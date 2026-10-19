@@ -46,6 +46,11 @@ fn get_str(m: Value, key: string) -> string {
     ""
 }
 
+fn get_int(m: Value, key: string) -> int {
+    if let Some(v) = m.get(key) { if let Some(i) = v.as_int() { return i } }
+    -1
+}
+
 fn get_bool(m: Value, key: string) -> bool {
     if let Some(v) = m.get(key) { if let Some(b) = v.as_bool() { return b } }
     false
