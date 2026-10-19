@@ -1062,4 +1062,14 @@ SETUP
     lab = "tests/win-install-lab"
     script = "tests/win_install.ws"
   }
+
+  // Analysis Services, Reporting Services and Master Data Services on a real
+  // Windows VM with SQL Server 2019 Developer (MDS rules out anything newer).
+  // Heavy: about 1.5 GB of media, fetched on the host and checked against
+  // its SHA-256 (MSSQL2019_ISO and SSRS2019_EXE point at local copies).
+  scenario "win_bi" {
+    description = "Install the engine with MDS and two Analysis Services instances, reconcile AS, set an AS property, install, configure and reconfigure SSRS 2019, create and move an MDS database and site, check the refusals, then remove MDS, SSRS and an AS instance"
+    lab = "tests/win-bi-lab"
+    script = "tests/win_bi.ws"
+  }
 }
