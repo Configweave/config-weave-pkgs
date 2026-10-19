@@ -1,12 +1,13 @@
 use value
 use fs
 use path
-use http
 use shell
 use sys
 use registry
 use log
 use common
+use ssas
+use xmlfile
 
 fn instance_name(params: Value) -> Result[string, string] {
     let inst = common::param_str(params, "instance", "MSSQLSERVER")
@@ -99,8 +100,59 @@ fn sql_drift(params: Value) -> Result[List[string], string] {
 
 // ==== Windows ================================================================
 
-fn win_installed(inst: string) -> Result[bool, string] {
-    Ok(common::win_instance_id(inst)? != "")
+// --- features and the components they install ---
+
+// The Instance Names key a feature code is registered under: SQL for the
+// engine and its sub-features, OLAP for Analysis Services, RS for the
+// Reporting Services feature of SQL Server 2016 and older. "" for shared
+// features (IS, MDS, client tools and so on), which belong to no instance.
+fn component_of(feature: string) -> string {
+    let f = feature.to_upper()
+    if ["SQL", "SQLENGINE", "REPLICATION", "FULLTEXT", "DQ", "POLYBASE", "POLYBASECORE", "POLYBASEJAVA",
+        "ADVANCEDANALYTICS", "SQL_INST_MR", "SQL_INST_MPY", "SQL_INST_JAVA", "AZUREEXTENSION"].contains(f) { return "SQL" }
+    if f == "AS" { return "OLAP" }
+    if f == "RS" { return "RS" }
+    ""
+}
+
+fn feature_list(params: Value) -> Result[List[string], string] {
+    let raw = common::param_str(params, "features", "SQLENGINE")
+    if !common::only_chars(raw, ",_ ") { return Err("invalid 'features' '" + raw + "' (comma separated feature codes)") }
+    let out = common::csv(raw).map(|f| f.to_upper())
+    if out.is_empty() { return Err("'features' must name at least one feature") }
+    Ok(out)
+}
+
+// The instance components the features install, in SQL, OLAP, RS order.
+fn components(params: Value) -> Result[List[string], string] {
+    let fs = feature_list(params)?
+    let out = []
+    for c in ["SQL", "OLAP", "RS"] {
+        if fs.any(|f| component_of(f) == c) { out.push(c) }
+    }
+    if out.is_empty() {
+        return Err("'features' names no instance feature (SQLENGINE, AS or RS), so there is no instance to detect; shared features install with one of them")
+    }
+    Ok(out)
+}
+
+fn component_label(c: string) -> string {
+    if c == "SQL" { "the database engine" } else if c == "OLAP" { "Analysis Services" } else { "Reporting Services" }
+}
+
+fn win_has(inst: string, c: string) -> Result[bool, string] {
+    Ok(common::win_component_id(c, inst)? != "")
+}
+
+// The requested components that are installed, and those that are not.
+fn win_split_components(params: Value) -> Result[List[List[string]], string] {
+    let inst = instance_name(params)?
+    let have = []
+    let missing = []
+    for c in components(params)? {
+        if win_has(inst, c)? { have.push(c) } else { missing.push(c) }
+    }
+    Ok([have, missing])
 }
 
 fn win_server_key(inst: string) -> Result[string, string] {
@@ -140,6 +192,89 @@ fn sysadmin_accounts(params: Value) -> List[string] {
     common::csv(common::param_str(params, "sql_sysadmin_accounts", "BUILTIN\\Administrators"))
 }
 
+fn as_sysadmin_accounts(params: Value) -> List[string] {
+    common::csv(common::param_str(params, "as_sysadmin_accounts", "BUILTIN\\Administrators"))
+}
+
+// as_server_mode as setup's ASSERVERMODE and msmdsrv.ini's DeploymentMode.
+fn as_mode(params: Value) -> Result[List[string], string] {
+    let m = common::param_str(params, "as_server_mode", "multidimensional")
+    if m == "multidimensional" { return Ok(["MULTIDIMENSIONAL", "0"]) }
+    if m == "powerpivot" { return Ok(["POWERPIVOT", "1"]) }
+    if m == "tabular" { return Ok(["TABULAR", "2"]) }
+    Err("invalid 'as_server_mode' value '" + m + "' (expected :multidimensional, :tabular or :powerpivot)")
+}
+
+// The Analysis Services directory params: [param, setup option, msmdsrv.ini element].
+fn as_dirs() -> List[List[string]] {
+    [["as_data_dir", "ASDATADIR", "DataDir"], ["as_log_dir", "ASLOGDIR", "LogDir"],
+     ["as_temp_dir", "ASTEMPDIR", "TempDir"], ["as_backup_dir", "ASBACKUPDIR", "BackupDir"]]
+}
+
+// msmdsrv.ini settings that differ, as [param, element path, wanted value].
+// The server mode and the data directory cannot change on an existing
+// instance (the mode is fixed by setup; moving DataDir orphans every
+// database stored under the old one), so those are errors.
+fn as_ini_drift(params: Value) -> Result[List[List[string]], string] {
+    let inst = instance_name(params)?
+    let ini = ssas::ini_path(inst)?
+    let root = "/ConfigurationSettings/"
+    let xps = [root + "DeploymentMode", root + "CollationName"]
+    for d in as_dirs() { xps.push(root + d[2]) }
+    let have = xmlfile::read_values(ini, xps)?
+    let get = |xp: string| -> string { if let Some(o) = have.get(xp) { o.unwrap_or("") } else { "" } }
+    let mode = as_mode(params)?
+    let have_mode = get(root + "DeploymentMode").trim()
+    let have_mode_n = if have_mode == "" { "0" } else { have_mode }
+    if have_mode_n != mode[1] {
+        let names = #{ "0": "multidimensional", "1": "powerpivot", "2": "tabular" }
+        let label = names.get(have_mode_n).unwrap_or("DeploymentMode " + have_mode_n)
+        return Err("Analysis Services instance " + inst + " runs in " + label + " mode, not " +
+            common::param_str(params, "as_server_mode", "multidimensional") + "; the server mode is fixed by setup, so it only changes by reinstalling the instance")
+    }
+    let out = []
+    let coll = common::param_str(params, "as_collation", "")
+    common::check_collation(coll)?
+    if coll != "" && coll.to_lower() != get(root + "CollationName").trim().to_lower() {
+        out.push(["as_collation", root + "CollationName", coll])
+    }
+    for d in as_dirs() {
+        let want = common::param_str(params, d[0], "")
+        if want == "" { continue }
+        let have_dir = get(root + d[2])
+        if norm_dir(have_dir) == norm_dir(want) { continue }
+        if d[0] == "as_data_dir" {
+            return Err("Analysis Services instance " + inst + " keeps its data in '" + have_dir + "', not '" + want +
+                "'; config-weave does not move DataDir, because databases under the old directory would no longer be found")
+        }
+        out.push([d[0], root + d[2], want])
+    }
+    Ok(out)
+}
+
+fn as_drift(params: Value) -> Result[List[string], string] {
+    let inst = instance_name(params)?
+    let out = as_ini_drift(params)?.map(|d| d[0])
+    let missing = ssas::missing_admins(inst, as_sysadmin_accounts(params))?
+    if !missing.is_empty() { out.push("as_sysadmin_accounts") }
+    Ok(out)
+}
+
+fn as_apply(params: Value) -> Result[unit, string] {
+    let inst = instance_name(params)?
+    let ini = as_ini_drift(params)?
+    for d in ini {
+        if d[0].ends_with("_dir") && !fs::is_dir(d[2]) {
+            return Err("'" + d[0] + "' directory '" + d[2] + "' does not exist; create it, writable by " + ssas::service_name(inst) + ", first")
+        }
+    }
+    if !ini.is_empty() {
+        let changed = xmlfile::write_values(ssas::ini_path(inst)?, ini.map(|d| [d[1], d[2]]))?
+        if changed { ssas::restart(inst)? }
+    }
+    ssas::add_admins(inst, ssas::missing_admins(inst, as_sysadmin_accounts(params))?)
+}
+
 // T-SQL-side drift on Windows: the sysadmin accounts, and sa under mixed mode.
 fn win_tsql_drift(params: Value) -> Result[List[string], string] {
     let checks = []
@@ -156,16 +291,24 @@ fn win_tsql_drift(params: Value) -> Result[List[string], string] {
 
 fn win_check(params: Value) -> Result[CheckResult, string] {
     let inst = instance_name(params)?
-    if !win_installed(inst)? { return Ok(CheckResult::NotConfigured) }
+    as_mode(params)?
+    let split = win_split_components(params)?
+    let have = split[0]
+    if have.is_empty() { return Ok(CheckResult::NotConfigured) }
     if want_sql_auth(params)? && common::param_str(params, "sa_password", "") == "" { return Err("security_mode = :sql requires an 'sa_password'") }
-    let drift = []
-    if common::param_bool(params, "install_tools", true) && !tools_installed() { drift.push("install_tools") }
-    for r in win_reg_drift(params)? { drift.push(r[0]) }
-    if tools_installed() {
-        for d in sql_drift(params)? { drift.push(d) }
-        for d in win_tsql_drift(params)? { drift.push(d) }
-    } else {
-        return Err("sqlcmd is not installed, so the instance's collation, edition and logins cannot be compared; set install_tools = true or install sqlcmd")
+    let drift = split[1].map(|c| "features:" + c)
+    if have.contains("SQL") {
+        if common::param_bool(params, "install_tools", true) && !tools_installed() { drift.push("install_tools") }
+        for r in win_reg_drift(params)? { drift.push(r[0]) }
+        if tools_installed() {
+            for d in sql_drift(params)? { drift.push(d) }
+            for d in win_tsql_drift(params)? { drift.push(d) }
+        } else {
+            return Err("sqlcmd is not installed, so the instance's collation, edition and logins cannot be compared; set install_tools = true or install sqlcmd")
+        }
+    }
+    if have.contains("OLAP") {
+        for d in as_drift(params)? { drift.push(d) }
     }
     if drift.is_empty() { return Ok(CheckResult::AlreadyConfigured) }
     log::info("instance " + inst + " differs in: " + drift.join(", "))
@@ -186,28 +329,49 @@ fn ini_value(key: string, v: string) -> Result[string, string] {
 // The ConfigurationFile.ini for an install. It carries the sa password, so it
 // lives in a directory only SYSTEM and Administrators can read, which is
 // removed after setup runs.
-fn win_config_ini(params: Value) -> Result[string, string] {
+//
+// `features` is what to install: the whole list for a new instance, or only
+// the features of the components still missing from an existing one. The
+// engine options go in only when the engine is being installed, the
+// Analysis Services ones only with AS (an AS-only setup rejects nothing, but
+// has no use for SQLSYSADMINACCOUNTS).
+fn win_config_ini(params: Value, features: List[string]) -> Result[string, string] {
     let inst = instance_name(params)?
-    let features = common::param_str(params, "features", "SQLENGINE")
-    if !common::only_chars(features, ",_") { return Err("invalid 'features' '" + features + "' (comma separated feature codes)") }
+    let engine = features.any(|f| component_of(f) == "SQL")
+    let olap = features.any(|f| component_of(f) == "OLAP")
     let lines = [
         "[OPTIONS]",
         "ACTION=\"Install\"",
         "QUIET=\"True\"",
         "IACCEPTSQLSERVERLICENSETERMS=\"True\"",
         "UPDATEENABLED=\"False\"",
-        "FEATURES=" + features,
-        "INSTANCENAME=" + ini_value("instance", inst)?,
-        "TCPENABLED=\"" + (if common::param_bool(params, "tcp_enabled", true) { "1" } else { "0" }) + "\""
+        "FEATURES=" + features.join(","),
+        "INSTANCENAME=" + ini_value("instance", inst)?
     ]
+    if olap {
+        lines.push("ASSERVERMODE=\"" + as_mode(params)?[0] + "\"")
+        let quoted = []
+        for a in as_sysadmin_accounts(params) { quoted.push(ini_value("as_sysadmin_accounts", a)?) }
+        if quoted.is_empty() { return Err("Analysis Services setup needs at least one account in 'as_sysadmin_accounts'") }
+        lines.push("ASSYSADMINACCOUNTS=" + quoted.join(" "))
+        let ascoll = common::param_str(params, "as_collation", "")
+        common::check_collation(ascoll)?
+        if ascoll != "" { lines.push("ASCOLLATION=\"" + ascoll + "\"") }
+        for d in as_dirs() {
+            let v = common::param_str(params, d[0], "")
+            if v != "" { lines.push(d[1] + "=" + ini_value(d[0], v)?) }
+        }
+    }
+    let pid = win_pid(edition(params)?)
+    if pid != "" { lines.push("PID=" + ini_value("edition", pid)?) }
+    if !engine { return Ok(lines.join("\r\n") + "\r\n") }
+    lines.push("TCPENABLED=\"" + (if common::param_bool(params, "tcp_enabled", true) { "1" } else { "0" }) + "\"")
     let accounts = sysadmin_accounts(params)
     if !accounts.is_empty() {
         let quoted = []
         for a in accounts { quoted.push(ini_value("sql_sysadmin_accounts", a)?) }
         lines.push("SQLSYSADMINACCOUNTS=" + quoted.join(" "))
     }
-    let pid = win_pid(edition(params)?)
-    if pid != "" { lines.push("PID=" + ini_value("edition", pid)?) }
     if want_sql_auth(params)? {
         let sa = common::param_str(params, "sa_password", "")
         if sa == "" { return Err("security_mode = :sql requires an 'sa_password'") }
@@ -224,30 +388,25 @@ fn win_config_ini(params: Value) -> Result[string, string] {
     Ok(lines.join("\r\n") + "\r\n")
 }
 
-fn win_local_setup(params: Value) -> Result[string, string] {
-    let setup = common::require(params, "setup_path")?
-    if setup.starts_with("http://") || setup.starts_with("https://") {
-        let f = path::join(fs::temp_dir()?, "sqlserver-setup.exe")
-        http::download(setup, f, Value::Null)?
-        return Ok(f)
-    }
-    Ok(setup)
-}
-
-// Runs setup.exe with `args`; 3010 means it wants a reboot.
+// Runs setup.exe with `args`; 3010 means it wants a reboot. A URL is
+// downloaded (verified, see common::download_verified) for the run and
+// deleted afterwards.
 fn win_run_setup(params: Value, args: string) -> Result[ApplyResult, string] {
-    let local = win_local_setup(params)?
+    let setup = common::require(params, "setup_path")?
+    let got = common::local_installer(setup, "sqlserver-setup.exe", "")?
     let extra = common::param_str(params, "extra_args", "")
     let all = if extra != "" { args + " " + extra } else { args }
-    let script = "$c = (Start-Process -FilePath " + common::ps_q(local) + " -ArgumentList " + common::ps_q(all) + " -Wait -PassThru).ExitCode; exit $c"
+    let script = "$c = (Start-Process -FilePath " + common::ps_q(got[0]) + " -ArgumentList " + common::ps_q(all) + " -Wait -PassThru).ExitCode; exit $c"
     let opts = Value::Map(#{ "timeout": Value::Int(common::param_int(params, "install_timeout", 3600)) })
-    let out = shell::powershell(script, opts)?
+    let res = shell::powershell(script, opts)
+    if got[1] != "" { fs::delete_dir(got[1]).unwrap_or(()) }
+    let out = res?
     if out.code == 3010 { return Ok(ApplyResult::RebootRequired) }
     if !out.success { return Err(common::cmd_error("setup.exe", out)) }
     Ok(ApplyResult::Success)
 }
 
-fn win_install(params: Value) -> Result[ApplyResult, string] {
+fn win_install(params: Value, features: List[string]) -> Result[ApplyResult, string] {
     let inst = instance_name(params)?
     let cfg = common::param_str(params, "config_file", "")
     if cfg != "" {
@@ -255,7 +414,7 @@ fn win_install(params: Value) -> Result[ApplyResult, string] {
         log::info("running SQL Server setup for instance " + inst + " from " + cfg)
         return win_run_setup(params, "/Q /IACCEPTSQLSERVERLICENSETERMS /ConfigurationFile=" + ini_value("config_file", cfg)?)
     }
-    let ini = win_config_ini(params)?
+    let ini = win_config_ini(params, features)?
     let dir = fs::temp_dir()?
     let acl = shell::run("icacls " + common::q(dir) + " /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F", Value::Null)?
     if !acl.success {
@@ -264,7 +423,7 @@ fn win_install(params: Value) -> Result[ApplyResult, string] {
     }
     let file = path::join(dir, "ConfigurationFile.ini")
     fs::write(file, ini)?
-    log::info("running SQL Server setup for instance " + inst)
+    log::info("running SQL Server setup for instance " + inst + " (" + features.join(",") + ")")
     let res = win_run_setup(params, "/ConfigurationFile=\"" + file + "\"")
     let cleanup = fs::delete_dir(dir)
     let r = res?
@@ -294,13 +453,27 @@ fn win_install_tools(params: Value) -> Result[unit, string] {
 
 fn win_apply(params: Value) -> Result[ApplyResult, string] {
     let inst = instance_name(params)?
-    if !win_installed(inst)? {
-        let r = win_install(params)?
+    let split = win_split_components(params)?
+    let wanted = components(params)?
+    let engine = wanted.contains("SQL")
+    if !split[1].is_empty() {
+        // A new instance gets every feature; an existing one only the
+        // features of its missing components (shared features were
+        // installed with it).
+        let all = feature_list(params)?
+        let features = if split[0].is_empty() { all } else { all.filter(|f| split[1].contains(component_of(f))) }
+        if !split[0].is_empty() && common::param_str(params, "config_file", "") != "" {
+            return Err("instance " + inst + " lacks " + split[1].map(|c| component_label(c)).join(" and ") +
+                ", but config_file replaces the generated setup options, so config-weave cannot add only those features; add them to the instance yourself")
+        }
+        let r = win_install(params, features)?
         if r == ApplyResult::RebootRequired {
-            if common::param_bool(params, "install_tools", true) && !tools_installed() { win_install_tools(params)? }
+            if engine && common::param_bool(params, "install_tools", true) && !tools_installed() { win_install_tools(params)? }
             return Ok(r)
         }
     }
+    if wanted.contains("OLAP") { as_apply(params)? }
+    if !engine { return Ok(ApplyResult::Success) }
     if common::param_bool(params, "install_tools", true) && !tools_installed() { win_install_tools(params)? }
 
     // Registry settings take effect when the engine restarts.
@@ -331,9 +504,8 @@ fn win_apply(params: Value) -> Result[ApplyResult, string] {
 
 fn win_remove(params: Value) -> Result[ApplyResult, string] {
     let inst = instance_name(params)?
-    let features = common::param_str(params, "features", "SQLENGINE")
-    if !common::only_chars(features, ",_") { return Err("invalid 'features' '" + features + "' (comma separated feature codes)") }
-    log::info("uninstalling SQL Server instance " + inst)
+    let features = feature_list(params)?.join(",")
+    log::info("uninstalling " + features + " from SQL Server instance " + inst)
     win_run_setup(params, "/Q /ACTION=Uninstall /INSTANCENAME=" + ini_value("instance", inst)? + " /FEATURES=" + features)
 }
 
@@ -554,7 +726,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if !common::want_present(params)? {
         // existence probe only: on Linux the bare engine binary (even
         // without a configured service) still means work to do
-        let present = if sys::family() == "windows" { win_installed(inst)? } else { fs::exists("/opt/mssql/bin/sqlservr") }
+        let present = if sys::family() == "windows" { !win_split_components(params)?[0].is_empty() } else { fs::exists("/opt/mssql/bin/sqlservr") }
         if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }

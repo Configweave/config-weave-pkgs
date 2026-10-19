@@ -5,6 +5,11 @@ use sys
 use registry
 use service
 use time
+use http
+use hash
+use json
+use path
+use log
 
 // Shared helpers for the mssql package: parameter access, quoting for the
 // shells and for T-SQL, and the sqlcmd runner every T-SQL resource uses.
@@ -197,9 +202,17 @@ fn win_agent_name(inst: string) -> string {
 // The instance id (e.g. MSSQL16.MSSQLSERVER) that names its registry hive,
 // or "" when the instance is not installed.
 fn win_instance_id(inst: string) -> Result[string, string] {
+    win_component_id("SQL", inst)
+}
+
+// The id of one component of an instance, from the key setup registers it
+// under: Instance Names\SQL for the engine (MSSQL15.X), OLAP for Analysis
+// Services (MSAS15.X) and RS for Reporting Services (MSRS13.X, or SSRS for
+// the 2017+ standalone server). "" when that component is not installed.
+fn win_component_id(kind: string, inst: string) -> Result[string, string] {
     check_instance(inst)?
     let name = if inst == "" { "MSSQLSERVER" } else { inst }
-    let key = "HKLM\\SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\SQL"
+    let key = "HKLM\\SOFTWARE\\Microsoft\\Microsoft SQL Server\\Instance Names\\" + kind
     if let Some(v) = registry::read(key, name)? {
         if let Some(s) = v.as_string() { return Ok(s) }
     }
@@ -247,4 +260,93 @@ fn wait_for_engine(params: Value, secs: int) -> Result[unit, string] {
         if time::elapsed(start) > float(secs) { return Err("SQL Server did not accept connections within " + str(secs) + "s: " + last) }
         time::sleep(2000)
     }
+}
+
+// --- PowerShell -----------------------------------------------------------------
+
+// Windows PowerShell 5.1 writes stdout in the OEM code page unless told
+// otherwise, which mangles non-ASCII names; the wrapper reduces a terminating
+// error to its message rather than the echoed source line.
+fn ps_preamble() -> string {
+    "$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n" +
+        "try {{ [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false }} catch {{ }}\n"
+}
+
+// Runs `script` with `env` (secrets travel here, read as $env:NAME) and
+// returns its trimmed stdout. `timeout` 0 = the host default.
+fn ps_env(what: string, script: string, env: Map[string, Value], timeout: int) -> Result[string, string] {
+    let opts = #{}
+    if env.len() > 0 { opts.insert("env", Value::Map(env)) }
+    if timeout > 0 { opts.insert("timeout", Value::Int(timeout)) }
+    let body = ps_preamble() + "try {{\n" + script + "\nexit 0\n}} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+    let out = shell::powershell(body, Value::Map(opts))?
+    if !out.success { return Err(cmd_error(what, out)) }
+    Ok(out.stdout.trim())
+}
+
+fn ps(what: string, script: string) -> Result[string, string] { ps_env(what, script, #{}, 0) }
+
+// A script whose stdout is one JSON document.
+fn ps_json(what: string, script: string, env: Map[string, Value]) -> Result[Value, string] {
+    let text = ps_env(what, script, env, 0)?
+    if text == "" { return Err(what + " printed nothing") }
+    match json::parse(text) {
+        Ok(v) => Ok(v),
+        Err(e) => Err(what + " printed something that is not JSON (" + e + "): " + text)
+    }
+}
+
+// --- downloads ----------------------------------------------------------------
+
+// Downloads `url` to `dest`. http::download can leave a partial file behind
+// and does not retry (config-weave#11), so the file goes to a temp name
+// beside `dest`, its size is checked against the byte count and its sha256
+// against `sha256` when one is given, a failed attempt is retried up to three
+// times, and only a verified file is renamed into place.
+fn download_verified(url: string, dest: string, sha256: string) -> Result[unit, string] {
+    let want = sha256.trim().to_lower()
+    let tmp = dest + ".config-weave-" + str(time::now_millis()) + ".part"
+    let last = ""
+    let attempt = 1
+    while attempt <= 3 {
+        log::info("downloading " + url + " (attempt " + str(attempt) + ")")
+        match http::download(url, tmp, Value::Null) {
+            Ok(n) => {
+                let size = if let Ok(m) = fs::metadata(tmp) { if let Some(l) = m.get("size") { l.as_int().unwrap_or(-1) } else { -1 } } else { -1 }
+                if size != n {
+                    last = "got " + str(size) + " bytes on disk, expected " + str(n)
+                } else if want != "" && hash::sha256_file(tmp)?.to_lower() != want {
+                    last = "sha256 mismatch: expected " + want + ", got " + hash::sha256_file(tmp)?
+                } else {
+                    if fs::exists(dest) { fs::delete(dest)? }
+                    fs::move(tmp, dest)?
+                    return Ok(())
+                }
+            }
+            Err(e) => last = e
+        }
+        fs::delete(tmp).unwrap_or(())
+        attempt = attempt + 1
+        if attempt <= 3 { time::sleep(3000) }
+    }
+    Err("downloading " + url + " failed after 3 attempts: " + last)
+}
+
+// A local copy of an installer that may be given as a URL. Returns the path
+// and whether it is a temporary download the caller deletes.
+fn local_installer(src: string, name: string, sha256: string) -> Result[List[string], string] {
+    if src.starts_with("http://") || src.starts_with("https://") {
+        let dir = fs::temp_dir()?
+        let f = path::join(dir, name)
+        if let Err(e) = download_verified(src, f, sha256) {
+            fs::delete_dir(dir).unwrap_or(())
+            return Err(e)
+        }
+        return Ok([f, dir])
+    }
+    if !fs::exists(src) { return Err("installer '" + src + "' does not exist") }
+    if sha256 != "" && hash::sha256_file(src)?.to_lower() != sha256.trim().to_lower() {
+        return Err("installer '" + src + "' does not match its sha256")
+    }
+    Ok([src, ""])
 }
