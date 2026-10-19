@@ -164,14 +164,24 @@ fn parse_key(line: string) -> Option[List[string]] {
     Some([opts, kind, blob, b.get(1).unwrap_or("")])
 }
 
+// Give `to` the owner, group and mode of `from`.
+fn copy_owner_mode(from: string, to: string) -> Result[unit, string] {
+    let md = fs::metadata(from)?
+    let uid = md.get("uid").unwrap_or(Value::Null)
+    let gid = md.get("gid").unwrap_or(Value::Null)
+    fs::chown(to, uid, gid)?
+    fs::chmod(to, md.get("mode").unwrap_or(Value::Int(0)))
+}
+
 // Replace a file through a temp file beside it and a rename, keeping the
-// old file's owner and mode, so a crash never leaves it half-written.
+// old file's owner and mode, so a crash never leaves it half-written. The
+// temp file is written without following a symlink, so a link planted at
+// its name in a user's tree is refused rather than written through.
 fn write_atomic(p: string, text: string) -> Result[unit, string] {
     let tmp = path::join(path::parent(p), "." + path::filename(p) + ".cw-tmp")
-    fs::write(tmp, text)?
+    fs::write_with(tmp, text, Value::Map(#{ "follow_symlinks": Value::Bool(false) }))?
     if fs::is_file(p) {
-        let keep = "chown -- \"$(stat -c '%u:%g' -- " + q(p) + ")\" " + q(tmp) + " && chmod -- \"$(stat -c '%a' -- " + q(p) + ")\" " + q(tmp)
-        if let Err(e) = run("copying owner and mode of " + p, keep) {
+        if let Err(e) = copy_owner_mode(p, tmp) {
             fs::delete(tmp).unwrap_or(())
             return Err(e)
         }
