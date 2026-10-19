@@ -1,0 +1,22 @@
+// vmlab lab for the mssql `win_bi` scenario: one Windows Server VM with room
+// for SQL Server 2019, two Analysis Services instances, Reporting Services
+// and Master Data Services. config-weave's scenario runner copies this dir,
+// gives the lab a unique name, and brings the VM up by name.
+
+import <vmlab.wcl>
+
+lab "cw-mssql-bi" {
+
+  segment "lan" {
+    subnet = "10.71.0.0/24"
+    nat = true
+  }
+
+  vm "bi01" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 4
+    memory   = 12GiB
+    agent_update = false
+    nic { segment = "lan" }
+  }
+}

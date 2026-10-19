@@ -16,6 +16,11 @@ fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     fallback
 }
 
+fn param_int(params: Value, key: string, fallback: int) -> int {
+    if let Some(v) = params.get(key) { if let Some(i) = v.as_int() { return i } }
+    fallback
+}
+
 fn q(s: string) -> string { "'" + s.replace("'", "'\\''") + "'" }
 
 fn want_present(params: Value) -> Result[bool, string] {
@@ -166,18 +171,29 @@ fn tmp_sibling(p: string) -> string {
     path::join(path::parent(p), "." + path::filename(p) + ".cw-tmp")
 }
 
+fn unix_mode(p: string) -> int {
+    if let Ok(meta) = fs::metadata(p) {
+        if let Some(v) = meta.get("mode") { if let Some(m) = v.as_int() { return m } }
+    }
+    0
+}
+
 // Put a finished temp file in place at `p`. A plain path is replaced by an
 // atomic rename, after the temp file takes the old file's owner, group and
 // mode (a rename would otherwise reset whatever the playbook does not
 // manage). A symlink at `p` is written through, like every other write in
-// this package, so the link itself survives.
-fn install_tmp(tmp: string, p: string) -> Result[unit, string] {
+// this package, so the link itself survives. Carrying the old owner and
+// mode over is skipped when there is nothing to carry: when the playbook
+// sets all three of mode, owner and group, or on a host without Unix
+// permissions (fs::metadata reports mode 0), where fs::chown is an error.
+fn install_tmp(tmp: string, p: string, a: Attrs) -> Result[unit, string] {
     if fs::read_link(p).is_ok() {
         let r = fs::copy(tmp, p)
         fs::delete(tmp).unwrap_or(())
         return r
     }
-    if fs::is_file(p) {
+    let managed = a.mode != "" && a.owner != "" && a.group != ""
+    if fs::is_file(p) && !managed && unix_mode(p) != 0 {
         if let Err(e) = copy_owner_mode(p, tmp) {
             fs::delete(tmp).unwrap_or(())
             return Err(e)

@@ -1,0 +1,20 @@
+// vmlab lab for the windows_storage `data_disks` scenario: one server with
+// two blank data disks besides its system disk.
+
+import <vmlab.wcl>
+
+lab "cw-windows-storage" {
+
+  // A guest agent refresh that fails leaves the agent unable to answer the
+  // first exec; keep the agent the template sealed.
+  agent_update = false
+
+  vm "disk01" {
+    template = "x86_64/windows-server-2025"
+    cpus     = 2
+    memory   = 4GiB
+    nic { nat = true }
+    disk "data1" { size = 4GiB }
+    disk "data2" { size = 4GiB }
+  }
+}

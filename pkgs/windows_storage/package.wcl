@@ -1,0 +1,58 @@
+package "windows_storage" {
+  description = "Bring Windows data disks into use: initialise, partition and format"
+
+  // Disks through the Storage module (Get-Disk, Initialize-Disk,
+  // New-Partition, Format-Volume), so Windows Server 2012 or later, or
+  // Windows 8 or later. The safety rules are not optional: the boot and
+  // system disks are never touched, a disk that is not blank (RAW) is only
+  // wiped with allow_reformat = true, and disk = "raw" fails unless exactly
+  // one blank disk is attached.
+  //
+  // Disk numbers can change between boots when a machine has several data
+  // disks; a serial number or UniqueId does not. The vmlab `disk` blocks
+  // and Hyper-V/VHD disks have no serial number, so use the UniqueId that
+  // Get-Disk reports.
+  resource "volume" {
+    description = "Ensure a disk carries one volume of the whole disk at a drive letter, with a file system and label: a blank disk is brought online and writable, initialised, partitioned and formatted. A label that differs is changed in place, and a selected disk whose only volume matches but sits at another letter is moved to drive_letter. A different file system, allocation unit size or partition style needs a reformat, which is an error unless allow_reformat = true"
+    script = "resources/volume.ws"
+    concurrency = "exclusive"
+    param "disk" { description = "Which disk: \"raw\" for the only blank (RAW) disk that is not the boot or system disk (an error when there is none or more than one), a disk number such as \"1\" (one to four digits), or a serial number or UniqueId as Get-Disk reports it (a longer string of digits, like the UniqueId 0000000000000003 a virtio disk has, is matched as one). With \"raw\" the drive letter is what finds the volume once it exists, so a changed letter cannot be repaired; select the disk by UniqueId for that" type = "string" default = "raw" }
+    param "drive_letter" { description = "Drive letter of the volume, D to Z (a trailing colon is accepted). A volume already at this letter on another disk than the selected one is an error, as is a letter held by a CD-ROM, network or subst drive" type = "string" required = true }
+    param "label" { description = "Volume label, at most 32 characters; compared exactly and changed in place when it differs" type = "string" default = "" }
+    param "file_system" {
+      description = "File system to format with"
+      type = "symbol"
+      default = :ntfs
+
+      symbol "ntfs" { description = "NTFS" }
+      symbol "refs" { description = "ReFS (Windows Server, or Windows Pro for Workstations); allocation_unit_size 4096 or 65536" }
+    }
+    param "allocation_unit_size" { description = "Cluster size in bytes, a power of two from 512 to 2097152 (65536 is the usual choice for SQL Server data); 0 takes the default and accepts whatever the volume has" type = "int" default = 0 }
+    param "partition_style" {
+      description = "How a blank disk is initialised"
+      type = "symbol"
+      default = :gpt
+
+      symbol "gpt" { description = "GUID partition table" }
+      symbol "mbr" { description = "Master boot record (disks up to 2 TiB)" }
+    }
+    param "allow_reformat" { description = "Allow wiping a disk that is not blank: reformatting a volume whose file system, allocation unit size or partition style differs, formatting a selected disk that holds other partitions, and ensure = :absent. Destroys everything on the disk" type = "bool" default = false }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "The volume exists as described" }
+      symbol "absent"  { description = "No volume at drive_letter: the disk holding it is cleared back to blank (RAW), which needs allow_reformat = true" }
+    }
+  }
+
+  // The vmlab lab gives the VM two blank 4 GiB disks; the driver selects
+  // them by UniqueId, which it reads from the guest, so it is a scenario
+  // rather than a test.
+  scenario "data_disks" {
+    description = "volume formats blank data disks selected as raw and by UniqueId, refuses several RAW candidates, the boot disk and a non-blank disk, fixes label and letter drift in place, reformats only with allow_reformat, and clears a disk with ensure = :absent"
+    lab = "tests/disk-lab"
+    script = "tests/data_disks.ws"
+  }
+}

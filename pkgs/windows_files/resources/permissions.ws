@@ -1,8 +1,13 @@
 use value
 use fs
+use path
 use log
 use common
+use access
 use acl
+
+// Reads and writes the descriptor through the host acl module; see
+// lib/access.ws for how the rules are compared and merged.
 
 fn mode_exact(params: Value) -> Result[bool, string] {
     let m = common::param_str(params, "acl_mode", "additive")
@@ -18,38 +23,78 @@ fn copy_inherited(params: Value) -> Result[bool, string] {
     Err("invalid 'inherited_rules' value '" + m + "' (expected :copy or :remove)")
 }
 
-fn prelude(params: Value, p: string) -> Result[string, string] {
+// acl refuses a reparse point, while the rules always applied to what a
+// link points at, so a final link (or a chain of them) is followed here.
+fn resolve(p: string) -> Result[string, string] {
+    let cur = p
+    for i in 0..32 {
+        let t = fs::read_link(cur)
+        if t.is_err() { return Ok(cur) }
+        let target = t.unwrap_or("")
+        let abs = target.len() >= 2 && (target.slice(1, 2) == ":" || target.starts_with("\\\\"))
+        cur = if abs { target } else { path::join(path::parent(cur), target) }
+    }
+    Err("too many levels of links at '" + p + "'")
+}
+
+// Rules on a directory apply to the folder, its subfolders and files; a
+// file's rules carry no inheritance.
+fn flags(p: string) -> List[string] { if fs::is_dir(p) { ["container", "object"] } else { [] } }
+
+struct Want {
+    owner: string,
+    rules: List[Rule],
+    exact: bool,
+    protect: bool,
+    copy: bool,
+}
+
+// Validation that needs no account lookups runs first, so a bad param
+// fails even while the path does not exist yet.
+fn validate(params: Value) -> Result[unit, string] {
+    mode_exact(params)?
     copy_inherited(params)?
-    acl::ps_prelude(
-        p,
-        common::param_str(params, "owner", ""),
-        common::param_strs(params, "acl"),
-        common::param_strs(params, "deny"),
-        mode_exact(params)?
-    )
+    for kind in ["acl", "deny"] {
+        for spec in common::param_strs(params, kind) {
+            let pp = access::spec_parts(spec)?
+            access::parse_rights("file", pp.get(0).unwrap_or(""), pp.get(1).unwrap_or(""))?
+        }
+    }
+    Ok(())
+}
+
+fn want(params: Value, target: string) -> Result[Want, string] {
+    let owner = common::param_str(params, "owner", "")
+    Ok(Want {
+        owner: if owner != "" { access::sid_of(owner)? } else { "" },
+        rules: access::wanted("file", common::param_strs(params, "acl"), common::param_strs(params, "deny"), flags(target))?,
+        exact: mode_exact(params)?,
+        protect: !common::param_bool(params, "inheritance", true),
+        copy: copy_inherited(params)?,
+    })
+}
+
+fn problems(cur: Current, w: Want) -> List[string] {
+    let out = access::drift(cur, w.rules, w.exact, true)
+    if w.owner != "" && cur.owner != w.owner { out.push("owner is " + cur.owner + ", wanted " + w.owner) }
+    if cur.protected != w.protect { out.push("inheritance is " + (if cur.protected { "off" } else { "on" })) }
+    out
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let p = common::param_str(params, "path", "")
     common::require_path("path", p)?
-    let script = prelude(params, p)?
+    validate(params)?
     // A missing path is NotConfigured (not an error) so a sibling step can
     // create it before this resource's apply runs; apply still errors when
     // the path never appears.
     if !fs::exists(p) { return Ok(CheckResult::NotConfigured) }
-    let inheritance = common::param_bool(params, "inheritance", true)
-    let st = common::ps_json("reading the ACL of " + p,
-        script +
-        "$sec = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]'Owner, Access')\n" +
-        "$drift = CwEval $sec\n" +
-        "$have = $sec.GetOwner([System.Security.Principal.SecurityIdentifier]).Value\n" +
-        "if ($cwOwner -ne '' -and $have -ne $cwOwner) {{ $drift.Add('owner is ' + $have + ', wanted ' + $cwOwner) }}\n" +
-        "if ($sec.AreAccessRulesProtected -eq $" + (if inheritance { "true" } else { "false" }) + ") {{ $drift.Add('inheritance is ' + $(if ($sec.AreAccessRulesProtected) {{ 'off' }} else {{ 'on' }})) }}\n" +
-        "[pscustomobject]@{{ drift = @($drift) }} | ConvertTo-Json -Compress\n"
-    )?
-    let drift = common::get_list(st, "drift")
+    let target = resolve(p)?
+    let w = want(params, target)?
+    let cur = access::current("file", target, Value::Null, fs::is_dir(target))?
+    let drift = problems(cur, w)
     if !drift.is_empty() {
-        for d in drift { log::info(p + ": " + d.as_string().unwrap_or("")) }
+        for d in drift { log::info(p + ": " + d) }
         return Ok(CheckResult::NotConfigured)
     }
     Ok(CheckResult::AlreadyConfigured)
@@ -58,43 +103,24 @@ fn check(params: Value) -> Result[CheckResult, string] {
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = common::param_str(params, "path", "")
     common::require_path("path", p)?
-    let script = prelude(params, p)?
+    validate(params)?
     if !fs::exists(p) { return Err("path does not exist: " + p) }
-    let inheritance = common::param_bool(params, "inheritance", true)
-    let copy = copy_inherited(params)?
+    let target = resolve(p)?
+    let w = want(params, target)?
+    let cur = access::current("file", target, Value::Null, fs::is_dir(target))?
+    if problems(cur, w).is_empty() { return Ok(ApplyResult::Success) }
+    // Cutting inheritance with inherited_rules = :copy keeps the inherited
+    // rules as explicit ones, so nobody loses access they had; acl::set
+    // drops them otherwise. They take part in the comparison like any other
+    // explicit rule.
+    if w.protect && !cur.protected && w.copy {
+        for r in cur.inherited {
+            cur.explicit.push(Rule { sid: r.sid, kind: r.kind, mask: r.mask, inherit: r.inherit, inherited: false })
+        }
+    }
+    let rules = access::merged(cur, w.rules, w.exact, true)?
+    let owner = if w.owner != "" && cur.owner != w.owner { w.owner } else { "" }
     log::info("setting the ACL of " + p)
-    // The owner and the DACL are read and written separately through the
-    // item's own GetAccessControl/SetAccessControl, each with only its own
-    // section loaded. Set-Acl would write the owner back with the DACL,
-    // which fails on paths owned by TrustedInstaller and similar.
-    common::ps_run("setting the ACL of " + p,
-        script +
-        "if ($cwOwner -ne '') {{\n" +
-        "  $o = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)\n" +
-        "  if ($o.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $cwOwner) {{\n" +
-        "    CwEnableOwnerPrivileges\n" +
-        "    $o.SetOwner((New-Object System.Security.Principal.SecurityIdentifier($cwOwner)))\n" +
-        "    $cwItem.SetAccessControl($o)\n" +
-        "  }}\n" +
-        "}}\n" +
-        "$a = $cwItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)\n" +
-        "$changed = $false\n" +
-        (if inheritance {
-            "if ($a.AreAccessRulesProtected) {{ $a.SetAccessRuleProtection($false, $false); $changed = $true }}\n"
-        } else {
-            // Copying turns the inherited rules into explicit ones before
-            // inheritance is cut, so nobody loses access they had.
-            "if (-not $a.AreAccessRulesProtected) {{ $a.SetAccessRuleProtection($true, $" + (if copy { "true" } else { "false" }) + "); $changed = $true }}\n"
-        }) +
-        "$drift = CwEval $a\n" +
-        "if ($drift.Count -gt 0) {{\n" +
-        "  if ($cwExact) {{ foreach ($r in (CwExplicit $a)) {{ $null = $a.RemoveAccessRuleSpecific($r) }} }}\n" +
-        "  foreach ($w in $cwWant.Values) {{\n" +
-        "    if ($cwExact -or -not $w.ok) {{ $a.AddAccessRule((CwRule $w.sid $w.mask $w.type)) }}\n" +
-        "  }}\n" +
-        "  $changed = $true\n" +
-        "}}\n" +
-        "if ($changed) {{ $cwItem.SetAccessControl($a) }}\n"
-    )?
+    acl::set(target, access::spec(rules, owner, Some(w.protect)), Value::Null)?
     Ok(ApplyResult::Success)
 }

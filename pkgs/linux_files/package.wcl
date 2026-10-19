@@ -2,7 +2,7 @@ package "linux_files" {
   description = "Manage Linux filesystem state"
 
   resource "file" {
-    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Content that is not valid UTF-8 counts as drift and is replaced."
+    description = "Ensure a file exists with exact content or fetched from a URL, or is absent. Content is written to a temp file beside the target and renamed into place, keeping the old file's owner and mode unless mode/owner/group say otherwise; a symlink at path is written through. Content that is not valid UTF-8 counts as drift and is replaced. Check runs no shell command unless mode, owner or group is set."
     script = "resources/file.ws"
     concurrency = "parallel"
     param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
@@ -15,8 +15,10 @@ package "linux_files" {
       symbol "absent"  { description = "Delete the file" }
     }
     param "content" { description = "Desired file content; mutually exclusive with url" type = "string" default = "" }
-    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded beside the target and only renamed into place once it passes sha256. Without sha256 it is fetched once and never re-checked: a changed upstream file is not drift, so set sha256 whenever the content matters" type = "string" default = "" }
-    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error and leaves the existing file untouched" type = "string" default = "" }
+    param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded to .<name>.cw-tmp beside the target, checked against size and sha256, and only then renamed into place, so an interrupted download never leaves a file at path. Without size or sha256 a file at path is never re-checked: a changed upstream file is not drift, so set sha256 (or size, for files too big to hash on every run) whenever the content matters" type = "string" default = "" }
+    param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error, is not retried, and leaves the existing file untouched" type = "string" default = "" }
+    param "size" { description = "Optional expected size in bytes (url mode); 0 leaves it unchecked. Compared on every check before the digest and costs nothing, so with size alone a large file is never hashed. A download of the wrong size is retried" type = "int" default = 0 }
+    param "retries" { description = "How many times a download that fails (a transport error, or a file whose size differs from size) is retried, waiting 5 s, 10 s, ... between attempts; 0 to 10" type = "int" default = 3 }
     param "mode" { description = "Optional mode as 3 or 4 octal digits such as 0644 or 2775; symbolic modes are rejected. Applied to the symlink target when path is a symlink" type = "string" default = "" }
     param "owner" { description = "Optional file owner, as a user name or numeric uid" type = "string" default = "" }
     param "group" { description = "Optional file group, as a group name or numeric gid" type = "string" default = "" }
@@ -424,7 +426,7 @@ TMPL
   test "file_url_and_permissions_converge" {
     description = "file fetches by url over local HTTP and permissions converges a mode"
     image = "python:3.12-slim"
-    setup = "mkdir -p /srv/www /srv/dl && printf 'payload\\n' > /srv/www/payload.txt && printf 'old\\n' > /srv/dl/keep.txt && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
+    setup = "mkdir -p /srv/www /srv/dl && printf 'payload\\n' > /srv/www/payload.txt && printf 'old\\n' > /srv/dl/keep.txt && printf 'pay' > /srv/dl/truncated.txt && printf 'junk' > /srv/dl/.fresh.txt.cw-tmp && printf 'perm\\n' > /srv/perm.txt && chmod 664 /srv/perm.txt && cd /srv/www && (nohup python -m http.server 8080 >/tmp/http.log 2>&1 &) && sleep 1"
     verify = "tests/download_verify.ws"
 
     step "fetch" {
@@ -458,10 +460,56 @@ TMPL
       }
     }
 
+    step "fetch_sized" {
+      description = "A size alone verifies the download, and a truncated file at the target is drift"
+      resource = "file"
+      properties { path = "/srv/dl/truncated.txt" url = "http://127.0.0.1:8080/payload.txt" size = 8 }
+    }
+
+    step "fetch_after_interruption" {
+      description = "An interrupted run's temp file is discarded, not taken for the download"
+      resource = "file"
+      properties { path = "/srv/dl/fresh.txt" url = "http://127.0.0.1:8080/payload.txt" size = 8 }
+    }
+
+    step "short_download" {
+      description = "A download whose size never matches is retried, then fails, leaving neither the target nor a temp file"
+      resource = "file"
+      expect = "error"
+      properties { path = "/srv/dl/wrong-size.txt" url = "http://127.0.0.1:8080/payload.txt" size = 99 retries = 1 }
+    }
+
+    step "size_needs_url" {
+      description = "size without url is a validation error"
+      resource = "file"
+      expect = "error"
+      properties { path = "/srv/dl/content.txt" content = "x" size = 1 }
+    }
+
     step "perms" {
       description = "Tighten the mode of a pre-seeded file"
       resource = "permissions"
       properties { path = "/srv/perm.txt" mode = "0600" }
+    }
+  }
+  // stat stands in for a host with no shell tools at all: it is deleted,
+  // so a check or apply that shelled out to it would fail.
+  test "file_without_stat" {
+    description = "file with no mode, owner or group checks and replaces content without running stat"
+    image = "debian:12"
+    setup = "printf 'same' > /srv-same.txt && rm -f /usr/bin/stat /bin/stat /.vmlab/bin/stat"
+
+    step "unchanged" {
+      description = "A file that already holds the content is already configured"
+      resource = "file"
+      expect = "already_configured"
+      properties { path = "/srv-same.txt" content = "same" }
+    }
+
+    step "new_file" {
+      description = "A new file is written"
+      resource = "file"
+      properties { path = "/srv-new.txt" content = "new" }
     }
   }
 }

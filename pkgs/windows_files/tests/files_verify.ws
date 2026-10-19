@@ -27,7 +27,7 @@ fn verify(facts: Value) -> Result[bool, string] {
         "Text 'C:\\weave-files-seed\\drift.txt' ('new content' + [char]10)\n" +
         "Text 'C:\\weave-files-seed\\utf16.txt' 'now utf-8'\n" +
         "foreach ($p in 'C:\\weave-files-seed\\remove_me.txt', 'C:\\weave-files-seed\\tpl_remove.txt', 'C:\\weave-files-seed\\rmdir', 'C:\\weave-files-test\\ghost.txt', 'C:\\weave-files-test\\bad-digest.txt', 'C:\\weave-files-test\\empty.txt', 'C:\\weave-files-seed\\deadlink', 'C:\\weave-files-seed\\deadfile', 'C:\\weave-files-seed\\deadtpl') {{ Gone $p }}\n" +
-        "if (@(Get-ChildItem -LiteralPath 'C:\\weave-files-test' -Filter '*.tmp').Count -gt 0) {{ $bad.Add('a download temp file was left behind') }}\n" +
+        "if (@(Get-ChildItem -LiteralPath 'C:\\weave-files-test' -Filter '*.config-weave-download').Count -gt 0) {{ $bad.Add('a download temp file was left behind') }}\n" +
         "if (-not (Test-Path -LiteralPath 'C:\\Windows\\System32')) {{ $bad.Add('C:\\Windows is damaged') }}\n" +
         "if ((Get-FileHash -LiteralPath 'C:\\weave-files-test\\rfc2549.txt' -Algorithm SHA256).Hash -ne '646B43B5D718913D6211E2C18B2B3B667CF6EAA76A2493E55B1DE5CA04C2578E') {{ $bad.Add('rfc2549.txt has the wrong digest') }}\n" +
         // Users on the working directory: the merged mask, reaching children.

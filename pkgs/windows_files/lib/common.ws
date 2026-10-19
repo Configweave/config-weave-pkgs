@@ -5,6 +5,7 @@ use fs
 use path
 use shell
 use json
+use env
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
     if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
@@ -13,6 +14,11 @@ fn param_str(params: Value, key: string, fallback: string) -> string {
 
 fn param_bool(params: Value, key: string, fallback: bool) -> bool {
     if let Some(v) = params.get(key) { if let Some(b) = v.as_bool() { return b } }
+    fallback
+}
+
+fn param_int(params: Value, key: string, fallback: int) -> int {
+    if let Some(v) = params.get(key) { if let Some(i) = v.as_int() { return i } }
     fallback
 }
 
@@ -38,6 +44,11 @@ fn want_present(params: Value) -> Result[bool, string] {
 fn get_str(m: Value, key: string) -> string {
     if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
     ""
+}
+
+fn get_int(m: Value, key: string) -> int {
+    if let Some(v) = m.get(key) { if let Some(i) = v.as_int() { return i } }
+    -1
 }
 
 fn get_bool(m: Value, key: string) -> bool {
@@ -142,6 +153,40 @@ fn norm_path(p: string) -> string {
     let out = p.replace("/", "\\").to_lower()
     while out.len() > 3 && out.ends_with("\\") { out = out.slice(0, out.len() - 1) }
     out
+}
+
+// Directories an :absent step never deletes, relative to the system drive
+// root (compared case-insensitively). Drive roots and UNC share roots are
+// refused separately.
+fn protected_dirs() -> List[string] {
+    ["windows", "program files", "program files (x86)", "programdata", "users", "users\\public",
+     "users\\default", "users\\all users", "recovery", "boot", "system volume information", "$recycle.bin",
+     "perflogs", "documents and settings"]
+}
+
+// :absent is a recursive delete, so it refuses a drive or share root, the
+// system directories above, a user profile root (C:\Users\<name>), the
+// directories the environment names (SystemRoot, ProgramFiles, ...), and a
+// link, which would be followed nowhere but is not this resource's to
+// remove (use windows_files.symlink).
+fn guard_delete(p: string) -> Result[unit, string] {
+    let n = norm_path(p)
+    let refuse = "refusing to delete '" + p + "'"
+    if n.len() <= 3 && n.slice(1, 2) == ":" { return Err(refuse + ": it is a drive root") }
+    if n.starts_with("\\\\") && n.slice(2, n.len()).split("\\").len() <= 2 { return Err(refuse + ": it is a share root") }
+    let rel = if n.len() > 3 && n.slice(1, 2) == ":" { n.slice(3, n.len()) } else { "" }
+    for d in protected_dirs() {
+        if rel == d { return Err(refuse + ": it is a system directory") }
+    }
+    let segs = rel.split("\\")
+    if segs.len() == 2 && segs.get(0).unwrap_or("") == "users" { return Err(refuse + ": it is a user profile root") }
+    for var in ["SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "PUBLIC", "USERPROFILE", "ALLUSERSPROFILE", "SystemDrive"] {
+        if let Some(v) = env::get(var) {
+            if v != "" && norm_path(v) == n { return Err(refuse + ": it is %" + var + "%") }
+        }
+    }
+    if fs::read_link(p).is_ok() { return Err(refuse + ": it is a symbolic link or junction; use windows_files.symlink with ensure = :absent") }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------
