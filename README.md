@@ -73,6 +73,8 @@ Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_storage`,
 `windows_defender`, `windows_iis`, `windows_powershell`) and the
 cross-platform `mssql` package round out the library.
+`visual_studio` installs Visual Studio itself and `vsix` installs
+extensions into Visual Studio and VS Code.
 
 ### `linux_files`
 
@@ -906,6 +908,84 @@ Every resource needs Microsoft Defender Antivirus installed with its
 `WinDefend` service running. When another antivirus product has taken over,
 they fail with an error that says so. Just after boot, while the service is
 running but Defender does not answer yet, they wait up to two minutes for it.
+
+### `visual_studio`
+
+- `instance` installs one Visual Studio 2017 to 2026 instance (Community,
+  Professional, Enterprise, Build Tools or the test agent) and keeps its
+  `workloads` and `components` installed. `version` is a major (`17`) or a
+  vswhere range (`[16.0,17.0)`). `check` compares the listed ids with the
+  packages vswhere reports for the instance, so it knows exactly which are
+  missing.
+  - Missing ids are added with the bootstrapper's `modify --add`. With
+    `exact = true`, ids that were selected for the instance (its
+    `state.json`) but are no longer listed are removed with `--remove`.
+    Dependencies of listed items are never selected, so they stay.
+  - Every installer operation goes through the bootstrapper
+    (`https://aka.ms/vs/<major>/release/vs_<product>.exe`, `stable` for 18,
+    or `bootstrapper`) with `--wait`. A download is retried three times
+    and must carry a valid Authenticode signature before it runs.
+  - Exit 3010 or 1641 is reported as reboot required. Any other failure
+    names the exit code's meaning, the newest `dd_setup_*.log` (for SYSTEM
+    under `C:\Windows\SystemTemp`) and the lines of its `_errors` log.
+  - A running Visual Studio installer is waited for (up to 30 minutes)
+    rather than fought with.
+  - `product_key` goes in a response file (`--in`) that only SYSTEM and
+    Administrators can read, never on a command line.
+  - `ensure = :absent` uninstalls the instance.
+- `instances` gatherer: every instance with its version, path, channel,
+  installed workloads and selected ids.
+
+**Not changed in place.** An instance on another channel than
+`channel_url` is reported as an error (moving channels can change the
+version line; use `setup.exe modifySettings`). `product_key` and
+`include_recommended` apply when the installer runs; neither can be read
+back from an instance.
+
+Tests: four grouped VM tests install Build Tools 2022 with its MSBuild
+workload, add a component, trim it again with `exact`, and uninstall.
+
+### `vsix`
+
+`extension` installs or removes one extension:
+
+- `host = :visual_studio`: into every Visual Studio 2017 to 2026 instance
+  that `vs_version` and `vs_products` select (Build Tools takes no
+  extensions, so it never matches), with `VSIXInstaller.exe /quiet
+  [/admin] /instanceIds:<id>`. Exit 1001 (already installed) is success.
+  `check` looks for an `extension.vsixmanifest` whose Identity is `id`
+  (and `version`) under the instance's `Common7\IDE\Extensions` and
+  `CommonExtensions` (`scope = :machine`) or the running account's
+  `%LOCALAPPDATA%\Microsoft\VisualStudio\<major>.0_<instanceId>`
+  (`scope = :user`; for SYSTEM also its `SysWOW64` twin, where the 32-bit
+  VSIXInstaller's installs land). `source` is a path, a URL or a
+  Marketplace item name (fetched at `version`, or at the newest version
+  the gallery reports); the package must carry `id` before it is
+  installed. Nothing runs while that instance's `devenv.exe` is open. A
+  per-user uninstall only marks the directory for deletion at the next
+  `devenv` start, so the resource deletes what VSIXInstaller left behind.
+- `remove_parts` installs a copy of the package without some parts. The
+  copy is made with `System.IO.Packaging`: signatures are removed, the
+  parts deleted, their manifest `Location` dropped and `manifest.json`'s
+  hashes brought up to date. Use it when a nested dependency is older than
+  the copy already installed, which VSIXInstaller otherwise refuses.
+- `host = :vscode`: through the `code` CLI (VS Code, Insiders or VSCodium,
+  found in the usual install directories or set with `code`), compared on
+  `--list-extensions --show-versions`. With `user`, the CLI gets
+  `--extensions-dir` and `--user-data-dir` under that user's profile, so
+  a run as SYSTEM installs for the user, not for SYSTEM.
+
+This package does not depend on `visual_studio`; it carries its own
+vswhere code. Run `visual_studio.instance` first (with `requires`) when
+both are in one play.
+
+Tests: Visual Studio Community 2022 with only the core editor, test
+packages built in setup (plain, per-user, and a nested-dependency pair
+in the shape of the SSAS/SSRS project extensions) plus one Marketplace
+extension, and the portable VS Code zip with a local package for another
+user and one pinned Marketplace extension. Visual Studio 2022 only takes
+VSIX v3 packages (with `manifest.json` and `catalog.json`), so the test
+packages carry both.
 
 ### `mssql`
 

@@ -1,0 +1,293 @@
+package "vsix" {
+  description = "Install VSIX extensions into Visual Studio (2017 to 2026) and VS Code"
+
+  resource "extension" {
+    description = "Install or remove one extension in Visual Studio instances or in a user's VS Code"
+    script = "resources/extension.ws"
+    concurrency = "exclusive"
+    param "host" {
+      description = "Which editor the extension is for"
+      type = "symbol"
+      default = :visual_studio
+
+      symbol "visual_studio" { description = "Visual Studio 2017 to 2026 (15.x to 18.x), through VSIXInstaller.exe, into every instance vs_version and vs_products match. Build Tools and the test agent take no extensions and never match" }
+      symbol "vscode"        { description = "VS Code, Insiders or VSCodium, through the code CLI (--install-extension, --list-extensions, --uninstall-extension)" }
+    }
+    param "id" {
+      description = "The extension's identity: for Visual Studio the Identity Id in its extension.vsixmanifest (often a GUID); for VS Code publisher.name. A downloaded or local package must carry this id"
+      type = "string"
+      required = true
+    }
+    param "version" {
+      description = "Version to have installed. Empty = any version counts as installed. Compared with trailing .0 groups ignored (2.9.18 = 2.9.18.0). A Visual Studio package must have this version; a newer one upgrades in place, an older one than installed is refused by VSIXInstaller"
+      type = "string"
+      default = ""
+    }
+    param "source" {
+      description = "Where the package comes from: a local .vsix path, an http(s) URL, or a Marketplace item name publisher.name. Visual Studio needs one (a Marketplace item is fetched as its vspackage at version, or at its newest version when version is empty). For VS Code an empty source (or the id itself) installs from the Marketplace as id or id@version"
+      type = "string"
+      default = ""
+    }
+    param "sha256" { description = "Expected SHA-256 of the .vsix file (64 hex digits), for a path or URL source; a mismatch is an error and a cached download that still matches is reused" type = "string" default = "" }
+    param "vs_version" { description = "Visual Studio only: a major version (16) or vswhere range ([16.0,17.0)) the instances must be in. Empty = every instance. No matching instance is an error" type = "string" default = "" }
+    param "vs_products" { description = "Visual Studio only: vswhere -products value, * or product ids such as Microsoft.VisualStudio.Product.Professional" type = "string" default = "*" }
+    param "scope" {
+      description = "Visual Studio only: where the extension is installed"
+      type = "symbol"
+      default = :machine
+
+      symbol "machine" { description = "For every user (VSIXInstaller /admin), under the instance's Common7\\IDE\\Extensions; needs an elevated run. Extensions under CommonExtensions count as installed too" }
+      symbol "user"    { description = "For the account config-weave runs as, under %LOCALAPPDATA%\\Microsoft\\VisualStudio\\<major>.0_<instanceId>\\Extensions (for SYSTEM also the SysWOW64 copy of its profile, where the 32-bit VSIXInstaller writes). A per-user uninstall only marks the directory for deletion at devenv's next start, so the leftover directory is deleted after VSIXInstaller has uninstalled it" }
+    }
+    param "remove_parts" {
+      description = "Visual Studio only: package parts to delete before installing, such as /Shared/Microsoft.DataTools.Shared.vsix. The copy is made with System.IO.Packaging: signatures are removed, the parts deleted, each manifest Location (and Asset Path) that named them dropped, and manifest.json's file list and SHA-256 values brought up to date. The dependency itself stays, so an already installed copy must satisfy it. This is how to install an extension whose nested dependency is older than one already present"
+      type = "list"
+    }
+    param "user" { description = "VS Code only: whose extensions to manage. The CLI gets --extensions-dir and --user-data-dir under that user's profile, which must exist (the user has logged on once). Empty = the account config-weave runs as, in its default directories (for SYSTEM that is SYSTEM's own profile)" type = "string" default = "" }
+    param "code" { description = "VS Code only: path to code.cmd, code-insiders.cmd or codium.cmd (a portable install's bin\\code.cmd, say). Empty = look in the user's and the machine's default install directories, then on PATH" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the extension (at version, when set)" }
+      symbol "absent"  { description = "Remove it: VSIXInstaller /uninstall:<id> in every matching instance that has it, or code --uninstall-extension. No VS Code CLI at all counts as removed" }
+    }
+  }
+
+  // Test setups are PowerShell scripts under tests/setup, carried on the
+  // setup line gzip+base64'd (cmd /C would mangle their quotes, pipes and
+  // XML). After editing one, regenerate its line with
+  //   python3 tests/setup/mksetup.py tests/setup/<file>.ps1
+  //
+  // vs_setup.ps1 installs Visual Studio Community 2022 with only the core
+  // editor (Build Tools takes no extensions), then builds the test
+  // packages with System.IO.Packaging under C:\weave-vsix: plain, user
+  // (AllUsers=false), nested 1.0 and 2.0, and outer, which embeds nested
+  // 1.0 at /Shared/Nested.vsix, points its dependency's Location at it and
+  // lists every file's SHA-256 in manifest.json. That is the shape of the
+  // SSAS and SSRS project extensions, whose nested BI Shared Components are
+  // older than the copy SSIS Projects installs. VSIXInstaller 17.14 takes
+  // this outer as it is (it keeps nested 2.0 and copies Shared\Nested.vsix
+  // into outer's directory), so the refusal the issue describes cannot be
+  // reproduced with a synthetic pair; vs_remove_parts asserts what
+  // remove_parts changes instead: no nested part installed, no Location,
+  // and a manifest.json that matches the rewritten package.
+  test "vs_install" {
+    description = "Per-machine and per-user installs into Visual Studio 2022, and the validation errors"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $z=New-Object IO.Compression.GZipStream((New-Object IO.MemoryStream(,[Convert]::FromBase64String('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'))),[IO.Compression.CompressionMode]::Decompress); $s=(New-Object IO.StreamReader($z)).ReadToEnd(); Invoke-Expression $s"
+    verify = "tests/vs_install_verify.ws"
+
+    step "plain_machine" {
+      description = "Install a local VSIX for every user (/admin)"
+      resource = "extension"
+      properties {
+        id = "ConfigWeave.Test.Plain"
+        version = "1.0"
+        source = "C:\\weave-vsix\\plain.vsix"
+        vs_version = "17"
+      }
+    }
+
+    step "user_scope" {
+      description = "Install a VSIX for the account config-weave runs as"
+      resource = "extension"
+      properties {
+        id = "ConfigWeave.Test.User"
+        source = "C:\\weave-vsix\\user.vsix"
+        vs_version = "[17.0,18.0)"
+        vs_products = "Microsoft.VisualStudio.Product.Community"
+        scope = :user
+      }
+    }
+
+    step "nested_newer" {
+      description = "Nested 2.0 goes in first, as BI Shared Components 6.0.2 does with SSIS Projects"
+      resource = "extension"
+      properties {
+        id = "ConfigWeave.Test.Nested"
+        version = "2.0"
+        source = "C:\\weave-vsix\\nested2.vsix"
+      }
+    }
+
+    // A real Marketplace item, fetched as its vspackage at the newest
+    // version the gallery reports (version is empty).
+    step "marketplace_latest" {
+      description = "Install Add New File (64-bit) from the Visual Studio Marketplace by item name"
+      resource = "extension"
+      properties {
+        id = "d48e8f25-661b-4970-8b66-03f051ba5fc3"
+        source = "MadsKristensen.AddNewFile64"
+        vs_version = "17"
+      }
+    }
+
+    step "wrong_id" {
+      description = "A package that is not the extension id names is refused before VSIXInstaller runs"
+      resource = "extension"
+      expect = "error"
+      properties { id = "ConfigWeave.Test.Other" source = "C:\\weave-vsix\\plain.vsix" }
+    }
+
+    step "sha_mismatch" {
+      description = "A package whose SHA-256 does not match is refused"
+      resource = "extension"
+      expect = "error"
+      properties {
+        id = "ConfigWeave.Test.Plain"
+        version = "9.9"
+        source = "C:\\weave-vsix\\plain.vsix"
+        sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+
+    step "no_instance" {
+      description = "No instance in vs_version is an error"
+      resource = "extension"
+      expect = "error"
+      properties { id = "ConfigWeave.Test.Plain" source = "C:\\weave-vsix\\plain.vsix" vs_version = "15" }
+    }
+
+    step "parts_for_vscode" {
+      description = "remove_parts is for Visual Studio only"
+      resource = "extension"
+      expect = "error"
+      properties { host = :vscode id = "config-weave.cw-test" remove_parts = ["/x.vsix"] }
+    }
+  }
+
+  test "vs_remove_parts" {
+    description = "remove_parts strips the nested package and its manifest Location, and the install succeeds"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/vs_remove_parts_verify.ws"
+
+    step "outer_stripped" {
+      description = "Install outer without /Shared/Nested.vsix"
+      resource = "extension"
+      properties {
+        id = "ConfigWeave.Test.Outer"
+        version = "1.0"
+        source = "C:\\weave-vsix\\outer.vsix"
+        remove_parts = ["/Shared/Nested.vsix"]
+      }
+    }
+  }
+
+  test "vs_absent" {
+    description = "Uninstall per-machine and per-user extensions"
+    template = "x86_64/windows-server-2025"
+    group = "vs"
+    memory = "8GiB"
+    verify = "tests/vs_absent_verify.ws"
+
+    step "plain_gone" {
+      description = "Remove the per-machine extension"
+      resource = "extension"
+      properties { id = "ConfigWeave.Test.Plain" ensure = :absent }
+    }
+
+    step "user_gone" {
+      description = "Remove the per-user extension"
+      resource = "extension"
+      properties { id = "ConfigWeave.Test.User" scope = :user ensure = :absent }
+    }
+
+    step "marketplace_gone" {
+      description = "Remove the Marketplace extension"
+      resource = "extension"
+      properties { id = "d48e8f25-661b-4970-8b66-03f051ba5fc3" ensure = :absent }
+    }
+
+    step "outer_gone" {
+      description = "Remove outer"
+      resource = "extension"
+      properties { id = "ConfigWeave.Test.Outer" ensure = :absent }
+    }
+  }
+
+  // code_setup.ps1 builds a minimal VS Code package (cw-test 0.0.1),
+  // creates a local user cwdev and its profile (a scheduled task run as
+  // the user loads it), and unpacks the portable VS Code zip to C:\vscode.
+  test "code_install" {
+    description = "VS Code: a local VSIX into another user's profile, a pinned Marketplace version for the running account"
+    template = "x86_64/windows-server-2025"
+    group = "vscode"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $z=New-Object IO.Compression.GZipStream((New-Object IO.MemoryStream(,[Convert]::FromBase64String('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'))),[IO.Compression.CompressionMode]::Decompress); $s=(New-Object IO.StreamReader($z)).ReadToEnd(); Invoke-Expression $s"
+    verify = "tests/code_install_verify.ws"
+
+    step "for_user" {
+      description = "Install the local cw-test.vsix into cwdev's extensions directory, running as SYSTEM"
+      resource = "extension"
+      properties {
+        host = :vscode
+        id = "config-weave.cw-test"
+        version = "0.0.1"
+        source = "C:\\weave-vsix\\cw-test.vsix"
+        user = "cwdev"
+        code = "C:\\vscode\\bin\\code.cmd"
+      }
+    }
+
+    step "marketplace_pinned" {
+      description = "Install EditorConfig 0.18.2 from the Marketplace for the account config-weave runs as"
+      resource = "extension"
+      properties {
+        host = :vscode
+        id = "EditorConfig.EditorConfig"
+        version = "0.18.2"
+        code = "C:\\vscode\\bin\\code.cmd"
+      }
+    }
+
+    step "no_profile" {
+      description = "A user without a profile is an error, not a directory created for Windows to ignore"
+      resource = "extension"
+      expect = "error"
+      properties {
+        host = :vscode
+        id = "config-weave.cw-test"
+        source = "C:\\weave-vsix\\cw-test.vsix"
+        user = "Guest"
+        code = "C:\\vscode\\bin\\code.cmd"
+      }
+    }
+  }
+
+  test "code_absent" {
+    description = "VS Code: uninstall both extensions"
+    template = "x86_64/windows-server-2025"
+    group = "vscode"
+    memory = "4GiB"
+    verify = "tests/code_absent_verify.ws"
+
+    step "for_user_gone" {
+      description = "Remove cw-test from cwdev"
+      resource = "extension"
+      properties {
+        host = :vscode
+        id = "config-weave.cw-test"
+        user = "cwdev"
+        code = "C:\\vscode\\bin\\code.cmd"
+        ensure = :absent
+      }
+    }
+
+    step "marketplace_gone" {
+      description = "Remove EditorConfig from the running account"
+      resource = "extension"
+      properties {
+        host = :vscode
+        id = "EditorConfig.EditorConfig"
+        code = "C:\\vscode\\bin\\code.cmd"
+        ensure = :absent
+      }
+    }
+  }
+}
