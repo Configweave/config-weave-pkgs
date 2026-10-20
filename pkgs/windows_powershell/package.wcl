@@ -2835,6 +2835,46 @@ package "windows_powershell" {
     }
   }
 
+  // The UTF-16LE branch of module_from_path's manifest reader. Windows
+  // PowerShell 5.1's New-ModuleManifest writes UTF-16LE with a BOM (verify
+  // confirms it); pwsh 7, which the container test uses, writes UTF-8. Read
+  // without decoding, such a manifest yields no ModuleVersion, so a version
+  // the manifest contradicts would install anyway: the mismatch step is what
+  // fails without the branch. Setup runs under cmd /C, so it holds no double
+  // quotes and no pipes.
+  test "module_from_path_utf16_manifest" {
+    description = "module_from_path reads a Windows PowerShell 5.1 (UTF-16LE) manifest: the declared version installs and converges, and a contradicting version is refused"
+    template = "x86_64/windows-server-2025"
+    group = "win2025modpath"
+    setup = "powershell -NoProfile -NonInteractive -Command foreach ($n in 'CwUtf16', 'CwUtf16Bad') { $d = Join-Path 'C:\\cwsrc' $n; $null = New-Item -ItemType Directory -Force -Path $d; Set-Content -LiteralPath (Join-Path $d ($n + '.psm1')) -Value ('function Get-' + $n + ' { 1 }'); $v = if ($n -eq 'CwUtf16') { '3.2.1' } else { '1.0.0' }; New-ModuleManifest -Path (Join-Path $d ($n + '.psd1')) -ModuleVersion $v -RootModule ($n + '.psm1') -Author cw -Description cw }"
+    verify = "tests/module_utf16_verify.ws"
+
+    step "install" {
+      description = "Install the module at the version its UTF-16LE manifest declares"
+      resource = "module_from_path"
+      properties {
+        name = "CwUtf16"
+        version = "3.2.1"
+        source = "C:\\cwsrc\\CwUtf16"
+        scope = :all_users
+        edition = :windows_powershell
+      }
+    }
+
+    step "mismatch" {
+      description = "A version the UTF-16LE manifest contradicts is refused"
+      resource = "module_from_path"
+      expect = "error"
+      properties {
+        name = "CwUtf16Bad"
+        version = "9.9.9"
+        source = "C:\\cwsrc\\CwUtf16Bad"
+        scope = :all_users
+        edition = :windows_powershell
+      }
+    }
+  }
+
   // Its own VM: setup installs the 7.5.4 MSI for the :winget step to
   // upgrade, and the Visual C++ runtime, which is what the stock App
   // Installer's winget lacks to start as SYSTEM (App Installer itself ships
