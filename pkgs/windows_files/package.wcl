@@ -114,7 +114,7 @@ package "windows_files" {
   }
 
   // permissions reads and writes descriptors through the host `acl` module
-  // (config-weave v0.9.1 or later), without PowerShell. A path that is a
+  // (config-weave v0.10.0 or later), without PowerShell. A path that is a
   // link has its target's ACL managed, as before.
   resource "permissions" {
     description = "Ensure a file or directory carries the given NTFS owner, explicit Allow and Deny rules, and inheritance state. Identities are compared as SIDs and rights as bit masks over the path's explicit rules; inherited rules never satisfy a rule and are never removed by it"
