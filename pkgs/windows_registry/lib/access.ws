@@ -129,29 +129,15 @@ fn spec_parts(spec: string) -> Result[List[string], string] {
 // Principals
 // ---------------------------------------------------------------------
 
-// The SID an account name or SID string stands for. The host module has no
-// lookup function, but acl::set resolves a principal with LookupAccountNameW
-// and acl::read reports the SID it wrote, so a one-entry ACL on a private
-// temp file answers without starting PowerShell. A SID string makes the
-// same round trip, which puts it in canonical form.
+// The SID an account name or SID string stands for, in canonical form.
+// acl::lookup resolves either with LookupAccountNameW (config-weave v0.10.0
+// or later); a SID string nobody holds still comes back as its SID.
 fn sid_of(name: string) -> Result[string, string] {
-    let dir = fs::temp_dir()?
-    let r = resolve_in(path::join(dir, "principal"), name)
-    fs::delete_dir(dir).unwrap_or(())
-    r
-}
-
-fn resolve_in(f: string, name: string) -> Result[string, string] {
-    fs::write(f, "")?
-    let spec = Value::Map(#{ "entries": Value::List([Value::Map(#{
-        "principal": Value::String(name), "kind": Value::String("allow"), "mask": Value::Int(1)
-    })]) })
-    if let Err(e) = acl::set(f, spec, Value::Null) { return Err("cannot resolve account '" + name + "' to a SID: " + e) }
-    let got = acl::read(f, Value::Null)?
-    for e in common::get_list(got, "entries") {
-        if !common::get_bool(e, "inherited") { return Ok(common::get_str(e, "sid")) }
-    }
-    Err("cannot resolve account '" + name + "' to a SID")
+    let got = acl::lookup(name)
+    if let Err(e) = got { return Err("cannot resolve account '" + name + "' to a SID: " + e) }
+    let sid = common::get_str(got?, "sid")
+    if sid == "" { return Err("cannot resolve account '" + name + "' to a SID") }
+    Ok(sid)
 }
 
 // ---------------------------------------------------------------------
