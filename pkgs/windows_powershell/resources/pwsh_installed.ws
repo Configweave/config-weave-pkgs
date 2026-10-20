@@ -3,9 +3,11 @@ use fs
 use path
 use shell
 use sys
+use time
 use http
 use hash
 use archive
+use json
 use log
 use common
 
@@ -24,11 +26,36 @@ fn preview(params: Value) -> bool { common::param_str(params, "channel", "stable
 fn lts(params: Value) -> bool { common::param_str(params, "channel", "stable") == "lts" }
 
 // Validated once: the version reaches download URLs, package specs and
-// command lines.
+// command lines. By the time anything but check() and apply() reads it,
+// "latest" has been replaced by the release it resolved to (see effective).
 fn version(params: Value) -> Result[string, string] {
     let v = common::param_str(params, "version", "")
     common::version_chars("version", v)?
     Ok(v)
+}
+
+fn wants_latest(params: Value) -> bool { common::param_str(params, "version", "") == "latest" }
+
+// The current release of the channel (common::latest_release). A lookup
+// that fails is an error in check and apply alike, naming the URL: "latest"
+// cannot be decided offline, and passing silently would hide that the step
+// is no longer tracking it.
+fn resolve_latest(params: Value) -> Result[string, string] {
+    common::latest_release(common::param_str(params, "channel", "stable"), common::param_str(params, "latest_url", ""))
+}
+
+// The params with "latest" replaced by the release it resolves to, so every
+// helper below sees a concrete version. Removal needs no release: it removes
+// whatever build is there, so it never touches the network.
+fn effective(params: Value, how: string, present: bool) -> Result[Value, string] {
+    if !wants_latest(params) { return Ok(params) }
+    if (how == "zip" || how == "tarball") && common::param_str(params, "install_root", "") == "" {
+        return Err("'install_root' is required with version = \"latest\" for the :" + how + " method — the default root is named for one version, and the latest build replaces the one in a fixed root")
+    }
+    let m = params.as_map().unwrap_or(#{})
+    let v = if present { resolve_latest(params)? } else { "" }
+    m.insert("version", Value::String(v))
+    Ok(Value::Map(m))
 }
 
 fn major(params: Value) -> Result[string, string] {
@@ -50,6 +77,11 @@ fn method(params: Value) -> Result[string, string] {
     }
     if !windows && !for_linux.contains(resolved) {
         return Err("method :" + resolved + " is a Windows method; use :repo or :tarball on Linux")
+    }
+    // winget publishes the preview only as an MSIX package, which never
+    // lands in the MSI root check reads, so it could never converge.
+    if resolved == "winget" && preview(params) {
+        return Err("method :winget cannot install channel :preview: winget offers Microsoft.PowerShell.Preview only as an MSIX package, which does not install into C:\\Program Files\\PowerShell\\7-preview. Use :msi or :zip")
     }
     Ok(resolved)
 }
@@ -110,12 +142,14 @@ fn artefact_url(params: Value, how: string) -> Result[string, string] {
     let explicit = common::param_str(params, "url", "")
     if explicit != "" { return Ok(explicit) }
     let v = version(params)?
-    if v == "" { return Err("'version' or 'url' is required for the :" + how + " method — there is no way to resolve the latest release offline") }
-    let base = "https://github.com/PowerShell/PowerShell/releases/download/v" + v + "/PowerShell-" + v + "-"
+    if v == "" { return Err("'version' or 'url' is required for the :" + how + " method — set version = \"latest\" to install the channel's current release") }
+    // The Windows artefacts are named PowerShell-…, the Linux tarball
+    // powershell-….
+    let base = "https://github.com/PowerShell/PowerShell/releases/download/v" + v + "/"
     let arch = arch_tag()?
-    if how == "msi" { return Ok(base + "win-" + arch + ".msi") }
-    if how == "zip" { return Ok(base + "win-" + arch + ".zip") }
-    Ok(base + "linux-" + arch + ".tar.gz")
+    if how == "msi" { return Ok(base + "PowerShell-" + v + "-win-" + arch + ".msi") }
+    if how == "zip" { return Ok(base + "PowerShell-" + v + "-win-" + arch + ".zip") }
+    Ok(base + "powershell-" + v + "-linux-" + arch + ".tar.gz")
 }
 
 fn verify_hash(params: Value, file: string) -> Result[unit, string] {
@@ -128,11 +162,29 @@ fn verify_hash(params: Value, file: string) -> Result[unit, string] {
     Ok(())
 }
 
+// http::download can leave a partial file and does not retry (engine issue
+// config-weave#11), so a failed or short download is retried a bounded
+// number of times. The file lives in a temp directory that is deleted after
+// the install, so a partial copy never outlives the step.
 fn download(params: Value, how: string, file: string) -> Result[unit, string] {
     let url = artefact_url(params, how)?
-    log::info("downloading " + url)
-    http::download(url, file, Value::Null)?
-    verify_hash(params, file)
+    let attempt = 1
+    let last = ""
+    while attempt <= 3 {
+        log::info("downloading " + url + " (attempt " + str(attempt) + " of 3)")
+        if fs::exists(file) { fs::delete(file)? }
+        let got = http::download(url, file, Value::Map(#{ "timeout": Value::Int(1800) }))
+        if let Ok(n) = got {
+            if n > 0 { return verify_hash(params, file) }
+            last = "the download was empty"
+        } else if let Err(e) = got {
+            last = e
+        }
+        attempt = attempt + 1
+        if attempt <= 3 { time::sleep(5000) }
+    }
+    if last.contains("404") { return Err("downloading " + url + " failed: the release has no such artefact (HTTP 404). PowerShell 7.7 previews, for example, ship no MSI; use :zip for them") }
+    Err("downloading " + url + " failed after 3 attempts: " + last)
 }
 
 fn msi_properties(params: Value) -> string {
@@ -176,24 +228,43 @@ fn uninstall_msi(params: Value) -> Result[ApplyResult, string] {
     Ok(ApplyResult::Success)
 }
 
-fn winget_id(params: Value) -> string {
-    if preview(params) { return "Microsoft.PowerShell.Preview" }
-    "Microsoft.PowerShell"
-}
+fn winget_id(params: Value) -> string { "Microsoft.PowerShell" }
 
+// winget is driven through the newest App Installer copy under WindowsApps
+// (common::winget_ps), since SYSTEM has no winget on PATH. The MSI (wix)
+// installer at machine scope is asked for explicitly: left to itself winget
+// may pick the MSIX package, which never lands in the MSI's root that check
+// reads. A build already installed at another version is replaced with
+// --force.
 fn install_winget(params: Value) -> Result[ApplyResult, string] {
-    let v = version(params)?
-    let pin = if v == "" { "" } else { " --version " + common::dq(v) }
-    let cmd = "winget install --id " + winget_id(params) + " --source winget --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity" + pin
-    let out = shell::run_streaming(cmd, opts(2400))?
-    if !out.success { return Err(common::failure("winget install", out)) }
-    Ok(ApplyResult::Success)
+    let installed = installed_version(target_binary(params, "winget")?)? != ""
+    let script = common::winget_ps() +
+        "$a = @('install', '--id', $env:CW_ID, '--source', 'winget', '--exact', '--silent', '--scope', 'machine', '--installer-type', 'wix', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity')\n" +
+        "if ([string]$env:CW_VERSION -ne '') {{ $a += @('--version', $env:CW_VERSION) }}\n" +
+        "if ($env:CW_FORCE -eq '1') {{ $a += '--force' }}\n" +
+        "& $winget @a\n" +
+        "exit $LASTEXITCODE\n"
+    let out = common::run_ps_streaming_env("windows_powershell", script, #{
+        "CW_ID": Value::String(winget_id(params)),
+        "CW_VERSION": Value::String(version(params)?),
+        "CW_FORCE": Value::String(if installed { "1" } else { "0" })
+    }, 2400)?
+    winget_result("winget install " + winget_id(params), out)
 }
 
 fn uninstall_winget(params: Value) -> Result[ApplyResult, string] {
-    let out = shell::run_streaming("winget uninstall --id " + winget_id(params) + " --exact --silent --disable-interactivity", opts(2400))?
-    if !out.success { return Err(common::failure("winget uninstall", out)) }
-    Ok(ApplyResult::Success)
+    let script = common::winget_ps() +
+        "& $winget uninstall --id $env:CW_ID --exact --silent --accept-source-agreements --disable-interactivity\n" +
+        "exit $LASTEXITCODE\n"
+    let out = common::run_ps_streaming_env("windows_powershell", script, #{ "CW_ID": Value::String(winget_id(params)) }, 2400)?
+    winget_result("winget uninstall " + winget_id(params), out)
+}
+
+fn winget_result(what: string, out: CmdOutput) -> Result[ApplyResult, string] {
+    if out.code == common::winget_reboot_code() { return Ok(ApplyResult::RebootRequired) }
+    if out.success || out.code == common::winget_no_upgrade_code() { return Ok(ApplyResult::Success) }
+    if out.code == common::winget_missing_code() { return Err(what + " failed: winget is not installed or cannot start (as SYSTEM it also needs the Visual C++ 2015-2022 runtime; windows_packages.winget_installed provides both)") }
+    Err(common::failure(what, out))
 }
 
 // A root this resource extracted carries this marker.
@@ -281,12 +352,12 @@ fn package_name(params: Value) -> string {
 }
 
 // The package spec for a pinned version. packages.microsoft.com versions the
-// deb as <version>-1.deb, with a prerelease's '-' written '~' (7.6.0~preview.5)
-// so it sorts before the release; the rpm writes it '_'.
+// deb as <version>-1.deb, a prerelease keeping its '-' (7.7.0-preview.5-1.deb);
+// the rpm writes that '-' as '_' (7.7.0_preview.5).
 fn apt_spec(params: Value) -> Result[string, string] {
     let v = version(params)?
     if v == "" { return Ok(package_name(params)) }
-    Ok(package_name(params) + "=" + v.replace("-", "~") + "-1.deb")
+    Ok(package_name(params) + "=" + v + "-1.deb")
 }
 
 fn dnf_spec(params: Value) -> Result[string, string] {
@@ -306,7 +377,7 @@ fn install_repo(params: Value) -> Result[ApplyResult, string] {
     // convenience wrapper: installing that wrapper needs dpkg-deb, and so
     // needs a working repository before there is one. A pinned version may be
     // older than the one installed, hence --allow-downgrades.
-    let script = "set -e\n. /etc/os-release\nif command -v apt-get >/dev/null 2>&1; then\n  install -d /usr/share/keyrings\n  if [ ! -f /usr/share/keyrings/microsoft-prod.gpg ]; then\n    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n  fi\n  curl -fsSL -o /etc/apt/sources.list.d/microsoft-prod.list \"https://packages.microsoft.com/config/$ID/$VERSION_ID/prod.list\"\n  apt-get update -qq\n  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades " + apt + "\nelif command -v dnf >/dev/null 2>&1; then\n  rpm --import https://packages.microsoft.com/keys/microsoft.asc\n  curl -fsSL -o /etc/yum.repos.d/microsoft-prod.repo \"https://packages.microsoft.com/config/$ID/$VERSION_ID/prod.repo\" || curl -fsSL -o /etc/yum.repos.d/microsoft-prod.repo https://packages.microsoft.com/config/rhel/9/prod.repo\n  dnf install -y " + dnf + "\nelse\n  echo 'no supported package manager (apt-get or dnf) found' >&2\n  exit 1\nfi"
+    let script = "set -e\n. /etc/os-release\nif command -v apt-get >/dev/null 2>&1; then\n  install -d /usr/share/keyrings\n  if [ ! -f /usr/share/keyrings/microsoft-prod.gpg ]; then\n    curl -fsSL --retry 3 --retry-all-errors https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n  fi\n  curl -fsSL --retry 3 --retry-all-errors -o /etc/apt/sources.list.d/microsoft-prod.list \"https://packages.microsoft.com/config/$ID/$VERSION_ID/prod.list\"\n  apt-get update -qq\n  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades " + apt + "\nelif command -v dnf >/dev/null 2>&1; then\n  rpm --import https://packages.microsoft.com/keys/microsoft.asc\n  curl -fsSL --retry 3 --retry-all-errors -o /etc/yum.repos.d/microsoft-prod.repo \"https://packages.microsoft.com/config/$ID/$VERSION_ID/prod.repo\" || curl -fsSL --retry 3 --retry-all-errors -o /etc/yum.repos.d/microsoft-prod.repo https://packages.microsoft.com/config/rhel/9/prod.repo\n  dnf install -y " + dnf + "\nelse\n  echo 'no supported package manager (apt-get or dnf) found' >&2\n  exit 1\nfi"
     let result = shell::bash(script, opts(2400))?
     if !result.success { return Err(common::failure("installing the " + package_name(params) + " package", result)) }
     Ok(ApplyResult::Success)
@@ -322,26 +393,27 @@ fn uninstall_repo(params: Value) -> Result[ApplyResult, string] {
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let how = method(params)?
-    let current = installed_version(target_binary(params, how)?)?
-    if !common::want_present(params)? {
+    let present = common::want_present(params)?
+    let p = effective(params, how, present)?
+    let current = installed_version(target_binary(p, how)?)?
+    if !present {
         if current == "" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    if current == "" { return Ok(CheckResult::NotConfigured) }
-    let wanted = version(params)?
-    // An empty version means "any build of this channel", which is the only
-    // honest reading offline: resolving "latest" needs the network.
-    if wanted == "" { return Ok(CheckResult::AlreadyConfigured) }
-    if current == wanted { return Ok(CheckResult::AlreadyConfigured) }
+    // An empty version accepts any build of the channel; a pinned one must
+    // match; a resolved "latest" is a floor, so a build newer than the
+    // published release (a hotfix ahead of the metadata) is not downgraded.
+    if common::version_ok(current, version(p)?, wants_latest(params)) { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let how = method(params)?
     let present = common::want_present(params)?
-    if how == "msi" { return if present { install_msi(params) } else { uninstall_msi(params) } }
-    if how == "winget" { return if present { install_winget(params) } else { uninstall_winget(params) } }
-    if how == "zip" || how == "tarball" { return if present { install_archive(params, how) } else { uninstall_archive(params) } }
-    if present { return install_repo(params) }
-    uninstall_repo(params)
+    let p = effective(params, how, present)?
+    if how == "msi" { return if present { install_msi(p) } else { uninstall_msi(p) } }
+    if how == "winget" { return if present { install_winget(p) } else { uninstall_winget(p) } }
+    if how == "zip" || how == "tarball" { return if present { install_archive(p, how) } else { uninstall_archive(p) } }
+    if present { return install_repo(p) }
+    uninstall_repo(p)
 }

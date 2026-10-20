@@ -10,9 +10,11 @@ package "windows_packages" {
   // (Chocolatey under $env:ChocolateyInstall or C:\ProgramData\chocolatey,
   // scoop under its root), so a manager installed earlier in the same run is
   // usable before the process PATH catches up. winget, an App Installer
-  // (MSIX) app that is never on SYSTEM's PATH, is taken from WindowsApps;
-  // that copy starts only once the Visual C++ 2015-2022 x64 runtime is
-  // installed machine-wide, and a winget that cannot start counts as missing.
+  // (MSIX) app that is never on SYSTEM's PATH, is the newest winget.exe
+  // under WindowsApps, and PATH only when there is none; that copy starts
+  // only once the Visual C++ 2015-2022 x64 runtime is installed
+  // machine-wide (winget_installed does both), and a winget that cannot
+  // start counts as missing.
   //
   // `concurrency = "exclusive"` serialises steps of one resource type only.
   // A chocolatey_source and a chocolatey_package step (or a scoop_bucket and
@@ -117,24 +119,137 @@ package "windows_packages" {
     }
   }
 
-  // Detection uses the Microsoft.WinGet.Client module where it is installed,
-  // else `winget export`; the localized, truncated `winget list` table is
-  // never parsed.
-  resource "winget_package" {
-    description = "Ensure a winget package is installed (at a version) or removed"
-    script = "resources/winget_package.ws"
+  // Provisions App Installer (winget) for every user and makes it callable by
+  // SYSTEM. check passes when the newest winget.exe under WindowsApps starts
+  // (`--version` exits 0) and is at least `version`, App Installer is
+  // provisioned when all_users is set, and the shim matches when
+  // system_shim is set.
+  //
+  // apply installs the Visual C++ 2015-2022 runtime first when it is
+  // missing: run outside its package, as SYSTEM always runs it, winget.exe
+  // loads the machine-wide runtime and exits 0xC0000135 without it. That is
+  // also all a stock Windows Server 2025 needs, which ships an App Installer
+  // that cannot start. App Installer itself is provisioned only when winget
+  // is missing, cannot start, is older than `version`, or is not provisioned
+  // for all users.
+  //
+  // :release reads the latest microsoft/winget-cli release from the GitHub
+  // API and downloads its msixbundle, licence and VCLibs / UI.Xaml
+  // dependency packages (about 320 MB), each checked against the size and
+  // sha256 GitHub publishes and retried up to three times, then runs
+  // Add-AppxProvisionedPackage. :gallery unpacks Microsoft.WinGet.Client
+  // from the PowerShell Gallery into PowerShell 7's AllUsers module path and
+  // runs Repair-WinGetPackageManager -Latest. That cmdlet does not run in
+  // Windows PowerShell, and refuses -AllUsers as SYSTEM, so :gallery needs
+  // PowerShell 7 and, for all users, an administrator account. :auto uses
+  // :gallery where it can work and falls back to :release when it fails, so
+  // as SYSTEM it is :release.
+  //
+  // The shim is C:\Windows\System32\winget.cmd, a marked one-line wrapper
+  // around the winget.exe found. An App Installer update moves winget.exe,
+  // which check sees as drift, and apply rewrites the shim. A winget.cmd
+  // this resource did not write is never replaced. Interactive users with
+  // the App Execution Alias also reach the shim first, since System32
+  // precedes their WindowsApps directory on PATH; it runs the same winget.
+  //
+  // The other winget resources and the gatherer find winget.exe the same way
+  // and do not need the shim; it is for scripts and tools that call `winget`.
+  //
+  // ensure = :absent deletes a shim this resource wrote and removes App
+  // Installer for every user (Remove-AppxPackage -AllUsers, then
+  // Remove-AppxProvisionedPackage). It leaves the Visual C++ runtime, which
+  // other software shares. Windows registers App Installer as a NonRemovable
+  // system package wherever it is present (seen on Windows Server 2025 as
+  // shipped, and on Server 2022 once this resource has provisioned it), and
+  // then it cannot be removed: :absent is an error in check and apply, and
+  // changes nothing. It is already converged on a machine with no App
+  // Installer. system_shim = false drops just the shim.
+  //
+  // `method` chooses how a missing App Installer is provisioned; it is not
+  // compared on an installed one. all_users = false does not deprovision.
+  resource "winget_installed" {
+    description = "Ensure winget (App Installer) is provisioned for every user, at least at a version, and callable by SYSTEM through a shim — or removed"
+    script = "resources/winget_installed.ws"
     concurrency = "exclusive"
-    param "id" { description = "winget package identifier, matched exactly but case-insensitively" type = "string" required = true }
     param "ensure" {
       description = "Desired state: :present or :absent"
       type = "symbol"
       default = :present
 
+      symbol "present" { description = "Provision App Installer and the Visual C++ runtime winget needs" }
+      symbol "absent"  { description = "Remove App Installer for every user and the shim this resource wrote; an error where App Installer is a non-removable system package" }
+    }
+    param "version" { description = "Minimum winget version (as `winget --version` prints it, e.g. 1.9); an older winget is replaced with the latest release. Empty accepts any winget that starts" type = "string" default = "" }
+    param "all_users" { description = "Provision App Installer for every user, current and future (Add-AppxProvisionedPackage, Repair-WinGetPackageManager -AllUsers). false adds it for the current account only" type = "bool" default = true }
+    param "system_shim" { description = "Write C:\\Windows\\System32\\winget.cmd so SYSTEM and other accounts without the App Execution Alias can run winget. false removes a shim this resource wrote" type = "bool" default = true }
+    param "method" {
+      description = "Where a missing or outdated App Installer comes from"
+      type = "symbol"
+      default = :auto
+
+      symbol "auto"    { description = ":gallery where it can work (PowerShell 7, and not SYSTEM when all_users), else or on failure :release" }
+      symbol "release" { description = "The msixbundle and dependencies of the latest microsoft/winget-cli GitHub release" }
+      symbol "gallery" { description = "Microsoft.WinGet.Client from the PowerShell Gallery and Repair-WinGetPackageManager -Latest; needs PowerShell 7" }
+    }
+  }
+
+  // Detection uses the Microsoft.WinGet.Client module where Windows
+  // PowerShell can load it, else `winget export`; the localized, truncated
+  // `winget list` table is never parsed. Whether an upgrade is available
+  // (ensure = :latest) and whether the package is installed in a `scope` are
+  // read from the exit code of `winget list --upgrade-available` and
+  // `winget list --scope`, which exit 0x8A150014 when nothing matches.
+  //
+  // `version` matches numerically (24.08 matches 24.08.0). `source` and
+  // `installer_type` choose how the package is installed and are not
+  // compared on an installed one: winget reports neither for an installed
+  // package. `scope` is compared, and a package installed in the other scope
+  // is installed again in the wanted one (winget leaves the other install).
+  //
+  // winget's "restart to finish" exit code (0x8A150109) reports
+  // reboot_required, and "no applicable upgrade" (0x8A15002B) is success.
+  resource "winget_package" {
+    description = "Ensure a winget package is installed (at a version, or kept at the latest) or removed"
+    script = "resources/winget_package.ws"
+    concurrency = "exclusive"
+    param "id" { description = "winget package identifier, matched exactly but case-insensitively" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present, :latest or :absent"
+      type = "symbol"
+      default = :present
+
       symbol "present" { description = "Install the package" }
+      symbol "latest"  { description = "Install the package and upgrade it whenever its source offers a newer version (winget list --upgrade-available); `version` must be empty" }
       symbol "absent"  { description = "Uninstall the package" }
     }
-    param "version" { description = "Version to hold when present, compared with the installed version; an installed package at another version is reinstalled with winget install --version --force. Empty means any version" type = "string" default = "" }
+    param "version" { description = "Version to hold when :present, compared numerically with the installed version; an installed package at another version is reinstalled with winget install --version --force. Empty means any version" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
+    param "scope" {
+      description = "Install scope, passed as --scope"
+      type = "symbol"
+      default = :any
+
+      symbol "any"     { description = "Let the installer decide, and accept the package in either scope" }
+      symbol "user"    { description = "Install for the current user (--scope user)" }
+      symbol "machine" { description = "Install for every user (--scope machine), e.g. so a portable package's links land in C:\\Program Files\\WinGet\\Links" }
+    }
+    param "installer_type" {
+      description = "Installer to pick from the manifest, passed as --installer-type; not compared on an installed package"
+      type = "symbol"
+      default = :any
+
+      symbol "any"      { description = "Let winget choose" }
+      symbol "msix"     { description = "MSIX" }
+      symbol "msi"      { description = "MSI" }
+      symbol "appx"     { description = "APPX" }
+      symbol "exe"      { description = "An EXE installer" }
+      symbol "zip"      { description = "A zip archive" }
+      symbol "inno"     { description = "Inno Setup" }
+      symbol "nullsoft" { description = "Nullsoft (NSIS)" }
+      symbol "wix"      { description = "A WiX MSI, e.g. the MSI build of Microsoft.PowerShell rather than its MSIX" }
+      symbol "burn"     { description = "A WiX Burn bundle" }
+      symbol "portable" { description = "A portable executable" }
+    }
   }
 
   resource "winget_source" {
@@ -395,6 +510,120 @@ package "windows_packages" {
       description = "Refresh the buckets and stamp the scoop root"
       resource = "scoop_cache_updated"
       requires = ["app_removed"]
+    }
+  }
+
+  // A fresh VM of its own: the template ships App Installer 1.21 (winget
+  // 1.6), whose winget.exe cannot start for SYSTEM. The provisioning step
+  // installs the Visual C++ runtime and, since that winget is older than
+  // `version`, the latest winget release. Every later step finds that
+  // winget under WindowsApps, with nothing on PATH. Setup only installs
+  // 7-Zip 24.08 with its own setup program (the installer winget's manifest
+  // uses), for ensure = :latest to upgrade. :gallery is refused as SYSTEM on
+  // a box with no PowerShell 7. Steps are chained so that only one winget
+  // runs at a time.
+  test "winget_installed_converges" {
+    description = "winget_installed provisions App Installer and the runtime for SYSTEM, writes the shim, and the package resources use it with ensure = :latest, scope and installer_type"
+    template = "x86_64/windows-server-2025"
+    group = "wingetinstall"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -NonInteractive -Command $ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path 'C:\\Program Files\\7-Zip\\7z.exe')) { Invoke-WebRequest https://www.7-zip.org/a/7z2408-x64.exe -OutFile C:\\cw-7z.exe; $null = Start-Process C:\\cw-7z.exe -ArgumentList '/S' -Wait -PassThru }"
+    verify = "tests/winget_installed_verify.ws"
+
+    step "gallery_refused" {
+      description = "method :gallery without PowerShell 7 is apply's own error"
+      resource = "winget_installed"
+      expect = "error"
+      properties { method = :gallery version = "99.0" }
+    }
+
+    step "provisioned" {
+      description = "Provision the latest winget release for all users, the Visual C++ runtime and the SYSTEM shim"
+      resource = "winget_installed"
+      properties { method = :release version = "1.20" }
+    }
+
+    step "sources_refreshed" {
+      description = "winget_cache_updated finds winget under WindowsApps with nothing on PATH"
+      resource = "winget_cache_updated"
+      requires = ["provisioned"]
+    }
+
+    step "tracked_latest" {
+      description = "ensure = :latest upgrades the 7-Zip 24.08 setup installed (winget list --upgrade-available)"
+      resource = "winget_package"
+      requires = ["sources_refreshed"]
+      properties { id = "7zip.7zip" ensure = :latest source = "winget" }
+    }
+
+    step "machine_scope" {
+      description = "A portable package installed with --scope machine"
+      resource = "winget_package"
+      requires = ["tracked_latest"]
+      properties { id = "jqlang.jq" ensure = :latest scope = :machine source = "winget" }
+    }
+
+    step "wix_installer" {
+      description = "Microsoft.PowerShell as its MSI (--installer-type wix) at machine scope"
+      resource = "winget_package"
+      requires = ["machine_scope"]
+      properties { id = "Microsoft.PowerShell" installer_type = :wix scope = :machine source = "winget" }
+    }
+
+    step "latest_with_version_rejected" {
+      description = "ensure = :latest with a version is a validation error"
+      resource = "winget_package"
+      expect = "error"
+      properties { id = "7zip.7zip" ensure = :latest version = "24.08" }
+    }
+  }
+
+  // Server 2025 registers App Installer as NonRemovable, so :absent is an
+  // error that changes nothing, and system_shim = false is how to drop the
+  // shim. Runs standalone (it provisions first) or after the test above.
+  test "winget_installed_nonremovable" {
+    description = "On Server 2025, system_shim = false removes the shim, and ensure = :absent is an error that leaves App Installer"
+    template = "x86_64/windows-server-2025"
+    group = "wingetinstall"
+    memory = "4GiB"
+    verify = "tests/winget_nonremovable_verify.ws"
+
+    step "shim_dropped" {
+      description = "system_shim = false deletes the shim this resource wrote"
+      resource = "winget_installed"
+      properties { system_shim = false method = :release }
+    }
+
+    step "absent_refused" {
+      description = "ensure = :absent on a non-removable App Installer is an error"
+      resource = "winget_installed"
+      expect = "error"
+      requires = ["shim_dropped"]
+      properties { ensure = :absent }
+    }
+  }
+
+  // Server 2022 ships no App Installer at all: this provisions it from the
+  // winget release and proves winget then runs through the shim. There is no
+  // removal test: the App Installer provisioned here is NonRemovable too, so
+  // ensure = :absent is the error winget_installed_nonremovable covers.
+  test "winget_installed_server2022" {
+    description = "On Server 2022, which has no App Installer, winget_installed provisions it and winget runs for SYSTEM"
+    template = "x86_64/windows-server-2022"
+    group = "winget2022"
+    memory = "4GiB"
+    verify = "tests/winget_2022_verify.ws"
+
+    step "provisioned" {
+      description = "Provision App Installer, the runtime and the shim"
+      resource = "winget_installed"
+      properties { method = :auto }
+    }
+
+    step "sources_refreshed" {
+      description = "winget_cache_updated runs the provisioned winget"
+      resource = "winget_cache_updated"
+      requires = ["provisioned"]
     }
   }
 

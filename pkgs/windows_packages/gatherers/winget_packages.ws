@@ -15,11 +15,11 @@ fn empty_result() -> Value {
 // never parsed: its headers are localized and its columns truncated.
 fn list_ps() -> string {
     common::winget_ps() +
-    "$r = @()\n" +
+    "$r = @(); $done = $false\n" +
     "if (Get-Module -ListAvailable -Name Microsoft.WinGet.Client) {{\n" +
-    "  Import-Module Microsoft.WinGet.Client\n" +
-    "  $r = @(Get-WinGetPackage | ForEach-Object {{ [pscustomobject]@{{ name = [string]$_.Name; id = [string]$_.Id; version = [string]$_.InstalledVersion }} }})\n" +
-    "}} else {{\n" +
+    "  try {{ Import-Module Microsoft.WinGet.Client; $r = @(Get-WinGetPackage | ForEach-Object {{ [pscustomobject]@{{ name = [string]$_.Name; id = [string]$_.Id; version = [string]$_.InstalledVersion }} }}); $done = $true }} catch {{ $r = @() }}\n" +
+    "}}\n" +
+    "if (-not $done) {{\n" +
     "  $f = Join-Path ([IO.Path]::GetTempPath()) ('cw-winget-' + [guid]::NewGuid().ToString() + '.json')\n" +
     "  $o = & $winget export --output $f --include-versions --accept-source-agreements --disable-interactivity\n" +
     "  if (-not (Test-Path -LiteralPath $f)) {{ $o; exit $(if ($LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 1 }}) }}\n" +

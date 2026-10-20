@@ -22,6 +22,27 @@ package "windows_powershell" {
   // :msi with ensure = :absent uninstalls by product code found under the
   // Uninstall registry key, and only the requested channel: removing the
   // stable build leaves a preview build alone, and the other way round.
+  //
+  // version = "latest" tracks the channel's current release. check and apply
+  // both read the release from PowerShell's tools/metadata.json on
+  // raw.githubusercontent.com (or latest_url; three attempts) and treat it as
+  // a floor: an older build is drift, the same or a newer one is converged.
+  // :lts is the oldest LTS line still listed (7.4 while 7.4 and 7.6 are both
+  // supported), which is what powershell-lts ships. The lookup needs the network; when it
+  // fails, the step errors and names the URL rather than passing. :absent
+  // never looks the release up. With :zip and :tarball, latest needs an
+  // explicit install_root, whose build each new release replaces. With
+  // :repo the package is pinned to the resolved release, so a repository
+  // that has not published it yet is apply's error (Debian 12's preview
+  // line trails the release, for example).
+  //
+  // :winget drives the newest winget.exe under WindowsApps, not PATH, so it
+  // works as SYSTEM once windows_packages.winget_installed (or the Visual
+  // C++ 2015-2022 runtime plus App Installer) is in place. It asks for the
+  // MSI (wix) installer at machine scope, so the build lands in the MSI's
+  // root; winget's "restart to finish" exit code reports reboot_required.
+  // winget offers the preview only as MSIX, so :winget with :preview is an
+  // error; use :msi or :zip for it.
   resource "pwsh_installed" {
     description = "Ensure a PowerShell 7 build is installed, at a given version, by MSI, winget, zip, the distro repository or the release tarball"
     script = "resources/pwsh_installed.ws"
@@ -34,14 +55,14 @@ package "windows_powershell" {
       symbol "present" { description = "Install PowerShell" }
       symbol "absent"  { description = "Uninstall PowerShell" }
     }
-    param "version" { description = "Exact version to install, e.g. 7.5.4; empty accepts any installed build of the channel and installs the latest. :repo pins the distro package to it" type = "string" default = "" }
+    param "version" { description = "Exact version to install, e.g. 7.5.4; \"latest\" tracks the channel's current release (an older build is drift; needs the network); empty accepts any installed build of the channel, and :winget and :repo then install the newest. :repo pins the distro package to it" type = "string" default = "" }
     param "channel" {
-      description = "Release channel the version is resolved from when `version` is empty"
+      description = "Release channel: which product is installed, and which release version = \"latest\" resolves to"
       type = "symbol"
       default = :stable
 
       symbol "stable"  { description = "The current stable release" }
-      symbol "lts"      { description = "The current long-term-servicing release. On Linux :repo installs the powershell-lts package, reached as pwsh-lts; on Windows an LTS release is the same MSI, zip and winget package as any other, so set `version` to the LTS release" }
+      symbol "lts"      { description = "The current long-term-servicing release. On Linux :repo installs the powershell-lts package, reached as pwsh-lts; on Windows an LTS release is the same MSI, zip and winget package as any other, so set `version` to the LTS release or to \"latest\"" }
       symbol "preview"  { description = "The current preview release, which installs alongside stable as pwsh-preview" }
     }
     param "method" {
@@ -50,7 +71,7 @@ package "windows_powershell" {
       default = :auto
 
       symbol "auto"    { description = "Pick :msi on Windows and :repo on Linux" }
-      symbol "winget"  { description = "Windows: winget install Microsoft.PowerShell" }
+      symbol "winget"  { description = "Windows: winget install Microsoft.PowerShell, as its MSI at machine scope; not for channel :preview, which winget offers only as MSIX" }
       symbol "msi"     { description = "Windows: download the release MSI and run msiexec" }
       symbol "zip"     { description = "Windows: download the release zip and extract it — the side-by-side method" }
       symbol "repo"    { description = "Linux: register packages.microsoft.com and install the distro package" }
@@ -58,6 +79,7 @@ package "windows_powershell" {
     }
     param "install_root" { description = "Directory the :zip / :tarball methods extract into; empty uses a root named for the full version (C:\\Program Files\\PowerShell\\<version>, /opt/microsoft/powershell/<version>). A root a package manager owns is refused" type = "string" default = "" }
     param "url" { description = "Explicit download URL for :msi / :zip / :tarball; empty derives it from the version and platform" type = "string" default = "" }
+    param "latest_url" { description = "Release metadata version = \"latest\" reads: JSON: either PowerShell's tools/metadata.json or a buildinfo document whose ReleaseTag names the release (v7.6.7). Empty uses https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/metadata.json; set it to a mirror to track latest without reaching GitHub" type = "string" default = "" }
     param "sha256" { description = "Expected SHA-256 of the downloaded artefact; empty skips the check" type = "string" default = "" }
     param "add_path" { description = "MSI ADD_PATH: put the install directory on the machine PATH" type = "bool" default = true }
     param "enable_remoting" { description = "MSI ENABLE_PSREMOTING: register the PowerShell 7 WinRM endpoint during install" type = "bool" default = false }
@@ -2382,6 +2404,93 @@ package "windows_powershell" {
     }
   }
 
+  // version = "latest" on a root that holds an older build. Setup seeds an
+  // extracted-looking root (a pwsh that answers 7.4.6, and the marker) for
+  // the latest release to replace; verify reads the release itself and
+  // compares.
+  test "pwsh_tracks_latest_tarball" {
+    description = "version = \"latest\" replaces an older tarball build, and a failed release lookup is an error"
+    image = "debian:12"
+    group = "pwshlatest"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-latest && printf '#!/bin/sh\\necho 7.4.6\\n' > /opt/pwsh-latest/pwsh && chmod +x /opt/pwsh-latest/pwsh && touch /opt/pwsh-latest/.config-weave-archive"
+    verify = "tests/latest_verify.ws"
+
+    step "lookup_unreachable" {
+      description = "A release lookup that cannot connect errors rather than passing"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :tarball
+        version = "latest"
+        install_root = "/opt/pwsh-latest"
+        latest_url = "http://127.0.0.1:9/stable.json"
+      }
+    }
+
+    step "root_required" {
+      description = "latest with an archive method and no install_root is refused"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :tarball
+        version = "latest"
+      }
+    }
+
+    step "upgraded" {
+      description = "The seeded 7.4.6 build is replaced by the current stable release"
+      resource = "pwsh_installed"
+      properties {
+        method = :tarball
+        version = "latest"
+        install_root = "/opt/pwsh-latest"
+      }
+    }
+  }
+
+  // Setup registers packages.microsoft.com and installs an older
+  // powershell-lts, so only a resolved, pinned latest converges.
+  test "pwsh_tracks_latest_lts_from_repo" {
+    description = "version = \"latest\" with channel = :lts upgrades the powershell-lts package to the current LTS release"
+    image = "debian:12"
+    group = "pwshltslatest"
+    memory = "2GiB"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg >/dev/null && install -d /usr/share/keyrings && curl -fsSL --http1.1 --retry 5 --retry-all-errors https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /etc/apt/sources.list.d/microsoft-prod.list https://packages.microsoft.com/config/debian/12/prod.list && apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq powershell-lts=7.4.19-1.deb >/dev/null"
+    verify = "tests/latest_lts_verify.ws"
+
+    step "upgraded" {
+      description = "The seeded 7.4.19 package is upgraded to the current LTS release"
+      resource = "pwsh_installed"
+      properties {
+        method = :repo
+        channel = :lts
+        version = "latest"
+      }
+    }
+  }
+
+  // A prerelease pin: the deb version keeps the prerelease's '-'
+  // (7.7.0-preview.5-1.deb). Ubuntu 24.04's preview line is current; Debian
+  // 12's trails it.
+  test "pwsh_installs_preview_from_repo" {
+    description = "A pinned preview release installs from the Microsoft package repository"
+    image = "ubuntu:24.04"
+    group = "pwshpreview"
+    memory = "2GiB"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg >/dev/null"
+    verify = "tests/preview_install_verify.ws"
+
+    step "install" {
+      description = "Install powershell-preview pinned to a prerelease"
+      resource = "pwsh_installed"
+      properties {
+        method = :repo
+        channel = :preview
+        version = "7.7.0-preview.5"
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Windows
   //
@@ -2722,6 +2831,75 @@ package "windows_powershell" {
         scope = :all_users_all_hosts
         edition = :pwsh
         content = "# managed by config-weave\n"
+      }
+    }
+  }
+
+  // Its own VM: setup installs the 7.5.4 MSI for the :winget step to
+  // upgrade, and the Visual C++ runtime, which is what the stock App
+  // Installer's winget lacks to start as SYSTEM (App Installer itself ships
+  // with the template). Every converging step starts from drift, so the
+  // :msi step is the floor check: the LTS release is older than any build
+  // here, so it is already configured throughout. The preview goes by zip:
+  // 7.7 previews ship no MSI. No double quotes in a Windows setup.
+  test "pwsh7_tracks_latest" {
+    description = "version = \"latest\" upgrades an older MSI install through winget, treats the release as a floor, extracts the latest preview zip into a fixed root, and errors when the lookup fails"
+    template = "x86_64/windows-server-2025"
+    group = "win2025ps7latest"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -NonInteractive -Command $ProgressPreference = 'SilentlyContinue'; if (-not (Test-Path C:\\Windows\\System32\\vcruntime140_1.dll)) { Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile C:\\cw-vcr.exe; $null = Start-Process C:\\cw-vcr.exe -ArgumentList '/install /quiet /norestart' -Wait -PassThru }; if (-not (Test-Path 'C:\\Program Files\\PowerShell\\7\\pwsh.exe')) { Invoke-WebRequest https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile C:\\cw-pwsh.msi; Start-Process msiexec.exe -ArgumentList '/package', 'C:\\cw-pwsh.msi', '/quiet', '/norestart' -Wait }"
+    verify = "tests/pwsh7_latest_verify.ws"
+
+    step "lookup_unreachable" {
+      description = "A release lookup that cannot connect errors rather than passing"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :msi
+        version = "latest"
+        latest_url = "http://127.0.0.1:9/stable.json"
+      }
+    }
+
+    step "winget_preview_refused" {
+      description = "winget offers the preview only as MSIX, so :winget with :preview is an error"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :winget
+        channel = :preview
+      }
+    }
+
+    step "winget_latest" {
+      description = "winget (found under WindowsApps, as SYSTEM) upgrades the 7.5.4 MSI install to the current release, as the MSI"
+      resource = "pwsh_installed"
+      properties {
+        method = :winget
+        version = "latest"
+      }
+    }
+
+    step "lts_floor" {
+      description = "The latest LTS release is older than the installed build, which is not downgraded"
+      resource = "pwsh_installed"
+      expect = "already_configured"
+      properties {
+        method = :msi
+        channel = :lts
+        version = "latest"
+      }
+    }
+
+    step "zip_preview_latest" {
+      description = "The latest preview zip is extracted into a fixed root"
+      resource = "pwsh_installed"
+      requires = ["winget_latest"]
+      properties {
+        method = :zip
+        channel = :preview
+        version = "latest"
+        install_root = "C:\\cw-pwsh-preview"
       }
     }
   }

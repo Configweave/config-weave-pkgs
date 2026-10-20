@@ -5,6 +5,10 @@ use fs
 use path
 use shell
 use time
+use http
+use hash
+use log
+use regex
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
     if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
@@ -31,6 +35,11 @@ fn want_present(params: Value) -> Result[bool, string] {
 fn get_str(m: Value, key: string) -> string {
     if let Some(v) = m.get(key) { if let Some(s) = v.as_string() { return s } }
     ""
+}
+
+fn get_int(m: Value, key: string) -> int {
+    if let Some(v) = m.get(key) { if let Some(n) = v.as_int() { return n } }
+    0
 }
 
 fn get_bool(m: Value, key: string) -> bool {
@@ -71,19 +80,29 @@ fn scoop_ps() -> string {
     "if (-not $scoop) {{ exit 9009 }}\n"
 }
 
-// winget is an App Installer (MSIX) app, so SYSTEM has no winget on PATH.
-// The newest App Installer copy under WindowsApps is used instead. That
+// winget is an App Installer (MSIX) app, so SYSTEM — and any account that
+// never logged on interactively — has no winget on PATH. Every winget
+// script uses the newest winget.exe under WindowsApps, as winget_installed
+// does, and PATH (a user's alias, or a shim) only when there is none. That
 // copy only starts when the Visual C++ 2015-2022 runtime is installed
 // machine-wide (it fails with 0xC0000135, DLL not found); a winget that
 // cannot start counts as missing.
 fn winget_ps() -> string {
-    "$winget = (Get-Command winget -ErrorAction SilentlyContinue).Source\n" +
-    "if (-not $winget) {{\n" +
-    "  $winget = Get-ChildItem -Path (Join-Path $env:ProgramFiles 'WindowsApps\\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\\winget.exe') -ErrorAction SilentlyContinue | Sort-Object {{ [version]($_.Directory.Name -split '_')[1] }} | Select-Object -Last 1 -ExpandProperty FullName\n" +
-    "  if ($winget) {{ try {{ $null = & $winget --version }} catch {{ }}; if ($LASTEXITCODE -ne 0) {{ $winget = $null }} }}\n" +
-    "}}\n" +
+    "$winget = Get-ChildItem -Path (Join-Path $env:ProgramFiles 'WindowsApps\\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\\winget.exe') -ErrorAction SilentlyContinue | Sort-Object {{ [version]($_.Directory.Name -split '_')[1] }} | Select-Object -Last 1 -ExpandProperty FullName\n" +
+    "if (-not $winget) {{ $winget = (Get-Command winget -ErrorAction SilentlyContinue).Source }}\n" +
+    "if ($winget) {{ try {{ $null = & $winget --version }} catch {{ }}; if ($LASTEXITCODE -ne 0) {{ $winget = $null }} }}\n" +
     "if (-not $winget) {{ exit 9009 }}\n"
 }
+
+// winget exit codes a step maps rather than reports as a failure.
+// APPINSTALLER_CLI_ERROR_INSTALL_REBOOT_REQUIRED_TO_FINISH (0x8A150109).
+fn winget_reboot_code() -> int { -1978334967 }
+// APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE (0x8A15002B): already at the
+// newest version the source offers.
+fn winget_no_upgrade_code() -> int { -1978335189 }
+// APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND (0x8A150014): `winget list`
+// matched nothing.
+fn winget_none_found_code() -> int { -1978335212 }
 
 // Runs a script from a temp .ps1 with -File, so the script may hold any
 // quote character and never appears on a command line. Values that came
@@ -113,10 +132,14 @@ fn query(script: string, env: Map[string, Value]) -> Result[CmdOutput, string] {
 // An install or upgrade: two hours.
 fn action(script: string, env: Map[string, Value]) -> Result[CmdOutput, string] { run_ps(script, env, 7200) }
 
+// winget redraws a spinner and progress bars with carriage returns, so
+// lines are split on \r too, and a line with no letter or with a bar's
+// block characters is dropped: what is left is what winget said.
 fn last_lines(text: string, n: int) -> string {
     let lines: List[string] = []
-    for line in text.split("\n") {
-        if line.trim() != "" { lines.push(line.trim()) }
+    for line in text.replace("\r", "\n").replace("\u{8}", "\n").split("\n") {
+        let t = line.trim()
+        if t != "" && !t.contains("\u{2588}") && !t.contains("\u{2592}") && regex::is_match("[A-Za-z]", t) { lines.push(t) }
     }
     let start = if lines.len() > n { lines.len() - n } else { 0 }
     lines.slice(start, lines.len()).join(" / ")
@@ -126,7 +149,7 @@ fn last_lines(text: string, n: int) -> string {
 // carries stderr, falls back to the tail of stdout, and always names the
 // exit code.
 fn failure(what: string, out: CmdOutput) -> string {
-    if out.code == missing_code() { return what + " failed: the package manager is not installed or cannot start (winget also needs the Visual C++ 2015-2022 runtime to run as SYSTEM)" }
+    if out.code == missing_code() { return what + " failed: the package manager is not installed or cannot start (for winget, run windows_packages.winget_installed first: as SYSTEM winget also needs the Visual C++ 2015-2022 runtime)" }
     let detail = last_lines(out.stderr, 10)
     if detail == "" { detail = last_lines(out.stdout, 10) }
     if detail == "" { return what + " failed (exit " + str(out.code) + ")" }
@@ -179,4 +202,119 @@ fn touch_stamp(stamp: string, label: string) -> Result[unit, string] {
     let parent = path::parent(stamp)
     if parent != "" { fs::mkdir(parent)? }
     fs::write(stamp, label + "\n")
+}
+
+// ---------------------------------------------------------------------
+// Versions
+//
+// Every version decision goes through version_ok, so a richer syntax
+// (ranges) replaces this one function.
+// ---------------------------------------------------------------------
+
+// -1, 0 or 1 as `a` sorts before, with or after `b`. A leading v is
+// ignored, the dotted core compares numerically with a missing part counting
+// as 0 (24.08 == 24.08.0), and a prerelease sorts before its release
+// (1.10.0-preview < 1.10.0), identifiers compared as semver does.
+fn version_cmp(a: string, b: string) -> int {
+    let ap = split_pre(a)
+    let bp = split_pre(b)
+    let c = parts_cmp(ap[0].split("."), bp[0].split("."), true)
+    if c != 0 { return c }
+    if ap[1] == bp[1] { return 0 }
+    if ap[1] == "" { return 1 }
+    if bp[1] == "" { return -1 }
+    parts_cmp(ap[1].split("."), bp[1].split("."), false)
+}
+
+fn split_pre(v: string) -> List[string] {
+    let s = v.trim()
+    if s.starts_with("v") || s.starts_with("V") { s = s.slice(1, s.len()) }
+    if let Some(i) = s.find("+") { s = s.slice(0, i) }
+    if let Some(i) = s.find("-") { return [s.slice(0, i), s.slice(i + 1, s.len())] }
+    [s, ""]
+}
+
+fn parts_cmp(a: List[string], b: List[string], pad: bool) -> int {
+    let n = if a.len() > b.len() { a.len() } else { b.len() }
+    let i = 0
+    while i < n {
+        if !pad && i >= a.len() { return -1 }
+        if !pad && i >= b.len() { return 1 }
+        let x = a.get(i).unwrap_or("0")
+        let y = b.get(i).unwrap_or("0")
+        let xn = x.parse_int()
+        let yn = y.parse_int()
+        if xn.is_some() && yn.is_some() {
+            let xi = xn.unwrap()
+            let yi = yn.unwrap()
+            if xi < yi { return -1 }
+            if xi > yi { return 1 }
+        } else if xn.is_some() {
+            return -1
+        } else if yn.is_some() {
+            return 1
+        } else {
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        i = i + 1
+    }
+    0
+}
+
+// Whether an installed version satisfies the wanted one. An empty `wanted`
+// accepts any version; `at_least` makes it a floor, otherwise it must match.
+// A match compares numerically, so 24.08 matches 24.08.0; a version that is
+// not dotted numbers (winget's "Unknown") matches only itself, exactly.
+fn version_ok(have: string, want: string, at_least: bool) -> bool {
+    if have == "" { return false }
+    if want == "" { return true }
+    if have.to_lower() == want.to_lower() { return true }
+    let c = version_cmp(have, want)
+    if at_least { return c >= 0 }
+    c == 0
+}
+
+// ---------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------
+
+// http::download can leave a partial file and does not retry (engine issue
+// config-weave#11), and its rustls client fails some Microsoft CDNs
+// (aka.ms, download.visualstudio.microsoft.com) with "peer closed connection
+// without sending TLS close_notify". So a download gets two host attempts
+// and then one through Windows' own Invoke-WebRequest, each checked against
+// the expected size and sha256 when they are known (0 and "" skip them).
+// Callers download into a temp directory they delete afterwards, so a
+// partial file never outlives the step.
+fn download(url: string, file: string, size: int, sha256: string) -> Result[unit, string] {
+    let attempt = 1
+    let last = ""
+    while attempt <= 3 {
+        log::info("downloading " + url + " (attempt " + str(attempt) + " of 3)")
+        if fs::exists(file) { fs::delete(file)? }
+        let err = ""
+        if attempt < 3 {
+            if let Err(e) = http::download(url, file, Value::Map(#{ "timeout": Value::Int(1800) })) { err = e }
+        } else {
+            let out = run_ps("$ProgressPreference = 'SilentlyContinue'\n[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\nInvoke-WebRequest -Uri $env:CW_URL -OutFile $env:CW_FILE -UseBasicParsing\n",
+                #{ "CW_URL": Value::String(url), "CW_FILE": Value::String(file) }, 1800)?
+            if !out.success { err = failure("Invoke-WebRequest", out) }
+        }
+        if err != "" {
+            last = err
+        } else {
+            let n = if let Some(v) = fs::metadata(file)?.get("size") { v.as_int().unwrap_or(0) } else { 0 }
+            if n == 0 || (size > 0 && n != size) {
+                last = "got " + str(n) + " bytes" + (if size > 0 { ", expected " + str(size) } else { "" })
+            } else if sha256 != "" && hash::sha256_file(file)? != sha256.to_lower() {
+                last = "sha256 mismatch"
+            } else {
+                return Ok(())
+            }
+        }
+        attempt = attempt + 1
+        if attempt <= 3 { time::sleep(5000) }
+    }
+    Err("downloading " + url + " failed after 3 attempts: " + last)
 }

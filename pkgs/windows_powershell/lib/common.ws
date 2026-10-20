@@ -8,6 +8,9 @@ use sys
 use env
 use hash
 use time
+use http
+use regex
+use json
 
 fn param_str(params: Value, key: string, fallback: string) -> string {
     if let Some(v) = params.get(key) { if let Some(s) = v.as_string() { return s } }
@@ -130,10 +133,11 @@ fn pascal(symbol: string) -> string {
 }
 
 // Many tools report failures on stdout, so the error carries stderr, falls
-// back to stdout, and always names the exit code.
+// back to stdout, and always names the exit code. winget redraws a spinner
+// and progress bars with carriage returns; those lines are dropped.
 fn failure(what: string, out: CmdOutput) -> string {
-    let detail = out.stderr.trim()
-    if detail == "" { detail = out.stdout.trim() }
+    let detail = readable(out.stderr)
+    if detail == "" { detail = readable(out.stdout) }
     if detail == "" { return what + " failed (exit " + str(out.code) + ")" }
     what + " failed (exit " + str(out.code) + "): " + detail
 }
@@ -152,13 +156,19 @@ fn failure(what: string, out: CmdOutput) -> string {
 // defect: the timeout kills the child and surfaces an Err, which the engine
 // reports as a failed step naming this resource.
 fn run_ps_with(edition: string, script: string, seconds: int, streaming: bool) -> Result[CmdOutput, string] {
+    run_ps_env_with(edition, script, #{}, seconds, streaming)
+}
+
+// Values that came from params travel in `env` (read as $env:CW_…), never
+// interpolated into the script.
+fn run_ps_env_with(edition: string, script: string, vars: Map[string, Value], seconds: int, streaming: bool) -> Result[CmdOutput, string] {
     let dir = fs::temp_dir()?
     let file = path::join(dir, "config-weave-ps.ps1")
     let preamble = "$ErrorActionPreference = 'Stop'\ntry {{ [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false }} catch {{ }}\n"
     fs::write(file, "\u{FEFF}" + preamble + script)?
     let ep = if sys::family() == "windows" { " -ExecutionPolicy Bypass" } else { "" }
     let cmd = dq(ps_exe(edition)) + " -NoProfile -NonInteractive" + ep + " -File " + dq(file)
-    let opts = Value::Map(#{ "timeout": Value::Int(seconds) })
+    let opts = Value::Map(#{ "timeout": Value::Int(seconds), "env": Value::Map(vars) })
     let out = if streaming { shell::run_streaming(cmd, opts) } else { shell::run(cmd, opts) }
     fs::delete_dir(dir)?
     out
@@ -173,6 +183,41 @@ fn run_ps(edition: string, script: string) -> Result[CmdOutput, string] {
 fn run_ps_streaming(edition: string, script: string, seconds: int) -> Result[CmdOutput, string] {
     run_ps_with(edition, script, seconds, true)
 }
+
+fn readable(text: string) -> string {
+    let lines: List[string] = []
+    for line in text.replace("\r", "\n").replace("\u{8}", "\n").split("\n") {
+        let t = line.trim()
+        if t != "" && !t.contains("\u{2588}") && !t.contains("\u{2592}") && regex::is_match("[A-Za-z0-9]", t) { lines.push(t) }
+    }
+    let start = if lines.len() > 20 { lines.len() - 20 } else { 0 }
+    lines.slice(start, lines.len()).join("\n")
+}
+
+fn run_ps_streaming_env(edition: string, script: string, vars: Map[string, Value], seconds: int) -> Result[CmdOutput, string] {
+    run_ps_env_with(edition, script, vars, seconds, true)
+}
+
+// winget is an App Installer (MSIX) app, so SYSTEM — and any account that
+// never logged on interactively — has no winget on PATH. The newest copy
+// under WindowsApps is used, PATH (a user's alias, or a shim) only when
+// there is none. That copy starts only once the Visual C++ 2015-2022 runtime
+// is installed machine-wide (it fails with 0xC0000135, DLL not found); a
+// winget that cannot start exits 9009, as cmd.exe does for an unknown
+// command. Kept in step with windows_packages' own locator.
+fn winget_ps() -> string {
+    "$winget = Get-ChildItem -Path (Join-Path $env:ProgramFiles 'WindowsApps\\Microsoft.DesktopAppInstaller_*_8wekyb3d8bbwe\\winget.exe') -ErrorAction SilentlyContinue | Sort-Object {{ [version]($_.Directory.Name -split '_')[1] }} | Select-Object -Last 1 -ExpandProperty FullName\n" +
+    "if (-not $winget) {{ $winget = (Get-Command winget -ErrorAction SilentlyContinue).Source }}\n" +
+    "if ($winget) {{ try {{ $null = & $winget --version }} catch {{ }}; if ($LASTEXITCODE -ne 0) {{ $winget = $null }} }}\n" +
+    "if (-not $winget) {{ exit 9009 }}\n"
+}
+
+fn winget_missing_code() -> int { 9009 }
+// APPINSTALLER_CLI_ERROR_INSTALL_REBOOT_REQUIRED_TO_FINISH (0x8A150109).
+fn winget_reboot_code() -> int { -1978334967 }
+// APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE (0x8A15002B): already at the
+// newest version the source offers.
+fn winget_no_upgrade_code() -> int { -1978335189 }
 
 // A read-only query. None means the edition is not installed, which is a fact
 // rather than a failure: run 1 checks every step before the install step has
@@ -275,4 +320,135 @@ fn touch_stamp(stamp: string, label: string) -> Result[unit, string] {
     let parent = path::parent(stamp)
     if parent != "" { fs::mkdir(parent)? }
     fs::write(stamp, label + "\n")
+}
+
+// ---------------------------------------------------------------------
+// Versions
+//
+// Every version decision a resource makes goes through version_ok, so a
+// richer syntax (ranges) replaces this one function.
+// ---------------------------------------------------------------------
+
+// -1, 0 or 1 as `a` sorts before, with or after `b`. The dotted core
+// compares numerically, a missing part counting as 0 (7.5 == 7.5.0). A
+// prerelease sorts before its release (7.6.0-rc.1 < 7.6.0), and two
+// prereleases compare identifier by identifier, numbers numerically and
+// words alphabetically (preview.5 < preview.10 < rc.1), as semver orders them.
+fn version_cmp(a: string, b: string) -> int {
+    let ap = split_pre(a)
+    let bp = split_pre(b)
+    let c = parts_cmp(ap[0].split("."), bp[0].split("."), true)
+    if c != 0 { return c }
+    if ap[1] == bp[1] { return 0 }
+    if ap[1] == "" { return 1 }
+    if bp[1] == "" { return -1 }
+    parts_cmp(ap[1].split("."), bp[1].split("."), false)
+}
+
+fn split_pre(v: string) -> List[string] {
+    let s = v.trim()
+    if s.starts_with("v") || s.starts_with("V") { s = s.slice(1, s.len()) }
+    let plus = s.find("+")
+    if let Some(i) = plus { s = s.slice(0, i) }
+    if let Some(i) = s.find("-") { return [s.slice(0, i), s.slice(i + 1, s.len())] }
+    [s, ""]
+}
+
+fn parts_cmp(a: List[string], b: List[string], pad: bool) -> int {
+    let n = if a.len() > b.len() { a.len() } else { b.len() }
+    let i = 0
+    while i < n {
+        if !pad && i >= a.len() { return -1 }
+        if !pad && i >= b.len() { return 1 }
+        let x = a.get(i).unwrap_or("0")
+        let y = b.get(i).unwrap_or("0")
+        let xn = x.parse_int()
+        let yn = y.parse_int()
+        if xn.is_some() && yn.is_some() {
+            let xi = xn.unwrap()
+            let yi = yn.unwrap()
+            if xi < yi { return -1 }
+            if xi > yi { return 1 }
+        } else if xn.is_some() {
+            return -1
+        } else if yn.is_some() {
+            return 1
+        } else {
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        i = i + 1
+    }
+    0
+}
+
+// Whether an installed version satisfies the wanted one. An empty `wanted`
+// accepts any build; otherwise `at_least` makes it a floor (a resolved
+// "latest", which a newer build also satisfies) and its absence an exact
+// match.
+fn version_ok(installed: string, wanted: string, at_least: bool) -> bool {
+    if installed == "" { return false }
+    if wanted == "" { return true }
+    let c = version_cmp(installed, wanted)
+    if at_least { return c >= 0 }
+    c == 0
+}
+
+// The release metadata PowerShell publishes in its repository
+// (tools/metadata.json): StableReleaseTag, PreviewReleaseTag and the
+// LTSReleaseTag list. :lts takes the oldest LTS line still listed, which is
+// what packages.microsoft.com ships as powershell-lts and what
+// aka.ms/pwsh-buildinfo-lts answers. raw.githubusercontent.com is used
+// rather than aka.ms/pwsh-buildinfo-<channel>, whose origin regularly drops
+// TLS connections without a close_notify, and rather than the GitHub API,
+// which rate-limits. A `url` override may serve either that document or a
+// buildinfo one ({ "ReleaseTag": "v7.6.7" }).
+fn latest_release(channel: string, url: string) -> Result[string, string] {
+    let src = if url != "" { url } else { "https://raw.githubusercontent.com/PowerShell/PowerShell/master/tools/metadata.json" }
+    let what = "resolving the latest :" + channel + " PowerShell release from " + src
+    let hint = " (version = \"latest\" needs that URL reachable; pin a version, or point latest_url at a mirror, to work offline)"
+    let last = ""
+    let attempt = 1
+    while attempt <= 3 {
+        let resp = http::get(src, Value::Map(#{ "timeout": Value::Int(60), "redirects": Value::Bool(true) }))
+        if let Ok(r) = resp {
+            if r.status == 200 { return release_tag(r.body, channel, what + " failed: ", hint) }
+            last = "HTTP " + str(r.status)
+            if r.status >= 400 && r.status < 500 { attempt = 3 }
+        } else if let Err(e) = resp {
+            last = e
+        }
+        attempt = attempt + 1
+        if attempt <= 3 { time::sleep(3000) }
+    }
+    Err(what + " failed: " + last + hint)
+}
+
+fn tag_of(v: Value) -> string {
+    let s = v.as_string().unwrap_or("").trim()
+    if s.starts_with("v") { return s.slice(1, s.len()) }
+    s
+}
+
+fn release_tag(body: string, channel: string, fail: string, hint: string) -> Result[string, string] {
+    let parsed = json::parse(body)
+    if parsed.is_err() { return Err(fail + "the answer is not JSON" + hint) }
+    let doc = parsed?
+    let tag = ""
+    if let Some(t) = doc.get("ReleaseTag") { if doc.get("StableReleaseTag").is_none() { tag = tag_of(t) } }
+    if tag == "" {
+        if channel == "preview" {
+            tag = tag_of(doc.get("PreviewReleaseTag").unwrap_or(Value::Null))
+        } else if channel == "lts" {
+            for t in doc.get("LTSReleaseTag").unwrap_or(Value::Null).as_list().unwrap_or([]) {
+                let v = tag_of(t)
+                if v != "" && (tag == "" || version_cmp(v, tag) < 0) { tag = v }
+            }
+        } else {
+            tag = tag_of(doc.get("StableReleaseTag").unwrap_or(Value::Null))
+        }
+    }
+    if tag == "" { return Err(fail + "the answer names no :" + channel + " release" + hint) }
+    version_chars("the resolved release", tag)?
+    Ok(tag)
 }

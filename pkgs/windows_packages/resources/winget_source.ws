@@ -68,7 +68,7 @@ fn winget(script: string, params: Value, what: string) -> Result[unit, string] {
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let name = validate(params)?
     let s = source(name)?
-    if s.is_none() { return Err("winget is not installed (or not on PATH)") }
+    if s.is_none() { return Err("winget is not installed or cannot start (run windows_packages.winget_installed first)") }
     let m = s.unwrap_or(Value::Null)
     let exists = common::get_bool(m, "exists")
     // `source remove` takes no agreement flags.
