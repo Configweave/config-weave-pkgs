@@ -2,6 +2,7 @@ use value
 use fs
 use registry
 use common
+use vrange
 
 // How long install markers may lag the installer's exit before the run is
 // called a failure. Many uninstallers copy themselves to %TEMP%, re-launch
@@ -19,9 +20,12 @@ fn validate(params: Value) -> Result[unit, string] {
     common::single_line("install_reg", install_reg)?
     let version = common::param_str(params, "version", "")
     if version != "" && install_reg == "" {
-        return Err("'version' is compared with the DisplayVersion under 'install_reg', so it needs 'install_reg' set")
+        return Err("'version' is matched against the " + version_value(params) + " value under 'install_reg', so it needs 'install_reg' set")
     }
-    common::validate_version(version)?
+    vrange::validate("version", version)?
+    let vv = version_value(params)
+    if vv.trim() == "" { return Err("'version_value' must name a registry value, e.g. DisplayVersion") }
+    common::single_line("version_value", vv)?
     common::validate_sha256(common::param_str(params, "sha256", ""))?
     for label in ["path", "args", "uninstall_path", "uninstall_args"] {
         common::single_line(label, common::param_str(params, label, ""))?
@@ -39,17 +43,26 @@ fn installed(params: Value) -> Result[bool, string] {
     Ok(true)
 }
 
-fn display_version(params: Value) -> Result[string, string] {
-    if let Some(have) = registry::read(common::param_str(params, "install_reg", ""), "DisplayVersion")? {
-        return Ok(have.as_string().unwrap_or(""))
+fn version_value(params: Value) -> string { common::param_str(params, "version_value", "DisplayVersion") }
+
+// Where the installed version is read, for messages.
+fn version_source(params: Value) -> string { version_value(params) + " under " + common::param_str(params, "install_reg", "") }
+
+// The installed version: the version_value value under install_reg, "" when
+// that value is missing. A DWORD (some installers write one) reads as its
+// decimal number.
+fn installed_version(params: Value) -> Result[string, string] {
+    if let Some(have) = registry::read(common::param_str(params, "install_reg", ""), version_value(params))? {
+        if let Some(s) = have.as_string() { return Ok(s) }
+        if let Some(n) = have.as_int() { return Ok(str(n)) }
     }
     Ok("")
 }
 
 fn version_matches(params: Value) -> Result[bool, string] {
     let want = common::param_str(params, "version", "")
-    if want == "" { return Ok(true) }
-    Ok(display_version(params)? == want)
+    if vrange::any(want) { return Ok(true) }
+    vrange::satisfies("exe_installer", installed_version(params)?, want, version_source(params))
 }
 
 fn check(params: Value) -> Result[CheckResult, string] {
@@ -150,8 +163,10 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::wait_for_marker(true, settle_secs(), || installed(params))? {
         return Err("the installer exited 0, but the install markers are still missing after " + str(settle_secs()) + "s; check install_path/install_reg")
     }
+    // The installer at path is what gets installed, whatever the range; one
+    // that leaves a version outside it fails here.
     if !version_matches(params)? {
-        return Err("the installer exited 0, but DisplayVersion under install_reg is '" + display_version(params)? + "', not '" + common::param_str(params, "version", "") + "'")
+        return Err("the installer exited 0, but " + version_source(params) + " is '" + installed_version(params)? + "', which does not satisfy version '" + common::param_str(params, "version", "") + "'")
     }
     Ok(ApplyResult::Success)
 }

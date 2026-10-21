@@ -38,6 +38,9 @@ fn verify(facts: Value) -> Result[bool, string] {
     if !fs::exists("C:\\weave-exe\\cmd-marker.txt") { return Err("the cmd.exe installer did not write its marker") }
     expect_value("HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-sha", "Installed", "1")?
     expect_value(uninstall_key("cw-exe"), "DisplayVersion", "2.0")?
+    // The range step ran its installer; the satisfied one did not touch cw-exe3.
+    expect_value("HKLM\\SOFTWARE\\ConfigWeaveTest\\VC\\Runtimes\\x64", "Version", "v14.40.33810.00")?
+    expect_value(uninstall_key("cw-exe3"), "DisplayVersion", "1.5.2")?
     expect_gone("cw-exe2's Uninstall key", !registry::key_exists(uninstall_key("cw-exe2"))?)?
     expect_gone("C:\\weave-exe\\marker.txt", !fs::exists("C:\\weave-exe\\marker.txt"))?
     Ok(true)
