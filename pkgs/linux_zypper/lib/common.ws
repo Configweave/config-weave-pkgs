@@ -47,6 +47,24 @@ fn run(what: string, cmd: string) -> Result[unit, string] {
     Ok(())
 }
 
+// A distro package version follows zypper's own ordering rules (epochs,
+// '~' sorting before a release, '-release'), not the npm-style ranges the
+// Windows packages accept, so `version` is an exact pin. A value that reads
+// as a range is refused with that reason rather than handed to zypper as a
+// version that cannot exist. Only range syntax is refused: a leading
+// comparison, '^' or '~' operator, '||', a space-separated set or hyphen
+// range, a '*' wildcard, or a bare or trailing x part. '~' and '-' inside a
+// version (1.2~rc1-3) are ordinary distro syntax.
+fn exact_pin(key: string, v: string) -> Result[unit, string] {
+    let t = v.trim()
+    let leading = ["^", "~", ">", "<", "="].any(|op| t.starts_with(op))
+    let wild = t.contains("*") || t == "x" || t == "X" || t.ends_with(".x") || t.ends_with(".X")
+    if leading || wild || t.contains("||") || t.contains(" ") || t.contains("\t") {
+        return Err("'" + key + "' is \"" + v + "\", a version range: ranges are not supported for distro packages, whose versions follow zypper's own rules. Pin an exact version: VERSION, VERSION-RELEASE or EPOCH:VERSION-RELEASE as zypper info shows it, e.g. 2.23-4.1")
+    }
+    Ok(())
+}
+
 // A package name or version handed to rpm or zypper as an operand: a leading
 // '-' would be read as an option, and whitespace would split it in two.
 fn operand(key: string, v: string) -> Result[unit, string] {

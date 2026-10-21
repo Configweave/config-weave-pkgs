@@ -163,7 +163,7 @@ package "linux_apt" {
   // packages that setup builds with dpkg-deb, so every version exists and
   // stays put. Setup is idempotent: the group shares one container.
   test "package_versions" {
-    description = "package pins versions (downgrades included), treats the rc state as absent, removes for real and guards dependents and holds"
+    description = "package pins versions (downgrades included, a ~ inside a version too), refuses version ranges, treats the rc state as absent, removes for real and guards dependents and holds"
     image = "debian:12"
     group = "debian"
     setup = <<'SETUP'
@@ -181,6 +181,7 @@ mk cw-pin 1.0 ''; mk cw-pin 2.0 ''; mk cw-held 1.0 ''; mk cw-held 2.0 ''
 mk cw-rc 1.0 ''; mk cw-gone 1.0 ''
 mk cw-base 1.0 ''; mk cw-dep 1.0 cw-base
 mk cw-base2 1.0 ''; mk cw-dep2 1.0 cw-base2
+mk cw-tilde 1.0~rc1-1 ''
 cd "$d" && for f in *.deb; do dpkg-deb -f "$f"; printf 'Filename: ./%s\nSize: %s\nSHA256: %s\n\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"; done > Packages
 echo 'deb [trusted=yes] file:/srv/cw-repo ./' > /etc/apt/sources.list.d/cw-local.list
 apt-get update -qq
@@ -237,6 +238,19 @@ SETUP
       resource = "package"
       expect = "error"
       properties { name = "--purge" }
+    }
+
+    step "range_refused" {
+      description = "A version range is refused: distro versions follow apt's rules, so version is an exact pin"
+      resource = "package"
+      expect = "error"
+      properties { name = "cw-pin" version = ">=1.0" }
+    }
+
+    step "tilde_pin" {
+      description = "A '~' and '-' inside a Debian version are an ordinary exact pin, not a range"
+      resource = "package"
+      properties { name = "cw-tilde" version = "1.0~rc1-1" }
     }
   }
 
