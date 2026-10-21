@@ -6,6 +6,7 @@ use shell
 use registry
 use common
 use ssrs
+use vrange
 
 // Installs SQL Server Reporting Services 2017 and later, or Power BI Report
 // Server, from the standalone installer (SQLServerReportingServices.exe,
@@ -35,7 +36,7 @@ fn want(params: Value) -> Result[Want, string] {
     common::no_newlines("install_dir", dir)?
     if dir.contains("\"") { return Err("'install_dir' must not contain a double quote") }
     let version = common::param_str(params, "version", "")
-    if version != "" && !common::only_chars(version, ".") { return Err("invalid 'version' '" + version + "' (a version prefix such as 15.0)") }
+    vrange::validate("version", version)?
     Ok(Want { product: product, svc: info[0], rs_name: info[1], edition: edition, install_dir: dir, version: version })
 }
 
@@ -80,7 +81,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         log::info(w.svc + " is " + f[1] + ", want " + w.edition)
         return Ok(CheckResult::NotConfigured)
     }
-    if w.version != "" && !f[0].starts_with(w.version) {
+    if !vrange::satisfies("reporting_services " + w.svc, f[0], w.version, "the ProductVersion under its MSSQLServer\\CurrentVersion key")? {
         log::info(w.svc + " is version " + f[0] + ", want " + w.version)
         return Ok(CheckResult::NotConfigured)
     }

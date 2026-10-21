@@ -99,7 +99,7 @@ package "mssql" {
     param "setup_sha256"    { description = "Expected SHA-256 of the installer; empty = not checked" type = "string" default = "" }
     param "edition"         { description = "Dev, Eval or Expr (/Edition=), or a 25-character product key (/PID=, which the installer only takes on its command line). Compared on an installed server; a product key is not compared" type = "string" default = "Dev" }
     param "install_dir"     { description = "Install folder (/InstallFolder); empty = installer default. Not changeable in place: a different folder on an installed server is an error" type = "string" default = "" }
-    param "version"         { description = "Product version prefix the installed server must have, e.g. 15.0 for SSRS 2019 or 16.0 for 2022; empty = any. A different version runs the installer, which upgrades in place" type = "string" default = "" }
+    param "version"         { description = "Version range the installed server's ProductVersion must satisfy, in npm syntax: 15.0 is any 15.0.x (SSRS 2019), 16.0 any 16.0.x (2022), or >=15.0, ^16, a || b; a three- or four-part version is exact. Empty or * = any. Outside it, the installer at setup_path runs, which upgrades in place" type = "string" default = "" }
     param "install_timeout" { description = "Maximum seconds to wait for the installer" type = "int" default = 3600 }
   }
 
