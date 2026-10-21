@@ -63,9 +63,10 @@ gitignored, so a package's documentation *is* its doc cells in `package.wcl`.
 
 ## Testing
 
-`just test` **unfiltered runs everything** — 78 test declarations, of which 45
-are `image =` vmlab containers (Linux, seconds) and 33 are `template =` full VMs
-with real init and reboots, Linux *and* Windows. It needs vmlab, KVM and the
+`just test` **unfiltered runs everything** — 198 test declarations, of which
+122 are `image =` vmlab containers (Linux, seconds) and 76 are `template =` full
+VMs with real init and reboots, Linux *and* Windows, plus 6 multi-VM
+`scenario`s (`mssql:win_bi` alone takes about an hour). It needs vmlab, KVM and the
 templates the VM tests name, so it is not safe to run unattended.
 
 Scope it with a filter instead: `just test linux_files` for a whole package, or
