@@ -7,6 +7,7 @@ use common
 use vs
 use vscode
 use parts
+use vrange
 
 fn host(params: Value) -> Result[string, string] {
     let h = common::param_str(params, "host", "visual_studio")
@@ -28,7 +29,7 @@ fn validate(params: Value) -> Result[unit, string] {
     let id = common::param_str(params, "id", "")
     if id == "" { return Err("missing 'id' parameter") }
     common::validate_token("id", id)?
-    common::validate_token("version", common::param_str(params, "version", ""))?
+    vrange::validate("version", common::param_str(params, "version", ""))?
     let source = common::param_str(params, "source", "")
     common::cmd_safe("source", source)?
     common::validate_sha256(common::param_str(params, "sha256", ""))?
@@ -73,17 +74,21 @@ fn vs_instances(params: Value) -> Result[List[Value], string] {
 fn vs_ok(inst: Value, params: Value) -> Result[bool, string] {
     let found = vs::installed(inst, scope(params)?, common::param_str(params, "id", ""))?
     if !common::want_present(params)? { return Ok(found.is_empty()) }
-    Ok(vs::has(found, common::param_str(params, "version", "")))
+    vs::has(found, common::param_str(params, "version", ""))
 }
 
-// The newest version of a Marketplace item, from the gallery's
-// extensionquery API.
-fn latest_version(item: string) -> Result[string, string] {
-    // filterType 7 is the item name; flags 513 = IncludeVersions |
-    // IncludeLatestVersionOnly.
+// The versions of a Marketplace item, newest first, from the gallery's
+// extensionquery API: only the newest when `all` is false. VS Code
+// pre-release versions (the Microsoft.VisualStudio.Code.PreRelease
+// property) are left out of the full list, so a range never resolves to
+// one; an item can list a version once per target platform.
+fn marketplace_versions(item: string, all: bool) -> Result[List[string], string] {
+    // filterType 7 is the item name; flags 1 = IncludeVersions, 16 =
+    // IncludeVersionProperties, 512 = IncludeLatestVersionOnly.
     let criterion = Value::Map(#{ "filterType": Value::Int(7), "value": Value::String(item) })
     let filter = Value::Map(#{ "criteria": Value::List([criterion]) })
-    let body = json::to_string(Value::Map(#{ "filters": Value::List([filter]), "flags": Value::Int(513) }))
+    let flags = if all { 17 } else { 513 }
+    let body = json::to_string(Value::Map(#{ "filters": Value::List([filter]), "flags": Value::Int(flags) }))
     let res = http::post("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", body, Value::Map(#{
         "headers": Value::Map(#{
             "Content-Type": Value::String("application/json"),
@@ -93,15 +98,33 @@ fn latest_version(item: string) -> Result[string, string] {
     }))?
     if res.status != 200 { return Err("the Marketplace query for " + item + " answered HTTP " + str(res.status)) }
     let m = json::parse(res.body)?
+    let found: List[string] = []
     for r in common::get_list(m, "results") {
         for e in common::get_list(r, "extensions") {
             for v in common::get_list(e, "versions") {
                 let ver = common::get_str(v, "version")
-                if ver != "" { return Ok(ver) }
+                let pre = common::get_list(v, "properties").any(|p| common::get_str(p, "key") == "Microsoft.VisualStudio.Code.PreRelease" && common::get_str(p, "value").to_lower() == "true")
+                if ver != "" && !pre && !found.contains(ver) { found.push(ver) }
             }
         }
     }
-    Err("the Visual Studio Marketplace has no item named " + item)
+    if found.is_empty() { return Err("the Visual Studio Marketplace has no item named " + item) }
+    Ok(found)
+}
+
+// The newest version of a Marketplace item.
+fn latest_version(item: string) -> Result[string, string] {
+    Ok(marketplace_versions(item, false)?.get(0).unwrap_or(""))
+}
+
+// The version of a Marketplace item to install for `version`: the newest
+// when it is empty or *, an exact version (or a pin that is not range
+// syntax) as written, and otherwise the newest the gallery lists that
+// satisfies the range.
+fn marketplace_version(item: string, version: string) -> Result[string, string] {
+    if vrange::any(version) { return latest_version(item) }
+    if vrange::exact(version) || vrange::opaque(version) { return Ok(version) }
+    vrange::pick("extension " + item, marketplace_versions(item, true)?, version, "the Visual Studio Marketplace")
 }
 
 // The .vsix to install: a local path, a downloaded URL, or the Marketplace
@@ -111,8 +134,7 @@ fn vsix_file(params: Value) -> Result[string, string] {
     let sha = common::param_str(params, "sha256", "")
     if source == "" { return Err("'source' is required to install into Visual Studio: a .vsix path, an http(s) URL or a Marketplace item name (publisher.name)") }
     if common::is_marketplace_name(source) {
-        let version = common::param_str(params, "version", "")
-        if version == "" { version = latest_version(source)? }
+        let version = marketplace_version(source, common::param_str(params, "version", ""))?
         let pn = source.split(".")
         let publisher = pn.get(0).unwrap_or("")
         let name = source.slice(publisher.len() + 1, source.len())
@@ -132,7 +154,11 @@ fn check_identity(file: string, params: Value, vscode_host: bool) -> Result[unit
     if have.to_lower() != id.to_lower() { return Err(file + " is extension '" + have + "', not id '" + id + "'") }
     let version = common::param_str(params, "version", "")
     let hv = idv.get(1).unwrap_or("")
-    if version != "" && !common::same_version(hv, version) { return Err(file + " is version " + hv + ", not version " + version) }
+    // The package is what gets installed, whatever the range, so one outside
+    // it is refused before the installer runs.
+    if !vrange::any(version) && !common::same_version(hv, version) && !vrange::satisfies("extension " + id, hv, version, "the manifest of " + file)? {
+        return Err(file + " is version " + hv + ", which does not satisfy version '" + version + "'")
+    }
     Ok(())
 }
 
@@ -195,8 +221,8 @@ fn code_apply(params: Value) -> Result[ApplyResult, string] {
             from_marketplace = false
             what = if common::is_url(source) { common::fetch(source, common::param_str(params, "sha256", ""), id + ".vsix")? } else { common::local_source(source, common::param_str(params, "sha256", ""))? }
             check_identity(what, params, true)?
-        } else if version != "" {
-            what = id + "@" + version
+        } else if !vrange::any(version) {
+            what = id + "@" + marketplace_version(id, version)?
         }
         vscode::install(t, what, from_marketplace)?
     }
