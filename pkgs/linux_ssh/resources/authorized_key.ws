@@ -54,11 +54,6 @@ fn rewrite(text: string, id: string, want: string) -> string {
     if out.is_empty() { "" } else { out.join("\n") + "\n" }
 }
 
-fn read_keys(p: string) -> Result[string, string] {
-    if !fs::is_file(p) { return Ok("") }
-    fs::read(p)
-}
-
 // sshd's StrictModes rejects keys in a group- or world-writable .ssh or
 // authorized_keys, or ones not owned by the user; apply sets 700/600 and
 // the user as owner, and check compares exactly that.
@@ -78,16 +73,17 @@ fn check(params: Value) -> Result[CheckResult, string] {
         // a deleted user means the key is gone
         if dir.is_err() && common::param_str(params, "home", "") == "" { return Ok(CheckResult::AlreadyConfigured) }
         let p = path::join(dir?, "authorized_keys")
-        if !fs::is_file(p) { return Ok(CheckResult::AlreadyConfigured) }
+        // a symlink at the path is an error, not drift: apply refuses it too
+        if !common::user_file(p)? { return Ok(CheckResult::AlreadyConfigured) }
         // an unreadable (non-UTF-8) file is drift; apply reports why
-        let text = if let Ok(t) = read_keys(p) { t } else { return Ok(CheckResult::NotConfigured) }
+        let text = if let Ok(t) = common::read_user_file(p) { t } else { return Ok(CheckResult::NotConfigured) }
         if rewrite(text, identity(key), "") == text { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
     let d = dir?
     let p = path::join(d, "authorized_keys")
-    if !fs::is_file(p) { return Ok(CheckResult::NotConfigured) }
-    let text = if let Ok(t) = read_keys(p) { t } else { return Ok(CheckResult::NotConfigured) }
+    if !common::user_file(p)? { return Ok(CheckResult::NotConfigured) }
+    let text = if let Ok(t) = common::read_user_file(p) { t } else { return Ok(CheckResult::NotConfigured) }
     if rewrite(text, identity(key), key) != text { return Ok(CheckResult::NotConfigured) }
     if !attrs_ok(d, p, common::user_uid(user)?)? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
@@ -101,8 +97,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     if !common::want_present(params)? {
         if dir.is_err() && common::param_str(params, "home", "") == "" { return Ok(ApplyResult::Success) }
         let p = path::join(dir?, "authorized_keys")
-        if !fs::is_file(p) { return Ok(ApplyResult::Success) }
-        let text = read_keys(p)?
+        if !common::user_file(p)? { return Ok(ApplyResult::Success) }
+        let text = common::read_user_file(p)?
         let next = rewrite(text, identity(key), "")
         if next != text { common::write_atomic(p, next)? }
         return Ok(ApplyResult::Success)
@@ -116,9 +112,10 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fs::mkdir(d)?
         fs::chmod(d, Value::String("0700"))?
     }
-    let text = read_keys(p)?
+    let existed = common::user_file(p)?
+    let text = common::read_user_file(p)?
     let next = rewrite(text, identity(key), key)
-    if next != text || !fs::is_file(p) { common::write_atomic(p, next)? }
+    if next != text || !existed { common::write_atomic(p, next)? }
     fs::chmod(d, Value::String("0700"))?
     fs::chmod(p, Value::String("0600"))?
     common::chown_ids(d, ids)?

@@ -17,5 +17,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     if fs::read(c + "/rootrc")? != "[X]\nk=v\n" { return Err("rootrc content changed") }
     if fs::read("/root/.config/cwdefaultrc")? != "[G]\nk=v\n" { return Err("default home entry not in /root/.config") }
     if fs::exists("/.config/cwdefaultrc") { return Err("default home resolved to /") }
+    // the planted links are left alone, and so are their targets
+    if fs::read_link(c + "/linkrc")? != "/root/cw-secretrc" { return Err("linkrc is no longer the planted symlink") }
+    if fs::read_link(c + "/danglerc")? != "/root/cw-nowhere" { return Err("danglerc is no longer the planted symlink") }
+    if fs::read("/root/cw-secretrc")? != "[S]\nsecret=1\n" { return Err("the symlink target was changed") }
+    if owner("/root/cw-secretrc")? != "root" { return Err("the symlink target was handed to cwkde") }
+    if fs::lexists("/root/cw-nowhere") { return Err("a file was created at the dangling symlink's target") }
     Ok(true)
 }

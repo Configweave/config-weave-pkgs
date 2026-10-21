@@ -55,9 +55,14 @@ fn owner(p: string) -> Result[string, string] {
 }
 
 // "uid:gid" of a path itself: a symlink's own owner, not its target's,
-// which is what chown_ids changes.
+// which is what chown_ids changes. fs::metadata does not follow a final
+// symlink.
 fn link_owner(p: string) -> Result[string, string] {
-    output("reading the owner of " + p, "stat -c '%u:%g' -- " + q(p))
+    let md = fs::metadata(p)?
+    let uid = md.get("uid").unwrap_or(Value::Null).as_int()
+    let gid = md.get("gid").unwrap_or(Value::Null).as_int()
+    if uid.is_none() || gid.is_none() { return Err("cannot read the owner of " + p) }
+    Ok(str(uid.unwrap_or(0)) + ":" + str(gid.unwrap_or(0)))
 }
 
 // Hand `p` to `ids` ("uid:gid", as stat prints it). fs::chown does not
@@ -69,4 +74,26 @@ fn chown_ids(p: string, ids: string) -> Result[unit, string] {
     let gid = f.get(1).unwrap_or("").parse_int()
     if uid.is_none() || gid.is_none() { return Err("invalid owner '" + ids + "' for " + p) }
     fs::chown(p, Value::Int(uid.unwrap_or(0)), Value::Int(gid.unwrap_or(0)))
+}
+
+// Whether `p` is a regular file, for a file in a user's tree that this reads
+// and rewrites as root. A missing path is false. A symlink as the final
+// component, dangling or not, is an Err: following it would read whatever
+// the user pointed it at, and the write side refuses it too, so apply could
+// never fix it. fs::metadata does not follow a final symlink.
+fn user_file(p: string) -> Result[bool, string] {
+    if !fs::lexists(p) { return Ok(false) }
+    let md = fs::metadata(p)?
+    if md.get("is_symlink").unwrap_or(Value::Bool(false)).as_bool().unwrap_or(false) {
+        return Err(p + " is a symlink; config-weave runs as root and will not follow a symlink in a user's tree (replace it with a regular file or remove it)")
+    }
+    Ok(md.get("is_file").unwrap_or(Value::Bool(false)).as_bool().unwrap_or(false))
+}
+
+// The contents of a user file, "" when it is missing, never through a final
+// symlink: user_file refuses one up front with a clear message, and
+// read_with's O_NOFOLLOW catches a link planted between the two calls.
+fn read_user_file(p: string) -> Result[string, string] {
+    if !user_file(p)? { return Ok("") }
+    fs::read_with(p, Value::Map(#{ "follow_symlinks": Value::Bool(false) }))
 }

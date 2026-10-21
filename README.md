@@ -220,12 +220,14 @@ Keys, known hosts and ssh/sshd configuration. 4 resources:
   match on key type and blob, so a line for the same key with other options
   or another comment is rewritten (`:present`) or removed (`:absent`). check
   also requires what sshd's StrictModes requires: `.ssh` 700 and the file
-  600, both owned by the user.
+  600, both owned by the user. A symlink at `authorized_keys` is an error,
+  never read through or replaced.
 - `known_host` — one `known_hosts` entry, with `ensure`. `name` makes the
   step own a host: a new key of the same type replaces the old one, and
   `:absent` with only `name` removes every plain entry for that host. The
   default file is in the passwd home of the user config-weave runs as, not
-  `$HOME`. In a home, `.ssh` and the file belong to the home's owner.
+  `$HOME`. In a home, `.ssh` and the file belong to the home's owner. A
+  symlink at the file is an error, never read through or replaced.
 - `ssh_config_setting` — one `/etc/ssh/ssh_config.d` drop-in per key and
   `host` pattern.
 - `sshd_config_setting` — one `/etc/ssh/sshd_config.d` drop-in per key. When
@@ -284,7 +286,8 @@ KDE Plasma configuration files, edited directly with no KDE tools needed.
   first `=`, whitespace trimmed), values are escaped the way `kwriteconfig6`
   writes them, and a duplicate key is removed. `value` is required when
   `:present`; `""` writes an empty value. Files and directories it creates
-  belong to the owner of `home`, and `home` must already exist. Steps run
+  belong to the owner of `home`, and `home` must already exist. A symlink at
+  the file is an error, never read or written through. Steps run
   exclusively, so several steps can edit one file.
 - `kde_paths` — the home, `~/.config` and `~/.local/share` paths, and
   whether `kreadconfig6`, `kwriteconfig6` and `plasma-apply-colorscheme` are

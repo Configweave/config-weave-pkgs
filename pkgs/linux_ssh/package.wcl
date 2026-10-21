@@ -2,7 +2,7 @@ package "linux_ssh" {
   description = "Manage SSH authorized keys, known hosts and ssh/sshd configuration drop-ins"
 
   resource "authorized_key" {
-    description = "Ensure an SSH key is present in or absent from a user's ~/.ssh/authorized_keys. Lines match on key type and base64 blob, so a line for the same key with other options or another comment is rewritten to the wanted text when :present, and removed when :absent. When :present, check also requires what sshd's StrictModes requires: .ssh mode 700 and authorized_keys mode 600, both owned by the user (group: the user's login group). The home directory itself must not be group- or world-writable either; that is not managed here. The file is replaced through a temp file and rename"
+    description = "Ensure an SSH key is present in or absent from a user's ~/.ssh/authorized_keys. Lines match on key type and base64 blob, so a line for the same key with other options or another comment is rewritten to the wanted text when :present, and removed when :absent. When :present, check also requires what sshd's StrictModes requires: .ssh mode 700 and authorized_keys mode 600, both owned by the user (group: the user's login group). The home directory itself must not be group- or world-writable either; that is not managed here. The file is replaced through a temp file and rename. A symlink at authorized_keys, dangling or not, is an error in both check and apply: it is never read, written or replaced"
     script = "resources/authorized_key.ws"
     // read-modify-write on a shared authorized_keys file — parallel steps lose updates
     concurrency = "exclusive"
@@ -20,7 +20,7 @@ package "linux_ssh" {
   }
 
   resource "known_host" {
-    description = "Ensure a known_hosts entry is present or absent. Entries match on marker, host list, key type and key blob, so a different comment is rewritten rather than duplicated. Hashed host names (HashKnownHosts) are not matched by `name`. Without `path` the file is ~/.ssh/known_hosts in `home`, or in the home of the user config-weave runs as, read from its passwd entry (not $HOME). In a home, apply makes .ssh mode 700 and hands .ssh and the file to the home directory's owner, and check compares both; with an explicit `path` only the content is managed"
+    description = "Ensure a known_hosts entry is present or absent. Entries match on marker, host list, key type and key blob, so a different comment is rewritten rather than duplicated. Hashed host names (HashKnownHosts) are not matched by `name`. Without `path` the file is ~/.ssh/known_hosts in `home`, or in the home of the user config-weave runs as, read from its passwd entry (not $HOME). In a home, apply makes .ssh mode 700 and hands .ssh and the file to the home directory's owner, and check compares both; with an explicit `path` only the content is managed. A symlink at the file, dangling or not, is an error in both check and apply: it is never read, written or replaced"
     script = "resources/known_host.ws"
     // read-modify-write on a shared known_hosts file
     concurrency = "exclusive"
@@ -81,7 +81,7 @@ package "linux_ssh" {
     description = "authorized_key matches keys by type and blob, enforces StrictModes attributes, and serves a user without a same-named group"
     image = "debian:12"
     group = "ssh"
-    setup = "(id cwkey >/dev/null 2>&1 || useradd -m -g users cwkey) && mkdir -p /root/.ssh && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRotateCommentKey old-comment\\nfrom=\"10.0.0.1\",command=\"echo a b\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOptionedKeyGoesAway cw-old\\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepThisKeyUntouched keep\\n' > /root/.ssh/authorized_keys && chmod 755 /root/.ssh && chmod 644 /root/.ssh/authorized_keys"
+    setup = "(id cwkey >/dev/null 2>&1 || useradd -m -g users cwkey) && mkdir -p /root/.ssh && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRotateCommentKey old-comment\\nfrom=\"10.0.0.1\",command=\"echo a b\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOptionedKeyGoesAway cw-old\\nssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeepThisKeyUntouched keep\\n' > /root/.ssh/authorized_keys && chmod 755 /root/.ssh && chmod 644 /root/.ssh/authorized_keys && (id cwlink >/dev/null 2>&1 || useradd -m -g users cwlink) && printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey root\\n' > /root/cw-secret-keys && chmod 600 /root/cw-secret-keys && mkdir -p /home/cwlink/.ssh /home/cwdangle/.ssh && ln -sfn /root/cw-secret-keys /home/cwlink/.ssh/authorized_keys && ln -sfn /root/cw-nowhere-keys /home/cwdangle/.ssh/authorized_keys && chown -hR cwlink:users /home/cwlink/.ssh"
     verify = "tests/authorized_key_verify.ws"
 
     step "modes" {
@@ -124,6 +124,29 @@ package "linux_ssh" {
       properties { user = "cwkey" key = "hello world" }
     }
 
+    // cwlink's authorized_keys is a symlink the user planted at a root-only
+    // file that already holds the key; cwdangle's points at nothing.
+    step "planted_link" {
+      description = "A symlink at authorized_keys is an error even when its target already holds the key"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "cwlink" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey root" }
+    }
+
+    step "planted_link_absent" {
+      description = "Removing a key through a symlink at authorized_keys is an error"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "cwlink" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey" ensure = :absent }
+    }
+
+    step "dangling_link" {
+      description = "A dangling symlink at authorized_keys is an error, and nothing is created at its target"
+      resource = "authorized_key"
+      expect = "error"
+      properties { user = "root" home = "/home/cwdangle" key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINonRootUserKey x" }
+    }
+
     step "bad_user" {
       description = "A user name that would be read as an option is rejected"
       resource = "authorized_key"
@@ -138,7 +161,7 @@ package "linux_ssh" {
     description = "known_host adds, rotates and removes entries, in the right home and with the home owner's ownership"
     image = "debian:12"
     group = "ssh"
-    setup = "(id cwkh >/dev/null 2>&1 || useradd -m -g users cwkh) && mkdir -p /root/.ssh && printf 'cw-rot.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldRotatedHostKey\\ncw-rot.example ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABOtherTypeKey\\ncw-gone.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoneHostKeyBlob1\\ncw-gone.example,10.0.0.9 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABGoneRsaBlob1\\ncw-bykey.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRemoveByKeyBlob old comment\\n' > /root/.ssh/known_hosts"
+    setup = "(id cwkh >/dev/null 2>&1 || useradd -m -g users cwkh) && mkdir -p /root/.ssh && printf 'cw-rot.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOldRotatedHostKey\\ncw-rot.example ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABOtherTypeKey\\ncw-gone.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoneHostKeyBlob1\\ncw-gone.example,10.0.0.9 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABGoneRsaBlob1\\ncw-bykey.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRemoveByKeyBlob old comment\\n' > /root/.ssh/known_hosts && printf 'cw-secret.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey\\n' > /root/cw-secret-hosts && chmod 600 /root/cw-secret-hosts && mkdir -p /home/cwkhl/.ssh /home/cwkhd/.ssh && ln -sfn /root/cw-secret-hosts /home/cwkhl/.ssh/known_hosts && ln -sfn /root/cw-nowhere-hosts /home/cwkhd/.ssh/known_hosts"
     verify = "tests/known_host_verify.ws"
 
     step "default_home" {
@@ -175,6 +198,29 @@ package "linux_ssh" {
       description = "An explicit path, such as the system-wide file"
       resource = "known_host"
       properties { path = "/etc/ssh/ssh_known_hosts" key = "@cert-authority *.cw.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICertAuthorityKey" }
+    }
+
+    // /home/cwkhl/.ssh/known_hosts is a symlink planted at a root-only file
+    // that already holds the entry; /home/cwkhd's points at nothing.
+    step "planted_link" {
+      description = "A symlink at known_hosts is an error even when its target already holds the entry"
+      resource = "known_host"
+      expect = "error"
+      properties { home = "/home/cwkhl" key = "cw-secret.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey" }
+    }
+
+    step "planted_link_absent" {
+      description = "Removing an entry through a symlink at known_hosts is an error"
+      resource = "known_host"
+      expect = "error"
+      properties { home = "/home/cwkhl" name = "cw-secret.example" ensure = :absent }
+    }
+
+    step "dangling_link" {
+      description = "A dangling symlink at known_hosts is an error, and nothing is created at its target"
+      resource = "known_host"
+      expect = "error"
+      properties { home = "/home/cwkhd" key = "cw-dangle.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUserHomeHostKey" }
     }
 
     step "multi_line" {

@@ -230,12 +230,14 @@ fn uid_of(owner: string) -> string { owner.split(":").get(0).unwrap_or("") }
 
 fn check(params: Value) -> Result[CheckResult, string] {
     let e = entry(params)?
-    if !fs::is_file(e.path) {
+    // a symlink at the path is an error, not drift: apply refuses to write
+    // through it, so it could never converge
+    if !common::user_file(e.path)? {
         if e.present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     // unreadable (for example not UTF-8) is drift; apply reports why
-    let text = fs::read(e.path)
+    let text = common::read_user_file(e.path)
     if text.is_err() { return Ok(CheckResult::NotConfigured) }
     if changed(text.unwrap_or(""), e).is_some() { return Ok(CheckResult::NotConfigured) }
     if e.present && fs::is_dir(e.home) && uid_of(common::link_owner(e.path)?) != uid_of(common::owner(e.home)?) {
@@ -246,7 +248,8 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let e = entry(params)?
-    if !e.present && !fs::is_file(e.path) { return Ok(ApplyResult::Success) }
+    let existed = common::user_file(e.path)?
+    if !e.present && !existed { return Ok(ApplyResult::Success) }
     if !fs::is_dir(e.home) { return Err("home directory " + e.home + " does not exist") }
     let home_owner = common::owner(e.home)?
 
@@ -257,12 +260,12 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fresh.push(dir)
         dir = path::parent(dir)
     }
-    let existed = fs::is_file(e.path)
-    let text = if existed { fs::read(e.path)? } else { "" }
+    let text = common::read_user_file(e.path)?
     if let Some(next) = changed(text, e) {
         fs::mkdir(path::parent(e.path))?
         // the agent runs as root in a user's tree: a symlink planted at the
-        // path is refused, never written through
+        // path is refused, never written through (user_file already refused
+        // one; this catches a link planted since)
         fs::write_with(e.path, next, Value::Map(#{ "follow_symlinks": Value::Bool(false) }))?
     }
     if e.present || !existed {
