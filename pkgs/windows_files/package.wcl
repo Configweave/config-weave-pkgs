@@ -23,8 +23,8 @@ package "windows_files" {
     param "content" { description = "Exact file content; mutually exclusive with url" type = "string" default = "" }
     param "url" { description = "Optional HTTP(S) source URL; mutually exclusive with content. The file is downloaded to <path>.config-weave-download beside the target, checked against size and sha256, and only then put in place (renamed when new, swapped in with ReplaceFile when it replaces a file, so the old file's NTFS permissions are kept). An interrupted download never leaves a file at path. Without size or sha256 a file at path is never re-checked: a changed upstream file is not drift, so set sha256 (or size, for files too big to hash on every run) whenever the content matters" type = "string" default = "" }
     param "sha256" { description = "Optional expected SHA-256 digest (url mode, 64 hex digits, any case). A mismatch on the existing file is drift; a mismatching download is an error, is not retried, and leaves the existing file untouched" type = "string" default = "" }
-    param "size" { description = "Optional expected size in bytes (url mode); 0 leaves it unchecked. Compared on every check before the digest and costs nothing, so with size alone a multi-gigabyte file is never hashed. A download of the wrong size is retried" type = "int" default = 0 }
-    param "retries" { description = "How many times a download that fails (a transport error, or a file whose size differs from size) is retried, waiting 5 s, 10 s, ... between attempts; 0 to 10" type = "int" default = 3 }
+    param "size" { description = "Optional expected size in bytes (url mode); 0 leaves it unchecked. Compared on every check before the digest and costs nothing, so with size alone a multi-gigabyte file is never hashed. A download that comes up short of it is retried; a longer one is an error and is not" type = "int" default = 0 }
+    param "retries" { description = "How many times a download that fails (a transport error, an HTTP 5xx or 429, or a body shorter than its Content-Length or size) is retried, waiting 1 s, 2 s, 4 s, ... (at most 30 s) between attempts and resuming where the server allows it; 0 to 10" type = "int" default = 3 }
     param "line_endings" {
       description = "Line endings applied to `content` before it is compared and written (not to url downloads)"
       type = "symbol"
@@ -493,7 +493,7 @@ package "windows_files" {
   }
   // rfc2549.txt is 9519 bytes; its digest is in files_converge.
   test "download_converges" {
-    description = "url downloads check size before digest, retry a short download, replace a truncated file, discard an interrupted run's temp file and keep a replaced file's NTFS rules"
+    description = "url downloads check size before digest, fail a download of the wrong size, replace a truncated file, discard an interrupted run's temp file and keep a replaced file's NTFS rules"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     verify = "tests/download_verify.ws"
@@ -532,7 +532,7 @@ package "windows_files" {
     }
 
     step "short_download" {
-      description = "A download whose size never matches is retried, then fails, leaving neither the target nor a temp file"
+      description = "A download whose size does not match fails, leaving neither the target nor a temp file"
       resource = "file"
       expect = "error"
       properties { path = "C:\\weave-dl\\wrong-size.txt" url = "https://www.rfc-editor.org/rfc/rfc2549.txt" size = 99 retries = 1 }

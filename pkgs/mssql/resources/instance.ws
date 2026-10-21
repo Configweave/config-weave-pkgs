@@ -5,6 +5,8 @@ use shell
 use sys
 use registry
 use log
+use http
+use json
 use common
 use ssas
 use xmlfile
@@ -389,7 +391,7 @@ fn win_config_ini(params: Value, features: List[string]) -> Result[string, strin
 }
 
 // Runs setup.exe with `args`; 3010 means it wants a reboot. A URL is
-// downloaded (verified, see common::download_verified) for the run and
+// downloaded (retried, see common::download_verified) for the run and
 // deleted afterwards.
 fn win_run_setup(params: Value, args: string) -> Result[ApplyResult, string] {
     let setup = common::require(params, "setup_path")?
@@ -431,22 +433,39 @@ fn win_install(params: Value, features: List[string]) -> Result[ApplyResult, str
     Ok(r)
 }
 
-fn win_install_tools(params: Value) -> Result[unit, string] {
+// The go-sqlcmd MSI: `tools_msi_url`, or the latest release's amd64 MSI.
+fn tools_msi_url(params: Value) -> Result[string, string] {
     let url = common::param_str(params, "tools_msi_url", "")
-    let pick = if url != "" { "$url = " + common::ps_q(url) + "; " } else {
-        "$rel = Invoke-RestMethod -UseBasicParsing https://api.github.com/repos/microsoft/go-sqlcmd/releases/latest; " +
-            "$a = $rel.assets | Where-Object {{ $_.name -like '*amd64.msi' }} | Select-Object -First 1; " +
-            "if (-not $a) {{ throw 'no go-sqlcmd MSI in the latest release' }}; $url = $a.browser_download_url; "
+    if url != "" { return Ok(url) }
+    let api = "https://api.github.com/repos/microsoft/go-sqlcmd/releases/latest"
+    let resp = http::get(api, Value::Map(#{ "timeout": Value::Int(60), "headers": Value::Map(#{ "User-Agent": Value::String("config-weave"), "Accept": Value::String("application/vnd.github+json") }) }))
+    if let Err(e) = resp { return Err("reading the latest go-sqlcmd release from " + api + " failed: " + e) }
+    let r = resp?
+    if r.status != 200 { return Err("reading the latest go-sqlcmd release from " + api + " failed: HTTP " + str(r.status)) }
+    let rel = json::parse(r.body)?
+    if let Some(assets) = rel.get("assets") {
+        for a in assets.as_list().unwrap_or([]) {
+            let name = if let Some(n) = a.get("name") { n.as_string().unwrap_or("") } else { "" }
+            if name.ends_with("amd64.msi") {
+                if let Some(u) = a.get("browser_download_url") { return Ok(u.as_string().unwrap_or("")) }
+            }
+        }
     }
-    let script = "$ErrorActionPreference = 'Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; " +
-        pick +
-        "$msi = Join-Path ([IO.Path]::GetTempPath()) 'go-sqlcmd.msi'; " +
-        "Invoke-WebRequest -UseBasicParsing $url -OutFile $msi; " +
-        "$p = Start-Process msiexec.exe -ArgumentList '/i', $msi, '/qn', '/norestart' -Wait -PassThru; " +
-        "Remove-Item $msi -Force; " +
+    Err("no go-sqlcmd MSI in the latest release")
+}
+
+// The MSI is downloaded host-side (retried, see common::download_verified)
+// and deleted after the install.
+fn win_install_tools(params: Value) -> Result[unit, string] {
+    let url = tools_msi_url(params)?
+    let got = common::local_installer(url, "go-sqlcmd.msi", "")?
+    let script = "$ErrorActionPreference = 'Stop'; " +
+        "$p = Start-Process msiexec.exe -ArgumentList '/i', ('\"' + " + common::ps_q(got[0]) + " + '\"'), '/qn', '/norestart' -Wait -PassThru; " +
         "if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {{ throw ('msiexec exited ' + $p.ExitCode) }}"
     log::info("installing go-sqlcmd")
-    let out = shell::powershell(script, Value::Null)?
+    let res = shell::powershell(script, Value::Null)
+    if got[1] != "" { fs::delete_dir(got[1]).unwrap_or(()) }
+    let out = res?
     if !out.success { return Err(common::cmd_error("installing go-sqlcmd", out)) }
     Ok(())
 }

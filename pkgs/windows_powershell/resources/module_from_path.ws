@@ -175,12 +175,18 @@ fn staged_source(params: Value, work: string) -> Result[string, string] {
     if source == "" { return Err("'source' is required when ensure is :present") }
     let expected = common::param_str(params, "sha256", "")
 
+    // A download is retried and checked against `sha256` by http::download;
+    // a local archive is hashed here.
     let local = source
+    let fetched = false
     if source.starts_with("http://") || source.starts_with("https://") {
         let name = path::filename(source)
         let downloaded = path::join(work, if name == "" { "module-download" } else { name })
-        http::download(source, downloaded, Value::Null)?
+        let o = #{ "retries": Value::Int(3) }
+        if expected.trim() != "" { o.insert("sha256", Value::String(expected.trim())) }
+        http::download(source, downloaded, Value::Map(o))?
         local = downloaded
+        fetched = true
     }
 
     if fs::is_dir(local) {
@@ -188,7 +194,7 @@ fn staged_source(params: Value, work: string) -> Result[string, string] {
         return Ok(local)
     }
     if !fs::is_file(local) { return Err("source '" + local + "' is neither a file nor a directory") }
-    if expected != "" {
+    if expected != "" && !fetched {
         let actual = hash::sha256_file(local)?
         if actual != expected.trim().to_lower() {
             return Err("sha256 mismatch for '" + local + "': expected " + expected + ", got " + actual)

@@ -279,42 +279,39 @@ fn version_ok(have: string, want: string, at_least: bool) -> bool {
 // Downloads
 // ---------------------------------------------------------------------
 
-// http::download can leave a partial file and does not retry (engine issue
-// config-weave#11), and its rustls client fails some Microsoft CDNs
-// (aka.ms, download.visualstudio.microsoft.com) with "peer closed connection
-// without sending TLS close_notify". So a download gets two host attempts
-// and then one through Windows' own Invoke-WebRequest, each checked against
-// the expected size and sha256 when they are known (0 and "" skip them).
-// Callers download into a temp directory they delete afterwards, so a
-// partial file never outlives the step.
+// http::download is retried and checked against the expected size and
+// sha256 when they are known (0 and "" skip them). Its rustls client fails
+// some Microsoft CDNs (aka.ms, download.visualstudio.microsoft.com) with
+// "peer closed connection without sending TLS close_notify", so when every
+// host attempt fails the file is fetched once more through Windows' own
+// Invoke-WebRequest, whose result is checked here. A digest mismatch is not
+// a transport problem and gets no fallback. Callers download into a temp
+// directory they delete afterwards, so a partial file never outlives the
+// step.
 fn download(url: string, file: string, size: int, sha256: string) -> Result[unit, string] {
-    let attempt = 1
-    let last = ""
-    while attempt <= 3 {
-        log::info("downloading " + url + " (attempt " + str(attempt) + " of 3)")
-        if fs::exists(file) { fs::delete(file)? }
-        let err = ""
-        if attempt < 3 {
-            if let Err(e) = http::download(url, file, Value::Map(#{ "timeout": Value::Int(1800) })) { err = e }
-        } else {
-            let out = run_ps("$ProgressPreference = 'SilentlyContinue'\n[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\nInvoke-WebRequest -Uri $env:CW_URL -OutFile $env:CW_FILE -UseBasicParsing\n",
-                #{ "CW_URL": Value::String(url), "CW_FILE": Value::String(file) }, 1800)?
-            if !out.success { err = failure("Invoke-WebRequest", out) }
-        }
-        if err != "" {
-            last = err
-        } else {
-            let n = if let Some(v) = fs::metadata(file)?.get("size") { v.as_int().unwrap_or(0) } else { 0 }
-            if n == 0 || (size > 0 && n != size) {
-                last = "got " + str(n) + " bytes" + (if size > 0 { ", expected " + str(size) } else { "" })
-            } else if sha256 != "" && hash::sha256_file(file)? != sha256.to_lower() {
-                last = "sha256 mismatch"
-            } else {
-                return Ok(())
-            }
-        }
-        attempt = attempt + 1
-        if attempt <= 3 { time::sleep(5000) }
+    let opts = #{ "timeout": Value::Int(1800), "retries": Value::Int(3) }
+    if size > 0 { opts.insert("size", Value::Int(size)) }
+    if sha256 != "" { opts.insert("sha256", Value::String(sha256)) }
+    log::info("downloading " + url)
+    let e = match http::download(url, file, Value::Map(opts)) {
+        Ok(_) => return Ok(()),
+        Err(e) => e
     }
-    Err("downloading " + url + " failed after 3 attempts: " + last)
+    if e.contains("sha256 mismatch") { return Err(e) }
+    log::warn(e + "; trying Invoke-WebRequest")
+    let out = run_ps("$ProgressPreference = 'SilentlyContinue'\n[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\nInvoke-WebRequest -Uri $env:CW_URL -OutFile $env:CW_FILE -UseBasicParsing\n",
+        #{ "CW_URL": Value::String(url), "CW_FILE": Value::String(file) }, 1800)?
+    let last = if !out.success { failure("Invoke-WebRequest", out) } else {
+        let n = if let Some(v) = fs::metadata(file)?.get("size") { v.as_int().unwrap_or(0) } else { 0 }
+        if n == 0 || (size > 0 && n != size) {
+            "got " + str(n) + " bytes" + (if size > 0 { ", expected " + str(size) } else { "" })
+        } else if sha256 != "" && hash::sha256_file(file)? != sha256.to_lower() {
+            "sha256 mismatch"
+        } else {
+            ""
+        }
+    }
+    if last == "" { return Ok(()) }
+    if fs::exists(file) { fs::delete(file)? }
+    Err(e + "; Invoke-WebRequest: " + last)
 }

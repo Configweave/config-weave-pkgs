@@ -7,7 +7,6 @@ use shell
 use json
 use http
 use hash
-use time
 use env
 use log
 
@@ -173,45 +172,20 @@ fn cache_dir() -> string {
     path::join(pd, "config-weave\\vsix")
 }
 
-fn file_size(p: string) -> int {
-    if let Ok(m) = fs::metadata(p) {
-        if let Some(v) = m.get("size") { return v.as_int().unwrap_or(-1) }
-    }
-    -1
-}
-
-// Downloads `url` to `dest`. The file goes to a .part name beside it,
-// retried up to three times, and must have the length the transfer
-// reported (and `sha256` when set) before it is moved into place, so a
-// failed or partial download is never used.
+// Downloads `url` to `dest`, retried up to three times and checked against
+// `sha256` when set. http::download renames only a complete, verified
+// download into place, so a failed or partial one is never used.
 fn download(url: string, dest: string, sha256: string) -> Result[unit, string] {
     fs::mkdir(path::parent(dest))?
-    let part = dest + ".part"
-    let last = ""
-    let attempt = 1
-    while attempt <= 3 {
-        if fs::exists(part) { fs::delete(part)? }
-        log::info("downloading " + url + " (attempt " + str(attempt) + ")")
-        match http::download(url, part, Value::Map(#{ "timeout": Value::Int(1800) })) {
-            Ok(n) => {
-                let size = file_size(part)
-                if n <= 0 || size != n {
-                    last = "got " + str(size) + " bytes on disk of " + str(n) + " downloaded"
-                } else if sha256 != "" && hash::sha256_file(part)?.to_lower() != sha256.to_lower() {
-                    last = "SHA-256 is " + hash::sha256_file(part)? + ", expected " + sha256.to_lower()
-                } else {
-                    if fs::exists(dest) { fs::delete(dest)? }
-                    fs::move(part, dest)?
-                    return Ok(())
-                }
-            }
-            Err(e) => { last = e }
-        }
-        attempt = attempt + 1
-        if attempt <= 3 { time::sleep(5000) }
+    let o = #{ "timeout": Value::Int(1800), "retries": Value::Int(3) }
+    if sha256 != "" { o.insert("sha256", Value::String(sha256)) }
+    log::info("downloading " + url)
+    let n = http::download(url, dest, Value::Map(o))?
+    if n <= 0 {
+        fs::delete(dest).unwrap_or(())
+        return Err("downloading " + url + " failed: the download was empty")
     }
-    if fs::exists(part) { fs::delete(part).unwrap_or(()) }
-    Err("downloading " + url + " failed after 3 attempts: " + last)
+    Ok(())
 }
 
 // A local copy of a URL source, reusing the cached copy when it still

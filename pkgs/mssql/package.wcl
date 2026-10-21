@@ -95,7 +95,7 @@ package "mssql" {
       symbol "ssrs"  { description = "SQL Server Reporting Services (SQLServerReportingServices.exe, service SQLServerReportingServices, WMI instance SSRS)" }
       symbol "pbirs" { description = "Power BI Report Server (PowerBIReportServer.exe, service PowerBIReportServer, WMI instance PBIRS)" }
     }
-    param "setup_path"      { description = "Local path or HTTP(S) URL of the installer. A URL is downloaded beside a temp name, size-checked, retried up to three times and checked against setup_sha256 when that is set, then deleted after the run. Required to install; optional for ensure = :absent" type = "string" default = "" }
+    param "setup_path"      { description = "Local path or HTTP(S) URL of the installer. A URL is downloaded to a temp directory, retried up to three times and checked against setup_sha256 when that is set, then deleted after the run. Required to install; optional for ensure = :absent" type = "string" default = "" }
     param "setup_sha256"    { description = "Expected SHA-256 of the installer; empty = not checked" type = "string" default = "" }
     param "edition"         { description = "Dev, Eval or Expr (/Edition=), or a 25-character product key (/PID=, which the installer only takes on its command line). Compared on an installed server; a product key is not compared" type = "string" default = "Dev" }
     param "install_dir"     { description = "Install folder (/InstallFolder); empty = installer default. Not changeable in place: a different folder on an installed server is an error" type = "string" default = "" }
