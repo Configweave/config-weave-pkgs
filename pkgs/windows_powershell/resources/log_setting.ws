@@ -56,7 +56,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let resolved = config_file::config_path(params)?
     if resolved.is_none() { return Ok(CheckResult::NotConfigured) }
     // An unreadable file is drift; apply says why it cannot rewrite it.
-    let read = config_file::read_doc(resolved.unwrap())
+    let read = config_file::read_doc(config_file::user_root(params), resolved.unwrap())
     if read.is_err() { return Ok(CheckResult::NotConfigured) }
     let doc = read.unwrap()
     if config_file::same_value(desired_doc(params, doc)?, doc) { return Ok(CheckResult::AlreadyConfigured) }
@@ -65,7 +65,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let file = config_file::require_config_path(params)?
-    let doc = config_file::read_doc(file)?
-    config_file::write_doc(file, desired_doc(params, doc)?)?
+    let doc = config_file::read_doc(config_file::user_root(params), file)?
+    config_file::write_doc(config_file::user_root(params), file, desired_doc(params, doc)?)?
     Ok(ApplyResult::Success)
 }

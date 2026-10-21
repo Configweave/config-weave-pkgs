@@ -26,7 +26,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let read = config_file::read_doc(resolved.unwrap())
+    let read = config_file::read_doc(config_file::user_root(params), resolved.unwrap())
     if read.is_err() { return Ok(CheckResult::NotConfigured) }
     let current = config_file::list_at(read.unwrap(), "ExperimentalFeatures")
     if desired_features(params, current)? == current { return Ok(CheckResult::AlreadyConfigured) }
@@ -35,13 +35,13 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let file = config_file::require_config_path(params)?
-    let doc = config_file::read_doc(file)?
+    let doc = config_file::read_doc(config_file::user_root(params), file)?
     let features = desired_features(params, config_file::list_at(doc, "ExperimentalFeatures"))?
     let updated = if features.is_empty() {
         config_file::drop_key(doc, "ExperimentalFeatures")
     } else {
         config_file::put(doc, "ExperimentalFeatures", config_file::string_list(features))
     }
-    config_file::write_doc(file, updated)?
+    config_file::write_doc(config_file::user_root(params), file, updated)?
     Ok(ApplyResult::Success)
 }

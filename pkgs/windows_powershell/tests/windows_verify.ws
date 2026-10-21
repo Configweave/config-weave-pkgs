@@ -65,5 +65,21 @@ fn verify(facts: Value) -> Result[bool, string] {
     let text = fs::read(host_profile)?
     if !text.contains("# BEGIN config-weave: greeting") { return Ok(false) }
     if !text.contains("Set-PSReadLineOption -EditMode Windows") { return Ok(false) }
+
+    // The links planted in the user homes are left alone, and so are their
+    // targets. fs::metadata reports a junction as is_symlink, which is what
+    // the resources rely on to refuse one.
+    let w = "C:\\weave-ps\\"
+    for link in [w + "junchome\\Documents", w + "cfghome\\Documents\\PowerShell", w + "linkhome\\Documents\\WindowsPowerShell\\profile.ps1", w + "linkhome\\Documents\\PowerShell\\powershell.config.json"] {
+        if !fs::metadata(link)?.get("is_symlink").unwrap_or(Value::Bool(false)).as_bool().unwrap_or(false) { return Err(link + " is no longer the planted link (or fs::metadata does not report it as one)") }
+    }
+    if fs::read(w + "protected\\WindowsPowerShell\\profile.ps1")?.trim() != "# protected" { return Err("a profile was written through the junction") }
+    if fs::exists(w + "protected\\PowerShell") { return Err("a profile directory was created inside the junction's target") }
+    if fs::list_dir(w + "protected")? != ["WindowsPowerShell"] { return Err("something was created inside the junction's target: " + fs::list_dir(w + "protected")?.join(", ")) }
+    let cfg = json::parse(fs::read(w + "protectedcfg\\powershell.config.json")?)?
+    if json::to_string(cfg) != "{{\"CwSecret\":1}}" { return Err("a configuration file was written through the junction: " + json::to_string(cfg)) }
+    if fs::read(w + "secret.ps1")?.trim() != "# secret" { return Err("the profile symlink's target was changed") }
+    let secret_cfg = json::parse(fs::read(w + "secret.config.json")?)?
+    if json::to_string(secret_cfg) != "{{\"CwSecret\":1}}" { return Err("the configuration-file symlink's target was changed: " + json::to_string(secret_cfg)) }
     Ok(true)
 }

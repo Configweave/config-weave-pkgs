@@ -5,6 +5,7 @@ use config_file
 // A PowerShell that is not installed resolves no file and reports the empty
 // shape; one that is installed but cannot answer is an error.
 fn gather(params: Value) -> Result[Value, string] {
+    // a link in a user's tree is an error, never read through
     let file = config_file::config_path(params)?.unwrap_or("")
     let empty: Map[string, Value] = #{}
     let none: List[Value] = []
@@ -18,7 +19,7 @@ fn gather(params: Value) -> Result[Value, string] {
             "experimental_features": Value::List(none)
         }))
     }
-    let doc = config_file::read_doc(file)?
+    let doc = config_file::read_doc(config_file::user_root(params), file)?
     let features: List[Value] = []
     if let Some(v) = doc.get("ExperimentalFeatures") {
         if let Some(items) = v.as_list() {

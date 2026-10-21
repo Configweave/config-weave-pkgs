@@ -64,7 +64,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let read = config_file::read_doc(resolved.unwrap())
+    let read = config_file::read_doc(config_file::user_root(params), resolved.unwrap())
     if read.is_err() { return Ok(CheckResult::NotConfigured) }
     let current = effective_current(params, read.unwrap())?
     // Order-sensitive: PSModulePath is a search order, not a set.
@@ -74,7 +74,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let file = config_file::require_config_path(params)?
-    let doc = config_file::read_doc(file)?
+    let doc = config_file::read_doc(config_file::user_root(params), file)?
     let entries = desired_entries(params, effective_current(params, doc)?)?
     // An empty result means the setting no longer says anything, so the key
     // goes rather than being written as an empty string.
@@ -83,6 +83,6 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     } else {
         config_file::put(doc, "PSModulePath", Value::String(entries.join(sep())))
     }
-    config_file::write_doc(file, updated)?
+    config_file::write_doc(config_file::user_root(params), file, updated)?
     Ok(ApplyResult::Success)
 }
