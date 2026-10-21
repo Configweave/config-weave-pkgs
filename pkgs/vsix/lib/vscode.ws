@@ -5,6 +5,7 @@ use json
 use log
 use time
 use common
+use vrange
 
 // The exit code for "no code CLI was found".
 fn missing_code() -> int { 9009 }
@@ -103,8 +104,10 @@ fn is_configured(t: Value, id: string, version: string, present: bool) -> Result
     let v = have.get(id.to_lower())
     if !present { return Ok(v.is_none()) }
     if v.is_none() { return Ok(false) }
-    if version == "" { return Ok(true) }
-    Ok(common::same_version(v.unwrap(), version))
+    if vrange::any(version) { return Ok(true) }
+    let have = v.unwrap()
+    if common::same_version(have, version) { return Ok(true) }
+    vrange::satisfies("extension " + id, have, version, "code --list-extensions --show-versions")
 }
 
 // `what` is an id, id@version or a .vsix path. A Marketplace install is

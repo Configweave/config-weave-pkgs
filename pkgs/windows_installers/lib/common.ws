@@ -179,16 +179,6 @@ fn validate_sha256(value: string) -> Result[unit, string] {
     Ok(())
 }
 
-// A version string compared with DisplayVersion: digits, letters, '.',
-// '-', '+' and '_' only.
-fn validate_version(value: string) -> Result[unit, string] {
-    let allowed = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-+_"
-    for c in value.chars() {
-        if !allowed.contains(str(c)) { return Err("'version' may only hold letters, digits, '.', '-', '+' and '_', got '" + value + "'") }
-    }
-    Ok(())
-}
-
 // Install markers can lag the installer's exit (an uninstaller that copies
 // itself to %TEMP% and re-launches returns at once). Polls `probe` until it
 // reports `want`, for up to `secs`.

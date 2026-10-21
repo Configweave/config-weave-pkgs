@@ -4,7 +4,10 @@ use common
 fn validate(params: Value) -> Result[unit, string] {
     common::operand("name", common::param_str(params, "name", ""))?
     let version = common::param_str(params, "version", "")
-    if version != "" { common::operand("version", version)? }
+    if version != "" {
+        common::exact_pin("version", version)?
+        common::operand("version", version)?
+    }
     Ok(())
 }
 

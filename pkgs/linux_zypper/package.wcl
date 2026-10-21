@@ -134,7 +134,7 @@ package "linux_zypper" {
   // version, so two imported test keys give a multi-instance package whose
   // versions are fixed.
   test "package_checks" {
-    description = "package matches VERSION and VERSION-RELEASE pins on every instance, and capabilities and paths"
+    description = "package matches VERSION and VERSION-RELEASE pins on every instance, capabilities and paths, and refuses version ranges"
     image = "opensuse/leap:15.6"
     group = "leap"
     memory = "2GiB"
@@ -192,6 +192,13 @@ SETUP
       resource = "package"
       expect = "already_configured"
       properties { name = "cw-no-such-capability(x)" ensure = :absent }
+    }
+
+    step "range_refused" {
+      description = "A version range is refused: distro versions follow zypper's rules, so version is an exact pin"
+      resource = "package"
+      expect = "error"
+      properties { name = "gpg-pubkey" version = "^9f64a8a0 || 65aa662b" }
     }
   }
 

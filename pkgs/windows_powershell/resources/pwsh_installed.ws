@@ -10,6 +10,7 @@ use archive
 use json
 use log
 use common
+use vrange
 
 // Every external command carries a timeout. A resource that can hang forever
 // is a defect: the timeout kills the child and surfaces an Err, which the
@@ -27,14 +28,71 @@ fn lts(params: Value) -> bool { common::param_str(params, "channel", "stable") =
 
 // Validated once: the version reaches download URLs, package specs and
 // command lines. By the time anything but check() and apply() reads it,
-// "latest" has been replaced by the release it resolved to (see effective).
+// "latest" and a range have been replaced by the release they resolve to
+// (see effective). "*" means the same as empty: any build.
 fn version(params: Value) -> Result[string, string] {
     let v = common::param_str(params, "version", "")
+    if vrange::any(v) { return Ok("") }
+    if is_range(v) {
+        vrange::validate("version", v)?
+        return Ok(v)
+    }
     common::version_chars("version", v)?
     Ok(v)
 }
 
 fn wants_latest(params: Value) -> bool { common::param_str(params, "version", "") == "latest" }
+
+// A version that names more than one release (7, 7.4, 7.4.x, ^7, >=7.4
+// <7.6): neither "latest", any build, one exact release, nor a pin that is
+// not range syntax.
+fn is_range(v: string) -> bool { v != "latest" && !vrange::any(v) && !vrange::exact(v) && !vrange::opaque(v) }
+
+fn wants_range(params: Value) -> bool { is_range(common::param_str(params, "version", "")) }
+
+// Every release PowerShell has tagged, from the ref advertisement of its git
+// repository: the GitHub API rate-limits, and tools/metadata.json names only
+// the current release of each channel.
+fn tags_url() -> string { "https://github.com/PowerShell/PowerShell.git/info/refs?service=git-upload-pack" }
+
+fn release_tags() -> Result[List[string], string] {
+    let what = "listing PowerShell releases from " + tags_url()
+    let hint = " (a version range needs that URL reachable; pin an exact version, or set url, to work offline)"
+    let last = ""
+    let attempt = 1
+    while attempt <= 3 {
+        let resp = http::get(tags_url(), Value::Map(#{ "timeout": Value::Int(120), "redirects": Value::Bool(true) }))
+        if let Ok(r) = resp {
+            if r.status == 200 {
+                let found: List[string] = []
+                for line in r.body.split("\n") {
+                    if let Some(i) = line.find("refs/tags/v") {
+                        let tag = line.slice(i + 11, line.len()).trim().replace("^{{}}", "")
+                        if tag != "" && !found.contains(tag) { found.push(tag) }
+                    }
+                }
+                if found.is_empty() { return Err(what + " failed: the answer lists no release tags" + hint) }
+                return Ok(found)
+            }
+            last = "HTTP " + str(r.status)
+            if r.status >= 400 && r.status < 500 { attempt = 3 }
+        } else if let Err(e) = resp {
+            last = e
+        }
+        attempt = attempt + 1
+        if attempt <= 3 { time::sleep(3000) }
+    }
+    Err(what + " failed: " + last + hint)
+}
+
+// The newest tagged release that satisfies the range. A pre-release counts
+// only when the range names one, as in npm.
+fn resolve_range(params: Value) -> Result[string, string] {
+    let want = common::param_str(params, "version", "")
+    let v = vrange::pick("pwsh_installed", release_tags()?, want, "PowerShell's release tags")?
+    common::version_chars("the resolved release", v)?
+    Ok(v)
+}
 
 // The current release of the channel (common::latest_release). A lookup
 // that fails is an error in check and apply alike, naming the URL: "latest"
@@ -48,6 +106,16 @@ fn resolve_latest(params: Value) -> Result[string, string] {
 // helper below sees a concrete version. Removal needs no release: it removes
 // whatever build is there, so it never touches the network.
 fn effective(params: Value, how: string, present: bool) -> Result[Value, string] {
+    if wants_range(params) {
+        range_root(params, how)?
+        // An explicit url is what the archive and MSI methods install, so
+        // there is nothing to resolve; removal removes whatever is there.
+        let archive_like = how == "msi" || how == "zip" || how == "tarball"
+        if !present || (archive_like && common::param_str(params, "url", "") != "") { return Ok(params) }
+        let m = params.as_map().unwrap_or(#{})
+        m.insert("version", Value::String(resolve_range(params)?))
+        return Ok(Value::Map(m))
+    }
     if !wants_latest(params) { return Ok(params) }
     if (how == "zip" || how == "tarball") && common::param_str(params, "install_root", "") == "" {
         return Err("'install_root' is required with version = \"latest\" for the :" + how + " method — the default root is named for one version, and the latest build replaces the one in a fixed root")
@@ -58,9 +126,27 @@ fn effective(params: Value, how: string, present: bool) -> Result[Value, string]
     Ok(Value::Map(m))
 }
 
+// A range with an archive method needs its own root, as "latest" does: the
+// default root is named for one version.
+fn range_root(params: Value, how: string) -> Result[unit, string] {
+    if (how == "zip" || how == "tarball") && common::param_str(params, "install_root", "") == "" {
+        return Err("'install_root' is required with a version range for the :" + how + " method — the default root is named for one version, and the newest matching build replaces the one in a fixed root")
+    }
+    Ok(())
+}
+
 fn major(params: Value) -> Result[string, string] {
     let v = version(params)?
     if v == "" { return Ok("7") }
+    // A range's MSI root is that of the first major it names (^7, 7.4.x,
+    // >=7.4 <7.6 all live in ...\PowerShell\7).
+    if is_range(v) {
+        let digits = ""
+        for c in v.chars() {
+            if c >= '0' && c <= '9' { digits = digits + str(c) } else if digits != "" { break }
+        }
+        return Ok(if digits == "" { "7" } else { digits })
+    }
     Ok(v.split(".")[0])
 }
 
@@ -394,22 +480,34 @@ fn uninstall_repo(params: Value) -> Result[ApplyResult, string] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let how = method(params)?
     let present = common::want_present(params)?
-    let p = effective(params, how, present)?
-    let current = installed_version(target_binary(p, how)?)?
+    version(params)?
+    // A range is matched against the installed build as it stands; only
+    // apply resolves it to a release, so check needs no network for it.
+    if wants_range(params) { range_root(params, how)? }
+    let p = if wants_range(params) { params } else { effective(params, how, present)? }
+    let binary = target_binary(p, how)?
+    let current = installed_version(binary)?
     if !present {
         if current == "" { return Ok(CheckResult::AlreadyConfigured) }
         return Ok(CheckResult::NotConfigured)
     }
-    // An empty version accepts any build of the channel; a pinned one must
-    // match; a resolved "latest" is a floor, so a build newer than the
-    // published release (a hotfix ahead of the metadata) is not downgraded.
-    if common::version_ok(current, version(p)?, wants_latest(params)) { return Ok(CheckResult::AlreadyConfigured) }
+    if current == "" { return Ok(CheckResult::NotConfigured) }
+    // A resolved "latest" is a floor, so a build newer than the published
+    // release (a hotfix ahead of the metadata) is not downgraded. Otherwise
+    // the build must satisfy the version range; empty accepts any build of
+    // the channel.
+    if wants_latest(params) {
+        if common::version_ok(current, version(p)?, true) { return Ok(CheckResult::AlreadyConfigured) }
+        return Ok(CheckResult::NotConfigured)
+    }
+    if vrange::satisfies("pwsh_installed", current, common::param_str(params, "version", ""), binary + "'s $PSVersionTable.PSVersion")? { return Ok(CheckResult::AlreadyConfigured) }
     Ok(CheckResult::NotConfigured)
 }
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let how = method(params)?
     let present = common::want_present(params)?
+    version(params)?
     let p = effective(params, how, present)?
     if how == "msi" { return if present { install_msi(p) } else { uninstall_msi(p) } }
     if how == "winget" { return if present { install_winget(p) } else { uninstall_winget(p) } }

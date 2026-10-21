@@ -19,7 +19,7 @@ package "vsix" {
       required = true
     }
     param "version" {
-      description = "Version to have installed. Empty = any version counts as installed. Compared with trailing .0 groups ignored (2.9.18 = 2.9.18.0). A Visual Studio package must have this version; a newer one upgrades in place, an older one than installed is refused by VSIXInstaller"
+      description = "Version range the installed extension must satisfy, in npm syntax: 2.9.18 is exact (= 2.9.18.0), 2.9 any 2.9.x, or >=2.9, ^2, ~2.9.1, a || b; empty or * = any version counts as installed. A package from a path or URL must satisfy it; a Marketplace source is fetched at the exact version, or else at the newest the gallery lists that satisfies the range (VS Code pre-releases skipped). A newer package upgrades in place; one older than installed is refused by VSIXInstaller"
       type = "string"
       default = ""
     }

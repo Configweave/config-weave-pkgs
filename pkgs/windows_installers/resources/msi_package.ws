@@ -4,6 +4,7 @@ use path
 use json
 use registry
 use common
+use vrange
 
 fn uninstall_roots() -> List[string] {
     [
@@ -31,9 +32,23 @@ fn found(params: Value) -> Result[List[string], string] {
     Ok([])
 }
 
-fn display_version(key: string) -> Result[string, string] {
-    if let Some(v) = registry::read(key, "DisplayVersion")? { return Ok(v.as_string().unwrap_or("")) }
+fn version_value(params: Value) -> string { common::param_str(params, "version_value", "DisplayVersion") }
+
+// The installed version: the version_value value under the product's
+// Uninstall key, "" when that value is missing. A DWORD reads as its
+// decimal number.
+fn installed_version(params: Value, key: string) -> Result[string, string] {
+    if let Some(v) = registry::read(key, version_value(params))? {
+        if let Some(s) = v.as_string() { return Ok(s) }
+        if let Some(n) = v.as_int() { return Ok(str(n)) }
+    }
     Ok("")
+}
+
+fn version_matches(params: Value, key: string) -> Result[bool, string] {
+    let want = common::param_str(params, "version", "")
+    if vrange::any(want) { return Ok(true) }
+    vrange::satisfies("msi_package", installed_version(params, key)?, want, version_value(params) + " under " + key)
 }
 
 fn validate(params: Value) -> Result[unit, string] {
@@ -43,7 +58,10 @@ fn validate(params: Value) -> Result[unit, string] {
     common::want_present(params)?
     common::quotable_path("path", common::param_str(params, "path", ""))?
     common::validate_sha256(common::param_str(params, "sha256", ""))?
-    common::validate_version(common::param_str(params, "version", ""))?
+    vrange::validate("version", common::param_str(params, "version", ""))?
+    let vv = version_value(params)
+    if vv.trim() == "" { return Err("'version_value' must name a registry value, e.g. DisplayVersion") }
+    common::single_line("version_value", vv)?
     for t in common::param_list(params, "transforms") {
         common::quotable_path("transforms", t)?
         if t.contains(";") { return Err("a 'transforms' entry must not contain ';' (msiexec's separator), got '" + t + "'") }
@@ -71,8 +89,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         return Ok(CheckResult::NotConfigured)
     }
     if hit.is_empty() { return Ok(CheckResult::NotConfigured) }
-    let want = common::param_str(params, "version", "")
-    if want != "" && display_version(hit.get(0).unwrap_or(""))? != want { return Ok(CheckResult::NotConfigured) }
+    if !version_matches(params, hit.get(0).unwrap_or(""))? { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
 }
 
@@ -139,9 +156,13 @@ fn install(params: Value, hit: List[string]) -> Result[ApplyResult, string] {
         return Err("'" + src + "' has ProductCode " + code + ", not " + product_id +
             ". A major upgrade changes the ProductCode, so set product_id to the new package's code")
     }
+    // The package at path is what gets installed, whatever the range, so a
+    // ProductVersion outside it is refused before msiexec runs. Windows
+    // Installer writes ProductVersion as DisplayVersion; another
+    // version_value is only known once the package is installed.
     let want = common::param_str(params, "version", "")
-    if want != "" && pkg_version != want {
-        return Err("'" + src + "' is ProductVersion " + pkg_version + ", but version is " + want)
+    if version_value(params) == "DisplayVersion" && !vrange::satisfies("msi_package", pkg_version, want, "the ProductVersion of '" + src + "'")? {
+        return Err("'" + src + "' is ProductVersion " + pkg_version + ", which does not satisfy version '" + want + "'")
     }
     // The same ProductCode is already installed at another version: a minor
     // upgrade, which msiexec only performs when told to reinstall. The
@@ -166,9 +187,9 @@ fn install(params: Value, hit: List[string]) -> Result[ApplyResult, string] {
     if after.is_empty() {
         return Err("msiexec succeeded but no Uninstall key exists for " + ids(params).join(" or ") + "; check product_id")
     }
-    if want != "" {
-        let have = display_version(after.get(0).unwrap_or(""))?
-        if have != want { return Err("msiexec succeeded but DisplayVersion is " + have + ", not " + want) }
+    let key = after.get(0).unwrap_or("")
+    if !version_matches(params, key)? {
+        return Err("msiexec succeeded but " + version_value(params) + " under " + key + " is '" + installed_version(params, key)? + "', which does not satisfy version '" + want + "'")
     }
     Ok(ApplyResult::Success)
 }

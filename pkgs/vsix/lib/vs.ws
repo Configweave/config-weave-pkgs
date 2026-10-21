@@ -5,6 +5,7 @@
 use value
 use fs
 use path
+use vrange
 use shell
 use json
 use env
@@ -121,9 +122,15 @@ fn installed(inst: Value, scope: string, id: string) -> Result[List[Value], stri
     Ok(common::get_list(m, "found"))
 }
 
-fn has(found: List[Value], version: string) -> bool {
-    if version == "" { return !found.is_empty() }
-    found.any(|f| common::same_version(common::get_str(f, "version"), version))
+// Whether any installed copy satisfies the version range ("" or * = any).
+fn has(found: List[Value], version: string) -> Result[bool, string] {
+    if vrange::any(version) { return Ok(!found.is_empty()) }
+    for f in found {
+        let have = common::get_str(f, "version")
+        let src = path::join(common::get_str(f, "dir"), "extension.vsixmanifest")
+        if common::same_version(have, version) || vrange::satisfies("extension", have, version, src)? { return Ok(true) }
+    }
+    Ok(false)
 }
 
 // The instance's own VSIXInstaller, else the Visual Studio Installer's

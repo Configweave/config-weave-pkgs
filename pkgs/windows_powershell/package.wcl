@@ -55,7 +55,7 @@ package "windows_powershell" {
       symbol "present" { description = "Install PowerShell" }
       symbol "absent"  { description = "Uninstall PowerShell" }
     }
-    param "version" { description = "Exact version to install, e.g. 7.5.4; \"latest\" tracks the channel's current release (an older build is drift; needs the network); empty accepts any installed build of the channel, and :winget and :repo then install the newest. :repo pins the distro package to it" type = "string" default = "" }
+    param "version" { description = "Version range the installed build must satisfy, in npm syntax: 7.5.4 is exact, 7.4 or 7.4.x any 7.4 release, or ^7, ~7.4, >=7.4 <7.6, a || b (a pre-release counts only when the range names one). An exact version installs directly; any other range installs the newest release satisfying it, from PowerShell's git release tags (needs the network; :zip and :tarball then need install_root). \"latest\" tracks the channel's current release (an older build is drift; needs the network); empty or * accepts any installed build of the channel, and :winget and :repo then install the newest. :repo pins the distro package to the resolved version" type = "string" default = "" }
     param "channel" {
       description = "Release channel: which product is installed, and which release version = \"latest\" resolves to"
       type = "symbol"
@@ -2444,6 +2444,49 @@ package "windows_powershell" {
         method = :tarball
         version = "latest"
         install_root = "/opt/pwsh-latest"
+      }
+    }
+  }
+
+  // A version range on a root that holds an older build. Setup seeds an
+  // extracted-looking root (a pwsh that answers 7.3.12, and the marker); the
+  // range resolves against PowerShell's release tags to the newest 7.4
+  // release, which replaces it. verify checks it is a 7.4 newer than 7.4.6.
+  test "pwsh_range_tarball" {
+    description = "A version range installs the newest release that satisfies it; a range nothing satisfies, or one without install_root, is an error"
+    image = "debian:12"
+    group = "pwshrange"
+    setup = "apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates libicu72 >/dev/null && mkdir -p /opt/pwsh-range && printf '#!/bin/sh\\necho 7.3.12\\n' > /opt/pwsh-range/pwsh && chmod +x /opt/pwsh-range/pwsh && touch /opt/pwsh-range/.config-weave-archive"
+    verify = "tests/range_verify.ws"
+
+    step "upgraded" {
+      description = "The seeded 7.3.12 build is replaced by the newest 7.4 release (~7.4)"
+      resource = "pwsh_installed"
+      properties {
+        method = :tarball
+        version = "~7.4"
+        install_root = "/opt/pwsh-range"
+      }
+    }
+
+    step "nothing_matches" {
+      description = "A range no release satisfies is an error listing the newest releases"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :tarball
+        version = ">=99"
+        install_root = "/opt/pwsh-none"
+      }
+    }
+
+    step "range_root_required" {
+      description = "A range with an archive method and no install_root is refused"
+      resource = "pwsh_installed"
+      expect = "error"
+      properties {
+        method = :tarball
+        version = "7.4.x"
       }
     }
   }
