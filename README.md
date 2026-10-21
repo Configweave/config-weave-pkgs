@@ -38,6 +38,50 @@ resource. `ensure` is a symbol, so it must be written `:absent`; the string
 spelling `"absent"` is a validation error. Each resource's page lists the
 legal values under **Symbol values**.
 
+### Version ranges
+
+A `version` param that says which version of Windows software must be
+installed takes a version range in the npm (node-semver) syntax, matched by
+config-weave's [`version` module](https://github.com/Configweave/config-weave/blob/main/docs/manual/pages/reference/mod-version.wcl).
+This covers `windows_installers.msi_package` and `exe_installer`,
+`windows_packages.winget_package` and `chocolatey_package`,
+`windows_powershell.pwsh_installed`, `vsix.extension` and
+`mssql.reporting_services`.
+
+| Range | Matches |
+|---|---|
+| `1.2.3`, `15.0.4490.9` | exactly that version (three or more parts); missing parts are 0 |
+| `7`, `7.4`, `7.x`, `20.2.*` | any version with that prefix: `7.4` is any 7.4.x |
+| `>=14.38`, `>1.2`, `<2`, `<=1.4.7` | comparisons |
+| `>=14.38 <15` | both (space-separated AND) |
+| `^7.5.0`, `~20.2.1` | same major (`<8`), same minor (`<20.3`) |
+| `1.2.3 - 2.3.4` | inclusive range |
+| `^6 \|\| ^7` | either |
+| empty or `*` | any installed version |
+
+Versions compare part by part as integers with any number of parts
+(`14.9 < 14.38`), a leading `v` is accepted (`v14.38.33130.00`), and a
+pre-release such as `7.6.0-preview.3` matches only a range that names a
+pre-release. An installed version spelled exactly like the param always
+matches. `check` reports the step converged when the installed version
+satisfies the range; an installed version that is not a version at all is
+an error naming where it was read. When the range is not one exact version,
+the resources that install from a feed (`winget_package`,
+`chocolatey_package`, `pwsh_installed`, Marketplace `vsix.extension`)
+install the newest version the feed offers that satisfies it, and an error
+lists the newest available when none does; the installer resources
+(`msi_package`, `exe_installer`, `reporting_services`, a `vsix` file) run
+what `path` or `setup_path` names, and the re-check after `apply` fails the
+step if it left a version outside the range.
+
+**Migrating:** a one- or two-part pin is now a prefix, so `version = "7.4"`
+accepts any 7.4.x build, where it used to match only 7.4 itself (or
+7.4.0). Write `7.4.0` to keep an exact pin.
+
+The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
+`version` an exact pin, because distro versions follow their own ordering
+rules (epochs, `~`, `-release`); a value that reads as a range is an error.
+
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
 - `linux_files`: files (exact content or URL-fetched), directories,
   symlinks/hard links, archives and modes.
@@ -340,7 +384,11 @@ policy keys) live in `pkgs/windows_powershell/lib/`.
   channel, by product code from the Uninstall key. The MSI method carries the
   documented properties (`add_path`, `enable_remoting`, `register_manifest`,
   the two context-menu items, Microsoft Update) and reports `RebootRequired`
-  on msiexec 3010. `version = "latest"` tracks the channel's current
+  on msiexec 3010. `version` is a [version range](#version-ranges): an
+  exact release installs directly, and any other range installs the newest
+  release inside it, listed from the release tags of PowerShell's git
+  repository (`~7.4` is the newest 7.4 patch); the archive methods then need
+  an explicit `install_root`. `version = "latest"` tracks the channel's current
   release, read from PowerShell's `tools/metadata.json` on
   raw.githubusercontent.com (or `latest_url`) by check and apply alike: an older build is drift, and a
   failed lookup is an error that names the URL. The archive methods need an
@@ -728,9 +776,11 @@ is not redone on every run.
 ### `windows_installers`
 
 - `msi_package` installs, upgrades or removes an MSI identified by its
-  ProductCode. Before msiexec runs, the package's own ProductCode and
+  ProductCode. `version` is a [version range](#version-ranges) the
+  installed `DisplayVersion` (or the value `version_value` names) must
+  satisfy. Before msiexec runs, the package's own ProductCode and
   ProductVersion are checked against `product_id` and `version`.
-  - When the same ProductCode is installed at another version, the package
+  - When the same ProductCode is installed outside the range, the package
     is applied as a minor upgrade (`REINSTALL=ALL REINSTALLMODE=vomus`).
   - A major upgrade changes the ProductCode, so a new major version needs a
     new `product_id`.
@@ -740,9 +790,27 @@ is not redone on every run.
   - Failures quote the error lines from msiexec's verbose log, which is
     kept under `C:\ProgramData\config-weave\installers\logs`.
 - `exe_installer` runs an EXE installer. It detects the installation by
-  `install_path`, `install_reg` or both. `version` compares `DisplayVersion`
-  under `install_reg`, so `version` requires `install_reg`. Removal runs the
-  first of these that is set:
+  `install_path`, `install_reg` or both. `version` is a
+  [version range](#version-ranges) matched against `DisplayVersion` under
+  `install_reg`, or the value `version_value` names, so `version` requires
+  `install_reg`. Outside the range the installer at `path` runs, and must
+  leave a version inside it. The Visual C++ runtime, for example, records
+  its version as `Version` under its own key:
+
+  ```wcl
+  step "vc_runtime_x64" {
+    resource = "windows_installers.exe_installer"
+    properties {
+      path          = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+      args          = "/install /quiet /norestart"
+      install_reg   = "HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64"
+      version_value = "Version"     # v14.38.33130.00
+      version       = ">=14.38"
+    }
+  }
+  ```
+
+  Removal runs the first of these that is set:
   1. `uninstall_path` with `uninstall_args`.
   2. The `QuietUninstallString` or `UninstallString` under the
      `install_reg` key. An `MsiExec /I{…}` entry is made a silent `/X`.
@@ -766,11 +834,13 @@ or the registered uninstall command, or `path` with `uninstall_args`.
 
 Chocolatey, Scoop and winget, one set of resources per manager:
 
-- Chocolatey: `chocolatey_package` (with a `version` hold),
+- Chocolatey: `chocolatey_package` (with a `version` range),
   `chocolatey_source` (URL and `enabled`), `chocolatey_updated` and the
-  `chocolatey_packages` gatherer. A package installed at another version is
-  moved with `choco upgrade --version --allow-downgrade`, so the hold works
-  in both directions. Chocolatey 1.x and 2.x are both supported: 1.x gets
+  `chocolatey_packages` gatherer. A package installed outside the
+  [range](#version-ranges) is moved with `choco upgrade --version
+  --allow-downgrade`, so the hold works in both directions: to the exact
+  version given, or else to the newest that `choco search --exact
+  --all-versions` lists inside the range. Chocolatey 1.x and 2.x are both supported: 1.x gets
   `--local-only` on every listing.
 - Scoop: `scoop_package` (accepts `bucket/app`), `scoop_bucket` (compares
   the clone's origin with `url`), `scoop_cache_updated` and the
@@ -799,8 +869,11 @@ Chocolatey, Scoop and winget, one set of resources per manager:
     `NonRemovable` wherever it is present (Server 2025 as shipped, Server
     2022 once provisioned), and there `:absent` is an error that changes
     nothing; `system_shim = false` drops just the shim.
-  - `winget_package` holds a `version` (compared numerically), or tracks the
-    newest with `ensure = :latest` (`winget list --upgrade-available`). It
+  - `winget_package` holds a `version` [range](#version-ranges), or tracks
+    the newest with `ensure = :latest` (`winget list --upgrade-available`).
+    An installed package outside the range is reinstalled with `winget
+    install --version --force`: at the exact version given, or else at the
+    newest that `winget show --versions` lists inside the range. It
     takes `scope` (`:user`, `:machine`, compared through `winget list
     --scope`) and `installer_type` (`--installer-type`, e.g. `:wix` for the
     MSI build of `Microsoft.PowerShell`). `installer_type` and `source` pick
@@ -954,14 +1027,16 @@ workload, add a component, trim it again with `exact`, and uninstall.
   extensions, so it never matches), with `VSIXInstaller.exe /quiet
   [/admin] /instanceIds:<id>`. Exit 1001 (already installed) is success.
   `check` looks for an `extension.vsixmanifest` whose Identity is `id`
-  (and `version`) under the instance's `Common7\IDE\Extensions` and
+  (and whose version satisfies the `version` [range](#version-ranges))
+  under the instance's `Common7\IDE\Extensions` and
   `CommonExtensions` (`scope = :machine`) or the running account's
   `%LOCALAPPDATA%\Microsoft\VisualStudio\<major>.0_<instanceId>`
   (`scope = :user`; for SYSTEM also its `SysWOW64` twin, where the 32-bit
   VSIXInstaller's installs land). `source` is a path, a URL or a
-  Marketplace item name (fetched at `version`, or at the newest version
-  the gallery reports); the package must carry `id` before it is
-  installed. Nothing runs while that instance's `devenv.exe` is open. A
+  Marketplace item name (fetched at the exact `version`, or at the newest
+  version the gallery lists inside the range, or at its newest version when
+  `version` is empty); the package must carry `id`, at a version inside the
+  range, before it is installed. Nothing runs while that instance's `devenv.exe` is open. A
   per-user uninstall only marks the directory for deletion at the next
   `devenv` start, so the resource deletes what VSIXInstaller left behind.
 - `remove_parts` installs a copy of the package without some parts. The
@@ -971,7 +1046,8 @@ workload, add a component, trim it again with `exact`, and uninstall.
   the copy already installed, which VSIXInstaller otherwise refuses.
 - `host = :vscode`: through the `code` CLI (VS Code, Insiders or VSCodium,
   found in the usual install directories or set with `code`), compared on
-  `--list-extensions --show-versions`. With `user`, the CLI gets
+  `--list-extensions --show-versions`. A Marketplace install with a range
+  installs `id@<newest matching>`; pre-release versions are skipped. With `user`, the CLI gets
   `--extensions-dir` and `--user-data-dir` under that user's profile, so
   a run as SYSTEM installs for the user, not for SYSTEM.
 
@@ -1018,7 +1094,8 @@ resource that creates something takes `ensure = :absent`.
   bytes, and restarts the AS service only when the value changed.
 - `reporting_services`: install, upgrade or uninstall SSRS 2017+ or Power BI
   Report Server from its standalone installer, with its edition and version
-  compared on an installed server.
+  compared on an installed server. `version` is a
+  [version range](#version-ranges): `15.0` is any 15.0.x (SSRS 2019).
 - `reporting_services_config`: what Report Server Configuration Manager
   does, through the report server's WMI provider: service account, catalogue
   database (created if missing, never dropped), the account's rights,
@@ -1156,7 +1233,11 @@ A Debian host with flatpak installed is `:apt`. Several symbols (`:snap`,
 The three rpm and deb managers share a shape: `package`, `cache_updated`,
 `repository`, a signing key resource and a hold or lock.
 
-- `package` installs, pins an exact version, or removes. A pin below the
+- `package` installs, pins an exact version, or removes. `version` is an
+  exact pin, never a range: a value that starts with `^`, `~`, `>`, `<` or
+  `=`, or holds `||`, a space or a `*` wildcard, or is or ends in an `x`
+  part, is refused with an error saying distro packages take no ranges. A
+  `~` or `-` inside a version (`1.0~rc1-1`) is an ordinary pin. A pin below the
   installed version is installed as a downgrade (`--allow-downgrades`,
   `downgrade`, `--oldpackage`); a pin installs once and does not stop
   upgrades, which is what the hold or lock is for. `:absent` refuses to
