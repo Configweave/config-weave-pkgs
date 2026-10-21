@@ -3,9 +3,7 @@ use fs
 use path
 use shell
 use sys
-use time
 use http
-use hash
 use archive
 use json
 use log
@@ -152,39 +150,23 @@ fn artefact_url(params: Value, how: string) -> Result[string, string] {
     Ok(base + "powershell-" + v + "-linux-" + arch + ".tar.gz")
 }
 
-fn verify_hash(params: Value, file: string) -> Result[unit, string] {
-    let expected = common::param_str(params, "sha256", "")
-    if expected == "" { return Ok(()) }
-    let actual = hash::sha256_file(file)?
-    if actual != expected.trim().to_lower() {
-        return Err("sha256 mismatch for '" + file + "': expected " + expected + ", got " + actual)
-    }
-    Ok(())
-}
-
-// http::download can leave a partial file and does not retry (engine issue
-// config-weave#11), so a failed or short download is retried a bounded
-// number of times. The file lives in a temp directory that is deleted after
-// the install, so a partial copy never outlives the step.
+// Retried and checked against `sha256` (when set) by http::download. The
+// file lives in a temp directory that is deleted after the install.
 fn download(params: Value, how: string, file: string) -> Result[unit, string] {
     let url = artefact_url(params, how)?
-    let attempt = 1
-    let last = ""
-    while attempt <= 3 {
-        log::info("downloading " + url + " (attempt " + str(attempt) + " of 3)")
-        if fs::exists(file) { fs::delete(file)? }
-        let got = http::download(url, file, Value::Map(#{ "timeout": Value::Int(1800) }))
-        if let Ok(n) = got {
-            if n > 0 { return verify_hash(params, file) }
-            last = "the download was empty"
-        } else if let Err(e) = got {
-            last = e
-        }
-        attempt = attempt + 1
-        if attempt <= 3 { time::sleep(5000) }
+    let o = #{ "timeout": Value::Int(1800), "retries": Value::Int(3) }
+    let expected = common::param_str(params, "sha256", "").trim()
+    if expected != "" { o.insert("sha256", Value::String(expected)) }
+    log::info("downloading " + url)
+    let got = http::download(url, file, Value::Map(o))
+    if let Ok(n) = got {
+        if n > 0 { return Ok(()) }
+        return Err("downloading " + url + " failed: the download was empty")
+    } else if let Err(e) = got {
+        if e.contains("404") { return Err("downloading " + url + " failed: the release has no such artefact (HTTP 404). PowerShell 7.7 previews, for example, ship no MSI; use :zip for them") }
+        return Err(e)
     }
-    if last.contains("404") { return Err("downloading " + url + " failed: the release has no such artefact (HTTP 404). PowerShell 7.7 previews, for example, ship no MSI; use :zip for them") }
-    Err("downloading " + url + " failed after 3 attempts: " + last)
+    Ok(())
 }
 
 fn msi_properties(params: Value) -> string {

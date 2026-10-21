@@ -396,10 +396,11 @@ fn verify_signature(file: string) -> Result[unit, string] {
 }
 
 // The local bootstrapper to run. A URL is downloaded fresh every time
-// (aka.ms links always name the newest bootstrapper) to a .part file
-// beside the cached copy, retried up to three times, checked for its
-// length and signature, and only then moved into place, so a failed or
-// partial download never runs. A local path is used as it is.
+// (aka.ms links always name the newest bootstrapper) into the cache,
+// retried up to three times by http::download, which renames only a
+// complete download into place. It must then carry a valid signature, or
+// it is deleted, so a failed or tampered download never runs. A local path
+// is used as it is.
 fn bootstrapper_file(src: string, product: string) -> Result[string, string] {
     if !is_url(src) {
         if !fs::is_file(src) { return Err("bootstrapper '" + src + "' does not exist") }
@@ -409,33 +410,15 @@ fn bootstrapper_file(src: string, product: string) -> Result[string, string] {
     let dir = path::join(cache_dir(), hash::sha256(src).slice(0, 16))
     fs::mkdir(dir)?
     let f = path::join(dir, bootstrapper_name(product))
-    let part = f + ".part"
-    let last = ""
-    let attempt = 1
-    while attempt <= 3 {
-        if fs::exists(part) { fs::delete(part)? }
-        log::info("downloading " + src + " (attempt " + str(attempt) + ")")
-        match http::download(src, part, Value::Map(#{ "timeout": Value::Int(600) })) {
-            Ok(n) => {
-                let size = fs::metadata(part)?.get("size").unwrap_or(Value::Int(-1)).as_int().unwrap_or(-1)
-                if n <= 0 || size != n {
-                    last = "got " + str(size) + " bytes on disk of " + str(n) + " downloaded"
-                } else {
-                    match verify_signature(part) {
-                        Ok(_) => {
-                            if fs::exists(f) { fs::delete(f)? }
-                            fs::move(part, f)?
-                            return Ok(f)
-                        }
-                        Err(e) => { last = e }
-                    }
-                }
-            }
-            Err(e) => { last = e }
-        }
-        attempt = attempt + 1
-        if attempt <= 3 { time::sleep(5000) }
+    log::info("downloading " + src)
+    let n = http::download(src, f, Value::Map(#{ "timeout": Value::Int(600), "retries": Value::Int(3) }))?
+    if n <= 0 {
+        fs::delete(f).unwrap_or(())
+        return Err("downloading the bootstrapper from " + src + " failed: the download was empty")
     }
-    if fs::exists(part) { fs::delete(part).unwrap_or(()) }
-    Err("downloading the bootstrapper from " + src + " failed after 3 attempts: " + last)
+    if let Err(e) = verify_signature(f) {
+        fs::delete(f).unwrap_or(())
+        return Err("the bootstrapper downloaded from " + src + " failed its check: " + e)
+    }
+    Ok(f)
 }

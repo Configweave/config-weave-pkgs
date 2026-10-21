@@ -19,19 +19,18 @@ fn iso_sha256() -> string { "575d5f32bce655cf6fa3c3a0f5a525adfcab3a5469107ef8f05
 fn ssrs_url() -> string { "https://download.microsoft.com/download/1/a/a/1aaa9177-3578-4931-b8f3-373b24f63342/SQLServerReportingServices.exe" }
 fn ssrs_sha256() -> string { "178ccba5a39fd574b30178c48e3cac7c88e5ececb7d5b8d74e0abf49f6c18680" }
 
+// A download is checked against `sha` by http::download itself; a local
+// copy named by `var` is hashed here.
 fn staged(lab: Lab, var: string, url: string, name: string, sha: string) -> Result[string, string] {
-    let local = match env::get(var) {
-        Some(p) => p,
-        None => {
-            let p = path::join(fs::temp_dir()?, name)
-            lab.log("downloading " + name + " on the host")
-            http::download(url, p, Value::Null)?
-            p
-        }
+    if let Some(local) = env::get(var) {
+        let got = hash::sha256_file(local)?
+        if got != sha { return Err(name + " checksum mismatch: expected " + sha + " got " + got) }
+        return Ok(local)
     }
-    let got = hash::sha256_file(local)?
-    if got != sha { return Err(name + " checksum mismatch: expected " + sha + " got " + got) }
-    Ok(local)
+    let p = path::join(fs::temp_dir()?, name)
+    lab.log("downloading " + name + " on the host")
+    http::download(url, p, Value::Map(#{ "retries": Value::Int(3), "sha256": Value::String(sha) }))?
+    Ok(p)
 }
 
 fn psh(m: Machine, label: string, script: string) -> Result[string, string] {

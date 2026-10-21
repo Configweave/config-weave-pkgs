@@ -83,18 +83,22 @@ fn run(lab: Lab) -> Result[bool, string] {
     // guest — the VM's NAT throughput is too slow to download it guest-side
     // within the exec timeout. The mssql.instance resource still performs the
     // actual silent install from this media.
+    // A download is checked against the digest by http::download itself; a
+    // local copy is hashed here.
     let local = match env::get("MSSQL_MEDIA_PATH") {
-        Some(p) => p,
+        Some(p) => {
+            let got = hash::sha256_file(p)?
+            if got != media_sha256() {
+                return Err("media checksum mismatch: expected " + media_sha256() + " got " + got)
+            }
+            p
+        }
         None => {
             lab.log("downloading SQL Server Developer media on the host")
             let p = path::join(fs::temp_dir()?, "SQLServer2022-Dev.iso")
-            http::download(media_url(), p, Value::Null)?
+            http::download(media_url(), p, Value::Map(#{ "retries": Value::Int(3), "sha256": Value::String(media_sha256()) }))?
             p
         }
-    }
-    let got = hash::sha256_file(local)?
-    if got != media_sha256() {
-        return Err("media checksum mismatch: expected " + media_sha256() + " got " + got)
     }
 
     lab.log("copying media into the guest")

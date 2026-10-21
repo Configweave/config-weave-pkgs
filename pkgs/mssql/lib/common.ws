@@ -283,38 +283,16 @@ fn ps_json_text(what: string, text: string) -> Result[Value, string] {
 
 // --- downloads ----------------------------------------------------------------
 
-// Downloads `url` to `dest`. http::download can leave a partial file behind
-// and does not retry (config-weave#11), so the file goes to a temp name
-// beside `dest`, its size is checked against the byte count and its sha256
-// against `sha256` when one is given, a failed attempt is retried up to three
-// times, and only a verified file is renamed into place.
+// Downloads `url` to `dest`, retried up to three times and checked against
+// `sha256` when one is given. http::download writes a .part file beside
+// `dest` and renames it into place only once complete and verified.
 fn download_verified(url: string, dest: string, sha256: string) -> Result[unit, string] {
-    let want = sha256.trim().to_lower()
-    let tmp = dest + ".config-weave-" + str(time::now_millis()) + ".part"
-    let last = ""
-    let attempt = 1
-    while attempt <= 3 {
-        log::info("downloading " + url + " (attempt " + str(attempt) + ")")
-        match http::download(url, tmp, Value::Null) {
-            Ok(n) => {
-                let size = if let Ok(m) = fs::metadata(tmp) { if let Some(l) = m.get("size") { l.as_int().unwrap_or(-1) } else { -1 } } else { -1 }
-                if size != n {
-                    last = "got " + str(size) + " bytes on disk, expected " + str(n)
-                } else if want != "" && hash::sha256_file(tmp)?.to_lower() != want {
-                    last = "sha256 mismatch: expected " + want + ", got " + hash::sha256_file(tmp)?
-                } else {
-                    if fs::exists(dest) { fs::delete(dest)? }
-                    fs::move(tmp, dest)?
-                    return Ok(())
-                }
-            }
-            Err(e) => last = e
-        }
-        fs::delete(tmp).unwrap_or(())
-        attempt = attempt + 1
-        if attempt <= 3 { time::sleep(3000) }
-    }
-    Err("downloading " + url + " failed after 3 attempts: " + last)
+    let opts = #{ "retries": Value::Int(3) }
+    let want = sha256.trim()
+    if want != "" { opts.insert("sha256", Value::String(want)) }
+    log::info("downloading " + url)
+    http::download(url, dest, Value::Map(opts))?
+    Ok(())
 }
 
 // A local copy of an installer that may be given as a URL. Returns the path

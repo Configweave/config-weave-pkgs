@@ -114,17 +114,12 @@ fn local_file(src: string, sha256: string, fallback_name: string) -> Result[stri
         fs::mkdir(dir)?
         let f = path::join(dir, url_file_name(src, fallback_name))
         if sha256 != "" && fs::is_file(f) && sha256_matches(f, sha256)? { return Ok(f) }
-        // Downloaded beside the target and moved into place, so a failed
-        // download never leaves a truncated installer under the real name.
-        let part = f + ".part"
-        http::download(src, part, Value::Null)?
-        if sha256 != "" && !sha256_matches(part, sha256)? {
-            let got = hash::sha256_file(part)?
-            fs::delete(part)?
-            return Err("the file downloaded from " + src + " has SHA-256 " + got + ", expected " + sha256.to_lower())
-        }
-        if fs::is_file(f) { fs::delete(f)? }
-        fs::move(part, f)?
+        // http::download renames into place only a complete download that
+        // matches `sha256`, so a failed one never leaves a truncated
+        // installer under the real name.
+        let opts = #{ "retries": Value::Int(3) }
+        if sha256 != "" { opts.insert("sha256", Value::String(sha256)) }
+        http::download(src, f, Value::Map(opts))?
         return Ok(f)
     }
     if !fs::is_file(src) { return Err("installer file '" + src + "' does not exist") }
