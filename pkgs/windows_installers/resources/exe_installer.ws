@@ -27,6 +27,7 @@ fn validate(params: Value) -> Result[unit, string] {
     if vv.trim() == "" { return Err("'version_value' must name a registry value, e.g. DisplayVersion") }
     common::single_line("version_value", vv)?
     common::validate_sha256(common::param_str(params, "sha256", ""))?
+    common::validate_codes(params)?
     for label in ["path", "args", "uninstall_path", "uninstall_args"] {
         common::single_line(label, common::param_str(params, label, ""))?
     }
@@ -78,12 +79,20 @@ fn check(params: Value) -> Result[CheckResult, string] {
     Ok(CheckResult::AlreadyConfigured)
 }
 
-fn run(exe: string, args: string, what: string) -> Result[ApplyResult, string] {
+// Runs an installer or uninstaller and returns its exit code once
+// success_codes/reboot_codes (and the built-in 0, 3010, 1641) say it did not
+// fail. Any other code fails the step, naming the log file when `args`
+// names one.
+fn run(params: Value, exe: string, args: string, what: string) -> Result[int, string] {
     let out = common::start_process(exe, args)?
-    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if !out.success { return Err(common::failure(what + " '" + exe + "'", out)) }
-    Ok(ApplyResult::Success)
+    if common::outcome(params, out.code)? != "fail" { return Ok(out.code) }
+    let msg = common::failure(what + " '" + exe + "'", out)
+    let log = common::log_arg(args)
+    if log != "" { msg = msg + "; log: " + log }
+    Err(msg)
 }
+
+fn exited(what: string, code: int) -> string { "the " + what + " exited " + common::code_str(code) }
 
 // An UninstallString is a whole command line: a quoted or bare executable
 // followed by its arguments. Returns [exe, args].
@@ -148,25 +157,25 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         let exe = u.get(0).unwrap_or("")
         let origin = u.get(2).unwrap_or("")
         let target = if common::is_url(exe) { common::local_file(exe, "", "uninstaller.exe")? } else { exe }
-        let res = run(target, u.get(1).unwrap_or(""), "uninstaller from " + origin)?
-        if res == ApplyResult::RebootRequired { return Ok(res) }
+        let code = run(params, target, u.get(1).unwrap_or(""), "uninstaller from " + origin)?
+        if common::outcome(params, code)? == "reboot" { return Ok(ApplyResult::RebootRequired) }
         if !common::wait_for_marker(false, settle_secs(), || installed(params))? {
-            return Err("the uninstaller from " + origin + " exited 0, but the install markers are still present after " + str(settle_secs()) + "s")
+            return Err(exited("uninstaller from " + origin, code) + ", but the install markers are still present after " + str(settle_secs()) + "s")
         }
         return Ok(ApplyResult::Success)
     }
     let src = common::param_str(params, "path", "")
     if src == "" { return Err("missing 'path' parameter (the installer to run)") }
     let exe = common::local_file(src, common::param_str(params, "sha256", ""), "installer.exe")?
-    let res = run(exe, common::param_str(params, "args", ""), "installer")?
-    if res == ApplyResult::RebootRequired { return Ok(res) }
+    let code = run(params, exe, common::param_str(params, "args", ""), "installer")?
+    if common::outcome(params, code)? == "reboot" { return Ok(ApplyResult::RebootRequired) }
     if !common::wait_for_marker(true, settle_secs(), || installed(params))? {
-        return Err("the installer exited 0, but the install markers are still missing after " + str(settle_secs()) + "s; check install_path/install_reg")
+        return Err(exited("installer", code) + ", but the install markers are still missing after " + str(settle_secs()) + "s; check install_path/install_reg")
     }
     // The installer at path is what gets installed, whatever the range; one
     // that leaves a version outside it fails here.
     if !version_matches(params)? {
-        return Err("the installer exited 0, but " + version_source(params) + " is '" + installed_version(params)? + "', which does not satisfy version '" + common::param_str(params, "version", "") + "'")
+        return Err(exited("installer", code) + ", but " + version_source(params) + " is '" + installed_version(params)? + "', which does not satisfy version '" + common::param_str(params, "version", "") + "'")
     }
     Ok(ApplyResult::Success)
 }

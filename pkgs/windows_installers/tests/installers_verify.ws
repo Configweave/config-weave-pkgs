@@ -43,5 +43,16 @@ fn verify(facts: Value) -> Result[bool, string] {
     expect_value(uninstall_key("cw-exe3"), "DisplayVersion", "1.5.2")?
     expect_gone("cw-exe2's Uninstall key", !registry::key_exists(uninstall_key("cw-exe2"))?)?
     expect_gone("C:\\weave-exe\\marker.txt", !fs::exists("C:\\weave-exe\\marker.txt"))?
+
+    // success_codes/reboot_codes: the listed codes ran their installer to
+    // completion; the two validation errors never ran it.
+    for m in ["code-1638", "code-hex", "code-unsigned", "code-signed"] {
+        if !fs::exists("C:\\weave-exe\\" + m + ".txt") { return Err("the " + m + " installer did not write its marker") }
+    }
+    for m in ["code-both", "code-builtin"] {
+        if fs::exists("C:\\weave-exe\\" + m + ".txt") { return Err("the " + m + " installer ran, so its codes were not refused by validation") }
+    }
+    // cw-d is registered: its 1603 was accepted through success_codes.
+    if !registry::key_exists(uninstall_key("{{C0DE000D-0000-4000-8000-00000000C0DE}}"))? { return Err("cw-d is not registered") }
     Ok(true)
 }

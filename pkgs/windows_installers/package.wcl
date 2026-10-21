@@ -34,6 +34,16 @@ package "windows_installers" {
     }
     param "version_value" { description = "Registry value under the product's Uninstall key that holds the installed version 'version' is matched against" type = "string" default = "DisplayVersion" }
     param "alt_product_id" { description = "A second GUID to look for under the Uninstall key, for packages that register under a code other than their ProductCode; :absent removes whichever is found" type = "string" default = "" }
+    param "success_codes" {
+      description = "Exit codes that also mean Success, in addition to 0, for installers that report \"nothing to do\" with their own code: 1638 (another version of the product is already installed, from MSI and the Visual C++ redistributables), 1001 (VSIXInstaller). Windows exit codes are 32-bit, so a code may be written unsigned (2316632107) or signed (-1978335189), or as a hex literal such as 0x8A15002B (winget's HRESULT); the installer's code matches in either form. Listing a code is safe: the re-check after apply still has to pass, so a listed code from an installer that did not converge the host still fails the step. A code may not also be in reboot_codes, and 3010 and 1641 may not be listed here. Both lists also apply to msiexec /x for :absent"
+      type = "list"
+      default = []
+    }
+    param "reboot_codes" {
+      description = "Exit codes that mean RebootRequired, in addition to 3010 and 1641, written as in success_codes. 0 may not be listed here. A code in neither list fails the step, and the message names the installer's log file; msiexec always writes a verbose log under C:\\ProgramData\\config-weave\\installers\\logs"
+      type = "list"
+      default = []
+    }
   }
 
   resource "exe_installer" {
@@ -57,14 +67,27 @@ package "windows_installers" {
     param "version_value" { description = "Registry value under install_reg that holds the installed version, e.g. Version for the Visual C++ runtime key (v14.38.33130.00; a leading v is accepted)" type = "string" default = "DisplayVersion" }
     param "uninstall_path" { description = "Uninstaller to run for :absent, local path or http(s) URL. Empty falls back to the install_reg key's uninstall command" type = "string" default = "" }
     param "uninstall_args" { description = "Arguments for the uninstaller; appended to a registered UninstallString. An MsiExec /I entry is turned into a silent /X automatically" type = "string" default = "" }
+    param "success_codes" {
+      description = "Exit codes that also mean Success, in addition to 0, for installers that report \"nothing to do\" with their own code: 1638 (another version of the product is already installed, from MSI and the Visual C++ redistributables), 1001 (VSIXInstaller). Windows exit codes are 32-bit, so a code may be written unsigned (2316632107) or signed (-1978335189), or as a hex literal such as 0x8A15002B (winget's HRESULT); the installer's code matches in either form. Listing a code is safe: the re-check after apply still has to pass, so a listed code from an installer that did not converge the host still fails the step. A code may not also be in reboot_codes, and 3010 and 1641 may not be listed here. Both lists also apply to the uninstaller for :absent"
+      type = "list"
+      default = []
+    }
+    param "reboot_codes" {
+      description = "Exit codes that mean RebootRequired, in addition to 3010 and 1641, written as in success_codes. 0 may not be listed here. A code in neither list fails the step, and the message names the installer's log file when args passes one (/log <path>, -log <path>, or msiexec's /l*v <path> and other /l<modes> switches, quoted or not)"
+      type = "list"
+      default = []
+    }
   }
 
-  // Setup builds four tiny MSIs with the Windows Installer COM API (no
+  // Setup builds six tiny MSIs with the Windows Installer COM API (no
   // files, two registry values each), so every msi_package path runs
   // offline and deterministically:
   //   cw-a 1.0 and 1.1   same ProductCode, so 1.0 -> 1.1 is a minor upgrade
   //   cw-b + cw-b.mst    the transform sets CWEXTRA=from-transform
   //   cw-c               installed, then removed through alt_product_id
+  //   cw-d, cw-e         a type 19 custom action after InstallFinalize
+  //                      fails, so msiexec exits 1603 with the product
+  //                      already committed and registered
   // It installs cw-a 1.0 and cw-c, writes the exe fixtures (a .cmd with
   // known content for sha256, an install_path marker), and seeds three
   // Uninstall keys: cw-exe at DisplayVersion 1.0, cw-exe2 whose
@@ -79,10 +102,10 @@ package "windows_installers" {
   // The 7-Zip step downloads the real 2 MB MSI guest-side, which covers the
   // URL, cache and sha256 path; the vmlab guests have NAT internet.
   test "installers_converge" {
-    description = "MSI install, minor upgrade, transforms and properties, version ranges, removal; EXE install, version upgrade, version ranges through version_value, and removal"
+    description = "MSI install, minor upgrade, transforms and properties, version ranges, removal; EXE install, version upgrade, version ranges through version_value, and removal; success_codes and reboot_codes on both"
     template = "x86_64/windows-server-2025"
     group = "win2025"
-    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave-msi'; $null = New-Item -ItemType Directory -Force -Path $d; function Ex($db,$q) { $v = $db.OpenView($q); $v.Execute(); $v.Close(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($v) }; function Mk($path,$code,$comp,$ver,$name) { if (Test-Path $path) { return }; $i = New-Object -ComObject WindowsInstaller.Installer; $db = $i.OpenDatabase($path, 3); Ex $db 'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL LOCALIZABLE PRIMARY KEY `Property`)'; Ex $db 'CREATE TABLE `Media` (`DiskId` SHORT NOT NULL, `LastSequence` SHORT NOT NULL, `DiskPrompt` CHAR(64) LOCALIZABLE, `Cabinet` CHAR(255), `VolumeLabel` CHAR(32), `Source` CHAR(72) PRIMARY KEY `DiskId`)'; Ex $db 'CREATE TABLE `Directory` (`Directory` CHAR(72) NOT NULL, `Directory_Parent` CHAR(72), `DefaultDir` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Directory`)'; Ex $db 'CREATE TABLE `Feature` (`Feature` CHAR(38) NOT NULL, `Feature_Parent` CHAR(38), `Title` CHAR(64) LOCALIZABLE, `Description` CHAR(255) LOCALIZABLE, `Display` SHORT, `Level` SHORT NOT NULL, `Directory_` CHAR(72), `Attributes` SHORT NOT NULL PRIMARY KEY `Feature`)'; Ex $db 'CREATE TABLE `Component` (`Component` CHAR(72) NOT NULL, `ComponentId` CHAR(38), `Directory_` CHAR(72) NOT NULL, `Attributes` SHORT NOT NULL, `Condition` CHAR(255), `KeyPath` CHAR(72) PRIMARY KEY `Component`)'; Ex $db 'CREATE TABLE `FeatureComponents` (`Feature_` CHAR(38) NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Feature_`, `Component_`)'; Ex $db 'CREATE TABLE `Registry` (`Registry` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL LOCALIZABLE, `Name` CHAR(255) LOCALIZABLE, `Value` CHAR(0) LOCALIZABLE, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Registry`)'; Ex $db 'CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)'; foreach ($p in @(@('ProductCode',$code),@('ProductName',$name),@('ProductVersion',$ver),@('ProductLanguage','1033'),@('Manufacturer','config-weave'),@('ALLUSERS','1'),@('CWVALUE','default'),@('CWEXTRA','none'))) { Ex $db ('INSERT INTO `Property` (`Property`,`Value`) VALUES (''' + $p[0] + ''',''' + $p[1] + ''')') }; Ex $db 'INSERT INTO `Media` (`DiskId`,`LastSequence`) VALUES (1,0)'; Ex $db 'INSERT INTO `Directory` (`Directory`,`DefaultDir`) VALUES (''TARGETDIR'',''SourceDir'')'; Ex $db 'INSERT INTO `Feature` (`Feature`,`Level`,`Attributes`) VALUES (''Main'',1,0)'; Ex $db ('INSERT INTO `Component` (`Component`,`ComponentId`,`Directory_`,`Attributes`,`KeyPath`) VALUES (''Reg'',''' + $comp + ''',''TARGETDIR'',260,''RegValue'')'); Ex $db 'INSERT INTO `FeatureComponents` (`Feature_`,`Component_`) VALUES (''Main'',''Reg'')'; foreach ($r in @(@('RegValue','Value','[CWVALUE]'),@('RegExtra','Extra','[CWEXTRA]'))) { Ex $db ('INSERT INTO `Registry` (`Registry`,`Root`,`Key`,`Name`,`Value`,`Component_`) VALUES (''' + $r[0] + ''',2,''SOFTWARE\\ConfigWeaveTest\\' + $name + ''',''' + $r[1] + ''',''' + $r[2] + ''',''Reg'')') }; $n = 0; foreach ($a in 'CostInitialize','FileCost','CostFinalize','InstallValidate','InstallInitialize','ProcessComponents','UnpublishFeatures','RemoveRegistryValues','WriteRegistryValues','RegisterUser','RegisterProduct','PublishFeatures','PublishProduct','InstallFinalize') { $n += 100; Ex $db ('INSERT INTO `InstallExecuteSequence` (`Action`,`Sequence`) VALUES (''' + $a + ''',' + $n + ')') }; $si = $db.SummaryInformation(20); $si.Property(2) = $name; $si.Property(7) = 'x64;1033'; $si.Property(9) = [guid]::NewGuid().ToString('B').ToUpper(); $si.Property(14) = 200; $si.Property(15) = 2; $si.Persist(); $db.Commit(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($si); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($db); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; Mk ($d + '\\cw-a-1.0.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-a'; Mk ($d + '\\cw-a-1.1.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.1.0' 'cw-a'; Mk ($d + '\\cw-b.msi') '{C0DE000B-0000-4000-8000-00000000C0DE}' '{C0DE100B-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-b'; Mk ($d + '\\cw-c.msi') '{C0DE000C-0000-4000-8000-00000000C0DE}' '{C0DE100C-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-c'; if (-not (Test-Path ($d + '\\cw-b.mst'))) { Copy-Item ($d + '\\cw-b.msi') ($d + '\\cw-b-t.msi'); $i = New-Object -ComObject WindowsInstaller.Installer; $base = $i.OpenDatabase($d + '\\cw-b.msi', 0); $new = $i.OpenDatabase($d + '\\cw-b-t.msi', 1); Ex $new 'UPDATE `Property` SET `Value` = ''from-transform'' WHERE `Property` = ''CWEXTRA'''; $new.Commit(); $null = $new.GenerateTransform($base, $d + '\\cw-b.mst'); $null = $new.CreateTransformSummaryInfo($base, $d + '\\cw-b.mst', 0, 0); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($new); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($base); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-a-1.0.msi /qn /norestart') -Wait; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-c.msi /qn /norestart') -Wait; $e='C:\\weave-exe'; $null = New-Item -ItemType Directory -Force -Path $e; [IO.File]::WriteAllText($e + '\\install.cmd', '@reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-sha /v Installed /d 1 /f'); [IO.File]::WriteAllText($e + '\\marker.txt', 'installed'); $u='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'; $null = New-Item -Force -Path ($u + 'cw-exe'); Set-ItemProperty -Path ($u + 'cw-exe') -Name DisplayVersion -Value '1.0'; $null = New-Item -Force -Path ($u + 'cw-exe2'); Set-ItemProperty -Path ($u + 'cw-exe2') -Name UninstallString -Value 'cmd.exe /c exit 7'; Set-ItemProperty -Path ($u + 'cw-exe2') -Name QuietUninstallString -Value 'C:\\Windows\\System32\\reg.exe delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe2 /f'; $null = New-Item -Force -Path ($u + 'cw-exe3'); Set-ItemProperty -Path ($u + 'cw-exe3') -Name DisplayVersion -Value '1.5.2'; $vc = 'HKLM:\\SOFTWARE\\ConfigWeaveTest\\VC\\Runtimes\\x64'; if (-not (Test-Path $vc)) { $null = New-Item -Force -Path $vc; Set-ItemProperty -Path $vc -Name Version -Value 'v14.29.30139.00' }"
+    setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\\weave-msi'; $null = New-Item -ItemType Directory -Force -Path $d; function Ex($db,$q) { $v = $db.OpenView($q); $v.Execute(); $v.Close(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($v) }; function Mk($path,$code,$comp,$ver,$name,$fail) { if (Test-Path $path) { return }; $i = New-Object -ComObject WindowsInstaller.Installer; $db = $i.OpenDatabase($path, 3); Ex $db 'CREATE TABLE `Property` (`Property` CHAR(72) NOT NULL, `Value` CHAR(0) NOT NULL LOCALIZABLE PRIMARY KEY `Property`)'; Ex $db 'CREATE TABLE `Media` (`DiskId` SHORT NOT NULL, `LastSequence` SHORT NOT NULL, `DiskPrompt` CHAR(64) LOCALIZABLE, `Cabinet` CHAR(255), `VolumeLabel` CHAR(32), `Source` CHAR(72) PRIMARY KEY `DiskId`)'; Ex $db 'CREATE TABLE `Directory` (`Directory` CHAR(72) NOT NULL, `Directory_Parent` CHAR(72), `DefaultDir` CHAR(255) NOT NULL LOCALIZABLE PRIMARY KEY `Directory`)'; Ex $db 'CREATE TABLE `Feature` (`Feature` CHAR(38) NOT NULL, `Feature_Parent` CHAR(38), `Title` CHAR(64) LOCALIZABLE, `Description` CHAR(255) LOCALIZABLE, `Display` SHORT, `Level` SHORT NOT NULL, `Directory_` CHAR(72), `Attributes` SHORT NOT NULL PRIMARY KEY `Feature`)'; Ex $db 'CREATE TABLE `Component` (`Component` CHAR(72) NOT NULL, `ComponentId` CHAR(38), `Directory_` CHAR(72) NOT NULL, `Attributes` SHORT NOT NULL, `Condition` CHAR(255), `KeyPath` CHAR(72) PRIMARY KEY `Component`)'; Ex $db 'CREATE TABLE `FeatureComponents` (`Feature_` CHAR(38) NOT NULL, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Feature_`, `Component_`)'; Ex $db 'CREATE TABLE `Registry` (`Registry` CHAR(72) NOT NULL, `Root` SHORT NOT NULL, `Key` CHAR(255) NOT NULL LOCALIZABLE, `Name` CHAR(255) LOCALIZABLE, `Value` CHAR(0) LOCALIZABLE, `Component_` CHAR(72) NOT NULL PRIMARY KEY `Registry`)'; Ex $db 'CREATE TABLE `InstallExecuteSequence` (`Action` CHAR(72) NOT NULL, `Condition` CHAR(255), `Sequence` SHORT PRIMARY KEY `Action`)'; foreach ($p in @(@('ProductCode',$code),@('ProductName',$name),@('ProductVersion',$ver),@('ProductLanguage','1033'),@('Manufacturer','config-weave'),@('ALLUSERS','1'),@('CWVALUE','default'),@('CWEXTRA','none'))) { Ex $db ('INSERT INTO `Property` (`Property`,`Value`) VALUES (''' + $p[0] + ''',''' + $p[1] + ''')') }; Ex $db 'INSERT INTO `Media` (`DiskId`,`LastSequence`) VALUES (1,0)'; Ex $db 'INSERT INTO `Directory` (`Directory`,`DefaultDir`) VALUES (''TARGETDIR'',''SourceDir'')'; Ex $db 'INSERT INTO `Feature` (`Feature`,`Level`,`Attributes`) VALUES (''Main'',1,0)'; Ex $db ('INSERT INTO `Component` (`Component`,`ComponentId`,`Directory_`,`Attributes`,`KeyPath`) VALUES (''Reg'',''' + $comp + ''',''TARGETDIR'',260,''RegValue'')'); Ex $db 'INSERT INTO `FeatureComponents` (`Feature_`,`Component_`) VALUES (''Main'',''Reg'')'; foreach ($r in @(@('RegValue','Value','[CWVALUE]'),@('RegExtra','Extra','[CWEXTRA]'))) { Ex $db ('INSERT INTO `Registry` (`Registry`,`Root`,`Key`,`Name`,`Value`,`Component_`) VALUES (''' + $r[0] + ''',2,''SOFTWARE\\ConfigWeaveTest\\' + $name + ''',''' + $r[1] + ''',''' + $r[2] + ''',''Reg'')') }; $n = 0; foreach ($a in 'CostInitialize','FileCost','CostFinalize','InstallValidate','InstallInitialize','ProcessComponents','UnpublishFeatures','RemoveRegistryValues','WriteRegistryValues','RegisterUser','RegisterProduct','PublishFeatures','PublishProduct','InstallFinalize') { $n += 100; Ex $db ('INSERT INTO `InstallExecuteSequence` (`Action`,`Sequence`) VALUES (''' + $a + ''',' + $n + ')') }; if ($fail) { Ex $db 'CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)'; Ex $db 'INSERT INTO `CustomAction` (`Action`,`Type`,`Target`) VALUES (''CwFail'',19,''cw stand-in fails on purpose'')'; Ex $db 'INSERT INTO `InstallExecuteSequence` (`Action`,`Sequence`) VALUES (''CwFail'',1600)' }; $si = $db.SummaryInformation(20); $si.Property(2) = $name; $si.Property(7) = 'x64;1033'; $si.Property(9) = [guid]::NewGuid().ToString('B').ToUpper(); $si.Property(14) = 200; $si.Property(15) = 2; $si.Persist(); $db.Commit(); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($si); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($db); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; Mk ($d + '\\cw-a-1.0.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-a'; Mk ($d + '\\cw-a-1.1.msi') '{C0DE000A-0000-4000-8000-00000000C0DE}' '{C0DE100A-0000-4000-8000-00000000C0DE}' '1.1.0' 'cw-a'; Mk ($d + '\\cw-b.msi') '{C0DE000B-0000-4000-8000-00000000C0DE}' '{C0DE100B-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-b'; Mk ($d + '\\cw-c.msi') '{C0DE000C-0000-4000-8000-00000000C0DE}' '{C0DE100C-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-c'; Mk ($d + '\\cw-d.msi') '{C0DE000D-0000-4000-8000-00000000C0DE}' '{C0DE100D-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-d' $true; Mk ($d + '\\cw-e.msi') '{C0DE000E-0000-4000-8000-00000000C0DE}' '{C0DE100E-0000-4000-8000-00000000C0DE}' '1.0.0' 'cw-e' $true; if (-not (Test-Path ($d + '\\cw-b.mst'))) { Copy-Item ($d + '\\cw-b.msi') ($d + '\\cw-b-t.msi'); $i = New-Object -ComObject WindowsInstaller.Installer; $base = $i.OpenDatabase($d + '\\cw-b.msi', 0); $new = $i.OpenDatabase($d + '\\cw-b-t.msi', 1); Ex $new 'UPDATE `Property` SET `Value` = ''from-transform'' WHERE `Property` = ''CWEXTRA'''; $new.Commit(); $null = $new.GenerateTransform($base, $d + '\\cw-b.mst'); $null = $new.CreateTransformSummaryInfo($base, $d + '\\cw-b.mst', 0, 0); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($new); $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($base); [GC]::Collect(); [GC]::WaitForPendingFinalizers(); }; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-a-1.0.msi /qn /norestart') -Wait; $null = Start-Process msiexec.exe -ArgumentList ('/i ' + $d + '\\cw-c.msi /qn /norestart') -Wait; $e='C:\\weave-exe'; $null = New-Item -ItemType Directory -Force -Path $e; [IO.File]::WriteAllText($e + '\\install.cmd', '@reg add HKLM\\SOFTWARE\\ConfigWeaveTest\\exe-sha /v Installed /d 1 /f'); [IO.File]::WriteAllText($e + '\\marker.txt', 'installed'); $u='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\'; $null = New-Item -Force -Path ($u + 'cw-exe'); Set-ItemProperty -Path ($u + 'cw-exe') -Name DisplayVersion -Value '1.0'; $null = New-Item -Force -Path ($u + 'cw-exe2'); Set-ItemProperty -Path ($u + 'cw-exe2') -Name UninstallString -Value 'cmd.exe /c exit 7'; Set-ItemProperty -Path ($u + 'cw-exe2') -Name QuietUninstallString -Value 'C:\\Windows\\System32\\reg.exe delete HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\cw-exe2 /f'; $null = New-Item -Force -Path ($u + 'cw-exe3'); Set-ItemProperty -Path ($u + 'cw-exe3') -Name DisplayVersion -Value '1.5.2'; $vc = 'HKLM:\\SOFTWARE\\ConfigWeaveTest\\VC\\Runtimes\\x64'; if (-not (Test-Path $vc)) { $null = New-Item -Force -Path $vc; Set-ItemProperty -Path $vc -Name Version -Value 'v14.29.30139.00' }"
     verify = "tests/installers_verify.ws"
 
     step "seven_zip_msi" {
@@ -273,6 +296,113 @@ package "windows_installers" {
       }
     }
 
+    // Exit codes (config-weave-pkgs#43). cmd.exe stands in for an
+    // installer: it writes the install_path marker, then exits with the
+    // code under test. The steps expected to fail validation write a marker
+    // too, and verify checks it was never written: had they run, the code
+    // would have given another outcome.
+    step "exe_success_code" {
+      description = "1638 listed in success_codes is Success, and the re-check passes"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-1638.txt & exit 1638"
+        install_path = "C:\\weave-exe\\code-1638.txt"
+        success_codes = [1638]
+      }
+    }
+
+    step "exe_code_not_listed" {
+      description = "The same 1638, not listed, fails the step; the message names the log args passes"
+      resource = "exe_installer"
+      expect = "error"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo /LOG \"C:\\weave-exe\\setup log.txt\" & exit 1638"
+        install_path = "C:\\weave-exe\\code-unlisted.txt"
+      }
+    }
+
+    step "exe_code_in_both" {
+      description = "A code in both success_codes and reboot_codes is a validation error"
+      resource = "exe_installer"
+      expect = "error"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-both.txt & exit 1638"
+        install_path = "C:\\weave-exe\\code-both.txt"
+        success_codes = [1638]
+        reboot_codes = [1638]
+      }
+    }
+
+    step "exe_builtin_reclassified" {
+      description = "3010 in success_codes would reclassify a built-in reboot code, so it is a validation error"
+      resource = "exe_installer"
+      expect = "error"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-builtin.txt & exit 3010"
+        install_path = "C:\\weave-exe\\code-builtin.txt"
+        success_codes = [3010]
+      }
+    }
+
+    // 0x8A15002B is winget's APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE;
+    // cmd.exe exits with it as the signed -1978335189.
+    step "exe_code_hex" {
+      description = "A code written as a hex literal matches the installer's signed exit code"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-hex.txt & exit -1978335189"
+        install_path = "C:\\weave-exe\\code-hex.txt"
+        success_codes = [0x8A15002B]
+      }
+    }
+
+    step "exe_code_unsigned" {
+      description = "A code written unsigned matches the installer's signed exit code"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-unsigned.txt & exit -1978335189"
+        install_path = "C:\\weave-exe\\code-unsigned.txt"
+        success_codes = [2316632107]
+      }
+    }
+
+    step "exe_code_signed" {
+      description = "A code written signed matches the installer's signed exit code"
+      resource = "exe_installer"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\weave-exe\\code-signed.txt & exit -1978335189"
+        install_path = "C:\\weave-exe\\code-signed.txt"
+        success_codes = [-1978335189]
+      }
+    }
+
+    step "msi_success_code" {
+      description = "cw-d's msiexec exits 1603 after registering the product; with 1603 listed the step converges"
+      resource = "msi_package"
+      properties {
+        path = "C:\\weave-msi\\cw-d.msi"
+        product_id = "{C0DE000D-0000-4000-8000-00000000C0DE}"
+        success_codes = [1603]
+      }
+    }
+
+    step "msi_code_not_listed" {
+      description = "cw-e exits 1603 the same way; not listed, it fails the step"
+      resource = "msi_package"
+      expect = "error"
+      properties {
+        path = "C:\\weave-msi\\cw-e.msi"
+        product_id = "{C0DE000E-0000-4000-8000-00000000C0DE}"
+      }
+    }
+
     step "exe_version_needs_reg" {
       description = "version without install_reg is an error"
       resource = "exe_installer"
@@ -281,6 +411,28 @@ package "windows_installers" {
         path = "C:\\Windows\\System32\\cmd.exe"
         install_path = "C:\\weave-exe\\cmd-marker.txt"
         version = "1.0"
+      }
+    }
+  }
+
+  // A RebootRequired step halts the apply it is in, so the reboot_codes
+  // case is its own test, sharing installers_converge's VM. cmd.exe stands
+  // in for an installer that writes its marker and exits 1001.
+  test "installer_reboot_code" {
+    description = "An exit code listed in reboot_codes reports RebootRequired"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+
+    step "exe_reboot_code" {
+      description = "1001 listed in reboot_codes is RebootRequired"
+      resource = "exe_installer"
+      expect = "reboot_required"
+      properties {
+        path = "C:\\Windows\\System32\\cmd.exe"
+        args = "/C echo done > C:\\Windows\\Temp\\cw-code-reboot.txt & exit 1001"
+        install_path = "C:\\Windows\\Temp\\cw-code-reboot.txt"
+        success_codes = [1638]
+        reboot_codes = [1001]
       }
     }
   }
