@@ -39,8 +39,8 @@ fn want_present(params: Value) -> Result[bool, string] {
 fn failure(what: string, out: CmdOutput) -> string {
     let detail = out.stderr.trim()
     if detail == "" { detail = out.stdout.trim() }
-    if detail == "" { return what + " failed (exit " + str(out.code) + ")" }
-    what + " failed (exit " + str(out.code) + "): " + detail
+    if detail == "" { return what + " failed (exit " + code_str(out.code) + ")" }
+    what + " failed (exit " + code_str(out.code) + "): " + detail
 }
 
 // Runs a script from a temp .ps1 with -File, so the script may hold any
@@ -172,6 +172,129 @@ fn validate_sha256(value: string) -> Result[unit, string] {
     if value == "" { return Ok(()) }
     if value.len() != 64 || !is_hex(value) { return Err("'sha256' must be 64 hex digits, got '" + value + "'") }
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Exit codes
+// ---------------------------------------------------------------------
+
+// A Windows exit code is a 32-bit DWORD, so 0x8A15002B can arrive (or be
+// written in a param) as 2316632107 or as -1978335189. Both sides are
+// compared as the unsigned value.
+fn u32_code(n: int) -> int {
+    if n < 0 { return n + 4294967296 }
+    n
+}
+
+// A code for a message: the unsigned value, then " / " and the signed one
+// when the two differ, since installers document either.
+fn code_str(n: int) -> string {
+    let c = u32_code(n)
+    if c > 2147483647 { return str(c) + " / " + str(c - 4294967296) }
+    str(c)
+}
+
+// success_codes or reboot_codes as unsigned 32-bit values. The params map
+// has already checked the param is a list, not what it holds.
+fn exit_codes(params: Value, key: string) -> Result[List[int], string] {
+    let out: List[int] = []
+    if let Some(v) = params.get(key) {
+        if let Some(xs) = v.as_list() {
+            for x in xs {
+                let Some(n) = x.as_int() else { return Err("'" + key + "' must hold integer exit codes") }
+                if n < -2147483648 || n > 4294967295 {
+                    return Err("'" + key + "' entry " + str(n) + " is not a 32-bit exit code: write it signed (-2147483648..2147483647) or unsigned (0..4294967295)")
+                }
+                out.push(u32_code(n))
+            }
+        }
+    }
+    Ok(out)
+}
+
+// Run by check, so a contradiction surfaces before anything runs. 0 is
+// always Success and 3010/1641 always RebootRequired; listing one in the
+// other list would silently reclassify it, so that is refused too.
+fn validate_codes(params: Value) -> Result[unit, string] {
+    let success = exit_codes(params, "success_codes")?
+    let reboot = exit_codes(params, "reboot_codes")?
+    for c in success {
+        if c == 3010 || c == 1641 {
+            return Err("'success_codes' lists " + str(c) + ", a built-in reboot code: 3010 and 1641 always mean RebootRequired, and listing one would silently reclassify it as Success")
+        }
+        if reboot.contains(c) {
+            return Err("exit code " + code_str(c) + " is in both 'success_codes' and 'reboot_codes'; list it in one")
+        }
+    }
+    for c in reboot {
+        if c == 0 {
+            return Err("'reboot_codes' lists 0, the built-in success code: 0 always means Success, and listing it would silently reclassify every clean exit as RebootRequired")
+        }
+    }
+    Ok(())
+}
+
+// What an installer's exit code means: "reboot" for 3010, 1641 and
+// reboot_codes, "success" for 0 and success_codes, else "fail".
+fn outcome(params: Value, code: int) -> Result[string, string] {
+    let c = u32_code(code)
+    if c == 3010 || c == 1641 || exit_codes(params, "reboot_codes")?.contains(c) { return Ok("reboot") }
+    if c == 0 || exit_codes(params, "success_codes")?.contains(c) { return Ok("success") }
+    Ok("fail")
+}
+
+// Splits an argument string the way an installer's command line parser
+// does for this purpose: on whitespace outside double quotes, dropping the
+// quotes.
+fn split_args(args: string) -> List[string] {
+    let out: List[string] = []
+    let cur = ""
+    let quoted = false
+    let open = false
+    for c in args.chars() {
+        let s = str(c)
+        if s == "\"" {
+            quoted = !quoted
+            open = true
+        } else if !quoted && (s == " " || s == "\t") {
+            if open { out.push(cur) }
+            cur = ""
+            open = false
+        } else {
+            cur = cur + s
+            open = true
+        }
+    }
+    if open { out.push(cur) }
+    out
+}
+
+// msiexec's logging switch: /l or -l followed by one or more mode
+// characters, e.g. /l*v, /L*VX, /lv, /l*v+.
+fn is_msi_log_flag(token: string) -> bool {
+    let t = token.to_lower()
+    if t.len() < 3 || !(t.starts_with("/l") || t.starts_with("-l")) { return false }
+    let modes = "iwearucmopvx+!*"
+    for c in t.slice(2, t.len()).chars() {
+        if !modes.contains(str(c)) { return false }
+    }
+    true
+}
+
+// The log file an argument string names, "" when none: the value after
+// /log or -log (most bootstrappers: Burn, InstallShield, VS) or after an
+// msiexec /l<modes> switch, case-insensitive, quoted or not.
+fn log_arg(args: string) -> string {
+    let toks = split_args(args)
+    let i = 0
+    for t in toks {
+        let l = t.to_lower()
+        if l == "/log" || l == "-log" || is_msi_log_flag(t) {
+            return toks.get(i + 1).unwrap_or("")
+        }
+        i = i + 1
+    }
+    ""
 }
 
 // Install markers can lag the installer's exit (an uninstaller that copies

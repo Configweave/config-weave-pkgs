@@ -833,6 +833,36 @@ is not redone on every run.
   install markers to appear or disappear, because many uninstallers return
   before they finish.
 
+Both resources treat exit code 0 as success and 3010 and 1641 as
+reboot-required. Two list params extend that, on both resources:
+
+- `success_codes`: more codes that mean success, for installers that
+  report "nothing to do" with their own code: 1638 (another version is
+  already installed, from MSI and the Visual C++ redistributables), 1001
+  (`VSIXInstaller`), 0x8A15002B (winget).
+- `reboot_codes`: more codes that mean reboot-required.
+
+```wcl
+properties {
+  path          = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+  args          = "/install /quiet /norestart"
+  success_codes = [1638]
+}
+```
+
+Windows exit codes are 32-bit, so a code may be written unsigned
+(`2316632107`), signed (`-1978335189`) or as a hex literal (`0x8A15002B`);
+the installer's code matches in any form. A code in both lists is a
+validation error, and so is a built-in in the other list (3010 or 1641 in
+`success_codes`, 0 in `reboot_codes`), because it would silently reclassify
+the built-in. Listing a code is safe: the re-check after `apply` still has
+to pass, so an installer that exits 1638 without converging the host still
+fails the step. A code in neither list fails the step; for `exe_installer`
+the message ends with `; log: <path>` when `args` names a log file (`/log`,
+`-log`, or an msiexec `/l*v`-style switch), and for `msi_package` with the
+verbose log msiexec always writes. The lists also apply to the uninstaller
+for `ensure = :absent`.
+
 Both resources take a local path or an `http://` or `https://` URL, plus an
 optional `sha256` that is checked before anything runs. Downloaded files
 are kept under `C:\ProgramData\config-weave\installers`, one directory per

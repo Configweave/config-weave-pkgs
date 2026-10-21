@@ -58,6 +58,7 @@ fn validate(params: Value) -> Result[unit, string] {
     common::want_present(params)?
     common::quotable_path("path", common::param_str(params, "path", ""))?
     common::validate_sha256(common::param_str(params, "sha256", ""))?
+    common::validate_codes(params)?
     vrange::validate("version", common::param_str(params, "version", ""))?
     let vv = version_value(params)
     if vv.trim() == "" { return Err("'version_value' must name a registry value, e.g. DisplayVersion") }
@@ -123,23 +124,25 @@ fn log_path(product_id: string) -> string {
 }
 
 // msiexec with a verbose log; a failure quotes the log's error lines,
-// since msiexec itself says nothing beyond the exit code. 1605 and 1614
-// (unknown or already uninstalled product) are success for /x.
-fn run_msiexec(argline: string, product_id: string, removing: bool) -> Result[ApplyResult, string] {
+// since msiexec itself says nothing beyond the exit code. 3010, 1641 and
+// reboot_codes are RebootRequired; 0 and success_codes are Success, and so
+// are 1605 and 1614 (unknown or already uninstalled product) for /x.
+fn run_msiexec(params: Value, argline: string, product_id: string, removing: bool) -> Result[ApplyResult, string] {
     let log = log_path(product_id)
     fs::mkdir(path::parent(log))?
     let out = common::start_process("msiexec.exe", argline + " /L*V \"" + log + "\"")?
-    if out.code == 3010 || out.code == 1641 { return Ok(ApplyResult::RebootRequired) }
-    if out.code == 0 { return Ok(ApplyResult::Success) }
+    let res = common::outcome(params, out.code)?
+    if res == "reboot" { return Ok(ApplyResult::RebootRequired) }
+    if res == "success" { return Ok(ApplyResult::Success) }
     if removing && (out.code == 1605 || out.code == 1614) { return Ok(ApplyResult::Success) }
     let detail = common::run_ps(
         "if (Test-Path -LiteralPath $env:CW_LOG) {{ (Select-String -LiteralPath $env:CW_LOG -Pattern 'Error \\d+|Return value 3|error status' | Select-Object -Last 5 | ForEach-Object {{ $_.Line.Trim() }}) -join ' / ' }}",
         #{ "CW_LOG": Value::String(log) }
     )?
     let lines = detail.stdout.trim()
-    let msg = "msiexec " + (if removing { "/x" } else { "/i" }) + " exited " + str(out.code) + " (log: " + log + ")"
-    if lines != "" { return Err(msg + ": " + lines) }
-    Err(msg)
+    let msg = "msiexec " + (if removing { "/x" } else { "/i" }) + " exited " + common::code_str(out.code)
+    if lines != "" { msg = msg + ": " + lines }
+    Err(msg + "; log: " + log)
 }
 
 fn install(params: Value, hit: List[string]) -> Result[ApplyResult, string] {
@@ -181,15 +184,15 @@ fn install(params: Value, hit: List[string]) -> Result[ApplyResult, string] {
         if !mst.is_empty() { argline = argline + " TRANSFORMS=\"" + mst.join(";") + "\"" }
     }
     for p in common::param_list(params, "properties") { argline = argline + " " + p }
-    let res = run_msiexec(argline, product_id, false)?
+    let res = run_msiexec(params, argline, product_id, false)?
     if res == ApplyResult::RebootRequired { return Ok(res) }
     let after = found(params)?
     if after.is_empty() {
-        return Err("msiexec succeeded but no Uninstall key exists for " + ids(params).join(" or ") + "; check product_id")
+        return Err("msiexec reported success but no Uninstall key exists for " + ids(params).join(" or ") + "; check product_id")
     }
     let key = after.get(0).unwrap_or("")
     if !version_matches(params, key)? {
-        return Err("msiexec succeeded but " + version_value(params) + " under " + key + " is '" + installed_version(params, key)? + "', which does not satisfy version '" + want + "'")
+        return Err("msiexec reported success but " + version_value(params) + " under " + key + " is '" + installed_version(params, key)? + "', which does not satisfy version '" + want + "'")
     }
     Ok(ApplyResult::Success)
 }
@@ -202,5 +205,5 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     // was actually found, which may be alt_product_id.
     if hit.is_empty() { return Ok(ApplyResult::Success) }
     let guid = hit.get(1).unwrap_or("")
-    run_msiexec("/x " + guid + " /qn /norestart", guid, true)
+    run_msiexec(params, "/x " + guid + " /qn /norestart", guid, true)
 }
