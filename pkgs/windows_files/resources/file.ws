@@ -3,7 +3,6 @@ use fs
 use path
 use http
 use hash
-use time
 use log
 use common
 
@@ -61,53 +60,26 @@ fn passes(p: string, size: int, sha: string) -> Result[bool, string] {
     Ok(true)
 }
 
-// One download attempt into `tmp`: Ok("") when the file arrived whole,
-// Ok(reason) for a failure worth retrying (a transport error, a short or
-// long file), Err for one that is not (a digest mismatch on a file of the
-// right size).
-fn fetch(url: string, tmp: string, size: int, sha: string) -> Result[string, string] {
-    if fs::lexists(tmp) { fs::delete(tmp)? }
-    let got = http::download(url, tmp, Value::Null)
-    if let Err(e) = got { return Ok(e) }
-    let have = file_size(tmp)?
-    if size > 0 && have != size {
-        return Ok("got " + str(have) + " bytes, expected " + str(size))
-    }
-    if sha != "" {
-        let digest = hash::sha256_file(tmp)?.to_lower()
-        if digest != sha {
-            return Err("downloaded file sha256 mismatch: expected " + sha + ", got " + digest)
-        }
-    }
-    Ok("")
+// The engine options for a download: http::download retries a transport
+// error, a 5xx or a body shorter than expected, and checks the byte count
+// and digest before it renames anything into place.
+fn download_opts(size: int, sha: string, retries: int) -> Value {
+    let o = #{ "retries": Value::Int(retries) }
+    if size > 0 { o.insert("size", Value::Int(size)) }
+    if sha != "" { o.insert("sha256", Value::String(sha)) }
+    Value::Map(o)
 }
 
-// Downloads `url` to a fixed temp name beside `p`, retrying a failed or
-// short download, and only then puts it in place. The file at `p` is only
-// ever a finished, verified download: an interrupted run leaves at most the
-// temp file, which the next run deletes before it starts again.
+// Downloads `url` to a fixed temp name beside `p` and only then puts it in
+// place. The file at `p` is only ever a finished, verified download: an
+// interrupted run leaves at most the temp file, which the next run deletes
+// before it starts again.
 fn download(p: string, url: string, size: int, sha: string, retries: int) -> Result[unit, string] {
     fs::mkdir(path::parent(p))?
     let tmp = p + ".config-weave-download"
-    let attempt = 0
-    let reason = ""
-    while true {
-        attempt = attempt + 1
-        log::info("downloading " + url + " -> " + p + " (attempt " + str(attempt) + " of " + str(retries + 1) + ")")
-        let r = fetch(url, tmp, size, sha)
-        if let Err(e) = r {
-            fs::delete(tmp).unwrap_or(())
-            return Err(e)
-        }
-        reason = r.unwrap_or("")
-        if reason == "" { break }
-        if attempt > retries {
-            fs::delete(tmp).unwrap_or(())
-            return Err("downloading " + url + " failed after " + str(attempt) + " attempt(s): " + reason)
-        }
-        log::warn("download attempt " + str(attempt) + " failed: " + reason)
-        time::sleep(5000 * attempt)
-    }
+    if fs::lexists(tmp) { fs::delete(tmp)? }
+    log::info("downloading " + url + " -> " + p)
+    http::download(url, tmp, download_opts(size, sha, retries))?
     install(tmp, p)
 }
 
