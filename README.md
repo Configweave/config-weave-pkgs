@@ -955,6 +955,16 @@ Local and Active Directory users and groups:
   still works. A bare member name means the local account of that name only;
   write domain accounts and built-in principals qualified (`CORP\alice`,
   `NT AUTHORITY\NETWORK SERVICE`).
+- `local_user` expiry: `password_never_expires` (true or false) and
+  `account_never_expires` (true only) are managed only when set, so a
+  playbook that names neither sees no drift. Use both on a service account,
+  whose password would otherwise expire after the maximum password age (42
+  days on a stock Server). `account_never_expires = false` is an error,
+  because it would need an expiry date, which the resource does not take.
+  With `ensure = :absent` both are ignored. `password_never_expires` is read
+  from the SAM's DONT_EXPIRE_PASSWD flag, not from `PasswordExpires`: an
+  account whose password was never set shows no `PasswordExpires` date
+  whatever the flag says.
 - `ad_user`, `ad_group` and `ad_group_member`: the directory, through the
   `ActiveDirectory` PowerShell module (RSAT-AD-PowerShell, present on every
   DC). `server` picks the DC or domain. `ou_path` is reconciled: an object
