@@ -114,10 +114,6 @@ fn rewrite(text: string, params: Value) -> Result[string, string] {
     Ok(if out.is_empty() { "" } else { out.join("\n") + "\n" })
 }
 
-fn read_text(p: string) -> Result[string, string] {
-    if !fs::is_file(p) { return Ok("") }
-    fs::read(p)
-}
 
 // The owner of the home a .ssh dir sits in, as uid:gid.
 fn home_owner(dir: string) -> Result[string, string] {
@@ -132,11 +128,12 @@ fn check(params: Value) -> Result[CheckResult, string] {
     let p = t.get(0).unwrap_or("")
     let dir = t.get(1).unwrap_or("")
     let present = common::want_present(params)?
-    if !fs::is_file(p) {
+    // a symlink at the path is an error, not drift: apply refuses it too
+    if !common::user_file(p)? {
         if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let text = if let Ok(x) = read_text(p) { x } else { return Ok(CheckResult::NotConfigured) }
+    let text = if let Ok(x) = common::read_user_file(p) { x } else { return Ok(CheckResult::NotConfigured) }
     if rewrite(text, params)? != text { return Ok(CheckResult::NotConfigured) }
     if present && dir != "" {
         let owner = home_owner(dir)?
@@ -152,11 +149,12 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let p = t.get(0).unwrap_or("")
     let dir = t.get(1).unwrap_or("")
     let present = common::want_present(params)?
-    if !present && !fs::is_file(p) { return Ok(ApplyResult::Success) }
-    let text = read_text(p)?
+    let existed = common::user_file(p)?
+    if !present && !existed { return Ok(ApplyResult::Success) }
+    let text = common::read_user_file(p)?
     let next = rewrite(text, params)?
     if present && !fs::is_dir(path::parent(p)) { fs::mkdir(path::parent(p))? }
-    if next != text || !fs::is_file(p) { common::write_atomic(p, next)? }
+    if next != text || !existed { common::write_atomic(p, next)? }
     if present && dir != "" {
         // the agent runs as root: hand what it created back to the home's
         // owner, as ssh itself would have created it

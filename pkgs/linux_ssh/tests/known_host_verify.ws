@@ -20,6 +20,13 @@ fn verify(facts: Value) -> Result[bool, string] {
     if stat("/home/cwkh/.ssh")? != "700 cwkh users" { return Err("/home/cwkh/.ssh is " + stat("/home/cwkh/.ssh")?) }
     if !stat("/home/cwkh/.ssh/known_hosts")?.ends_with(" cwkh users") { return Err("cwkh known_hosts is " + stat("/home/cwkh/.ssh/known_hosts")?) }
 
+    // the planted links are left alone, and so are their targets
+    if fs::read_link("/home/cwkhl/.ssh/known_hosts")? != "/root/cw-secret-hosts" { return Err("cwkhl known_hosts is no longer the planted symlink") }
+    if fs::read_link("/home/cwkhd/.ssh/known_hosts")? != "/root/cw-nowhere-hosts" { return Err("cwkhd known_hosts is no longer the planted symlink") }
+    if stat("/root/cw-secret-hosts")? != "600 root root" { return Err("the symlink target is now " + stat("/root/cw-secret-hosts")?) }
+    if fs::read("/root/cw-secret-hosts")? != "cw-secret.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlantedLinkSecretKey\n" { return Err("the symlink target was changed") }
+    if fs::lexists("/root/cw-nowhere-hosts") { return Err("a file was created at the dangling symlink's target") }
+
     if fs::read("/etc/ssh/ssh_known_hosts")? != "@cert-authority *.cw.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICertAuthorityKey\n" { return Err("ssh_known_hosts not written") }
     Ok(true)
 }
