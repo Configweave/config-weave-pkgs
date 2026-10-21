@@ -13,6 +13,17 @@ fn validate(params: Value) -> Result[string, string] {
     Ok(name)
 }
 
+// account_never_expires = false would mean "the account expires", and that
+// needs an expiry date this resource does not take. Only checked when the
+// account should be present.
+fn account_expiry(params: Value) -> Result[Option[bool], string] {
+    let ane = common::param_opt_bool(params, "account_never_expires")
+    if ane == Some(false) {
+        return Err("account_never_expires = false needs an expiry date, which this resource does not manage; leave it unset or set true")
+    }
+    Ok(ane)
+}
+
 // PowerShell binding $u to the account, or $null when it does not exist. Only
 // "not found" reads as absent; access denied or any other failure throws.
 fn fetch(name: string) -> string {
@@ -21,8 +32,8 @@ fn fetch(name: string) -> string {
 }
 
 // 'ABSENT' or a JSON object { full_name, description, enabled,
-// never_expires, password }. password is 'OK'/'BAD'/'LOCKED' when a password
-// was given to test, else ''.
+// never_expires, account_never_expires, password }. password is
+// 'OK'/'BAD'/'LOCKED' when a password was given to test, else ''.
 fn probe(name: string, pw: string) -> Result[string, string] {
     let test_pw = if pw != "" {
         common::logon_test_ps() + "$pw = Test-CwPassword " + common::ps_q(name) + " '.' $env:CW_PASSWORD; "
@@ -33,6 +44,7 @@ fn probe(name: string, pw: string) -> Result[string, string] {
         "$flags = [int]([ADSI]('WinNT://./' + $u.Name + ',user')).UserFlags.Value; " +
         "[pscustomobject]@{{ full_name = [string]$u.FullName; description = [string]$u.Description; " +
         "enabled = [bool]$u.Enabled; never_expires = [bool]($flags -band " + never_expires_flag() + "); " +
+        "account_never_expires = ($null -eq $u.AccountExpires); " +
         "password = [string]$pw }} | ConvertTo-Json -Compress }}",
         secrets(pw))
 }
@@ -45,6 +57,7 @@ fn secrets(pw: string) -> Map[string, Value] {
 fn check(params: Value) -> Result[CheckResult, string] {
     let name = validate(params)?
     let present = common::want_present(params)?
+    let ane = if present { account_expiry(params)? } else { None }
     let pw = if present { common::param_str(params, "password", "") } else { "" }
     let st = probe(name, pw)?
     if !present {
@@ -62,6 +75,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
     if let Some(ne) = common::param_opt_bool(params, "password_never_expires") {
         if common::get_bool(u, "never_expires") != ne { drift.push("password_never_expires") }
     }
+    if ane == Some(true) && !common::get_bool(u, "account_never_expires") { drift.push("account_never_expires") }
     if pw != "" && !common::password_state_err(common::get_str(u, "password"), name)? { drift.push("password") }
     if !drift.is_empty() {
         log::info("local user '" + name + "' differs in: " + drift.join(", "))
@@ -77,6 +91,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         common::ps("removing local user '" + name + "'", fetch(name) + "if ($u) {{ Remove-LocalUser -SID $u.SID }}")?
         return Ok(ApplyResult::Success)
     }
+    let ane = account_expiry(params)?
     let pw = common::param_str(params, "password", "")
     let full = common::param_str(params, "full_name", "")
     let desc = common::param_str(params, "description", "")
@@ -98,6 +113,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let expiry = if let Some(ne) = common::param_opt_bool(params, "password_never_expires") {
         "Set-LocalUser -Name " + qn + " -PasswordNeverExpires " + common::ps_bool(ne) + "; "
     } else { "" }
+    let account = if ane == Some(true) { "Set-LocalUser -Name " + qn + " -AccountNeverExpires; " } else { "" }
     let state = if common::param_bool(params, "disabled", false) {
         "Disable-LocalUser -Name " + qn
     } else {
@@ -105,7 +121,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     }
     common::ps_env("configuring local user '" + name + "'",
         secure + fetch(name) +
-        "if ($null -eq $u) {{ " + create + "}} else {{ " + updates + "}}; " + expiry + state,
+        "if ($null -eq $u) {{ " + create + "}} else {{ " + updates + "}}; " + expiry + account + state,
         secrets(pw))?
     Ok(ApplyResult::Success)
 }

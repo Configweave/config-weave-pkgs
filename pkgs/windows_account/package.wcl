@@ -29,7 +29,8 @@ package "windows_account" {
     param "full_name" { description = "Full (display) name; empty leaves it unmanaged" type = "string" default = "" }
     param "description" { description = "Account description; empty leaves it unmanaged" type = "string" default = "" }
     param "disabled" { description = "Whether the account should be disabled" type = "bool" default = false }
-    param "password_never_expires" { description = "Whether the password is exempt from the maximum password age (the SAM's DONT_EXPIRE_PASSWD flag); omit to leave it unmanaged" type = "bool" }
+    param "password_never_expires" { description = "Whether the password is exempt from the maximum password age (the SAM's DONT_EXPIRE_PASSWD flag). true: the password never expires; false: it expires under the maximum password age (42 days on a stock Server). Omit to leave it unmanaged" type = "bool" }
+    param "account_never_expires" { description = "true: the account has no expiry date (Get-LocalUser's AccountExpires is empty), and an existing one is cleared. false is an error, because it needs an expiry date this resource does not manage. Omit to leave the expiry unmanaged" type = "bool" }
   }
 
   resource "local_group" {
@@ -178,7 +179,22 @@ package "windows_account" {
         full_name = "Weave Service"
         description = "config-weave test account"
         password_never_expires = true
+        account_never_expires = true
       }
+    }
+
+    step "account_expiry_false_refused" {
+      description = "account_never_expires = false needs an expiry date the resource does not take, so it is an error"
+      resource = "local_user"
+      expect = "error"
+      properties { name = "weave-expiring" account_never_expires = false }
+    }
+
+    step "ghost_user_absent_ignores_expiry" {
+      description = "With ensure = absent the expiry params are ignored, so false is no error"
+      resource = "local_user"
+      expect = "already_configured"
+      properties { name = "weave-ghost" ensure = :absent account_never_expires = false password_never_expires = false }
     }
 
     step "svc_in_ops" {
@@ -260,6 +276,56 @@ package "windows_account" {
       resource = "local_group_member"
       expect = "already_configured"
       properties { group = "weave-drift-grp" member = "NETWORK SERVICE" ensure = :absent }
+    }
+  }
+
+  // Setup turns on a maximum password age (the template's may be unlimited,
+  // which would hide every PasswordExpires date), then seeds two users with
+  // Windows' defaults (the password expires) and gives weave-exp an account
+  // expiry date. weave-exp is brought to "never expires" for both, and the
+  // next test flips its password back; weave-plain names neither param, so
+  // its expiring password is not drift. Setup runs under cmd /C: no double
+  // quotes.
+  test "local_user_expiry" {
+    description = "password_never_expires and account_never_expires converge on an existing user; leaving them unset is not drift"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    setup = "net accounts /maxpwage:42 >nul & powershell -NoProfile -Command New-LocalUser -Name weave-exp -Password (ConvertTo-SecureString 'Old-Pw-55aa!x' -AsPlainText -Force) -AccountExpires (Get-Date).AddDays(30); New-LocalUser -Name weave-plain -Password (ConvertTo-SecureString 'Old-Pw-55aa!x' -AsPlainText -Force)"
+    verify = "tests/expiry_verify.ws"
+
+    step "exp_never" {
+      description = "weave-exp's password and account stop expiring"
+      resource = "local_user"
+      properties { name = "weave-exp" password_never_expires = true account_never_expires = true }
+    }
+
+    step "plain_unmanaged" {
+      description = "weave-plain's expiring password is left alone when neither param is set"
+      resource = "local_user"
+      expect = "already_configured"
+      properties { name = "weave-plain" }
+    }
+
+    step "nopw_expires" {
+      description = "A new account with no password and password_never_expires = false"
+      resource = "local_user"
+      properties { name = "weave-nopw" password_never_expires = false account_never_expires = true }
+    }
+  }
+
+  // Runs after local_user_expiry in the same instance: weave-exp's password
+  // now never expires, and false turns the maximum password age back on.
+  // account_never_expires is unset here, so the account stays non-expiring.
+  test "local_user_expiry_flip" {
+    description = "password_never_expires = false makes a never-expiring password expire again"
+    template = "x86_64/windows-server-2025"
+    group = "win2025"
+    verify = "tests/expiry_flip_verify.ws"
+
+    step "exp_expires" {
+      description = "weave-exp's password expires again"
+      resource = "local_user"
+      properties { name = "weave-exp" password_never_expires = false }
     }
   }
 
