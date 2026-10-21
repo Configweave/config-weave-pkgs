@@ -84,7 +84,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let tmp = path::join(path::parent(p), "." + name + ".asc.cw-tmp")
     let url = common::param_str(params, "url", "")
     if url != "" && !fs::is_file(p) {
-        if let Err(e) = http::download(url, tmp, Value::Null) {
+        if let Err(e) = http::download(url, tmp, Value::Map(#{ "retries": Value::Int(3) })) {
             fs::delete(tmp).unwrap_or(())
             return Err("downloading " + url + ": " + e)
         }

@@ -97,9 +97,14 @@ fn install_msi(params: Value) -> Result[ApplyResult, string] {
     result
 }
 
+// http::download checks a given `sha256` itself; without one the MSI's
+// signature is checked as for a local file.
 fn download_and_run(params: Value, source: string, local: string) -> Result[ApplyResult, string] {
-    http::download(source, local, Value::Null)?
-    verify_msi(params, local)?
+    let want = common::param_str(params, "sha256", "")
+    let o = #{ "retries": Value::Int(3) }
+    if want != "" { o.insert("sha256", Value::String(want)) }
+    http::download(source, local, Value::Map(o))?
+    if want == "" { verify_msi(params, local)? }
     run_msi(local)
 }
 

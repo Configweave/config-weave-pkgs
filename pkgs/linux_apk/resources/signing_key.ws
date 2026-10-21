@@ -68,22 +68,9 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fs::write(p, content)?
         return Ok(ApplyResult::Success)
     }
-    // Download beside the target and only move it into place once its hash
-    // matches, so a bad download never replaces a good key.
+    // http::download renames the key into place only once its hash matches,
+    // so a bad download never replaces a good key.
     let url = common::param_str(params, "url", "")
-    let tmp = path::join(path::parent(p), "." + name + ".rsa.pub.cw-tmp")
-    if let Err(e) = http::download(url, tmp, Value::Null) {
-        fs::delete(tmp).unwrap_or(())
-        return Err("downloading " + url + ": " + e)
-    }
-    let got = hash::sha256_file(tmp)?
-    if got != want_sha(params) {
-        fs::delete(tmp).unwrap_or(())
-        return Err("the key at " + url + " has sha256 " + got + ", not the expected " + want_sha(params))
-    }
-    if let Err(e) = fs::move(tmp, p) {
-        fs::delete(tmp).unwrap_or(())
-        return Err(e)
-    }
+    http::download(url, p, Value::Map(#{ "retries": Value::Int(3), "sha256": Value::String(want_sha(params)) }))?
     Ok(ApplyResult::Success)
 }

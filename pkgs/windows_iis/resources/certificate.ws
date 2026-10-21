@@ -102,15 +102,19 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     // whether or not the import succeeds.
     let remote = source.starts_with("http://") || source.starts_with("https://")
     let local = source
+    // http::download checks a download against `sha256` itself, so import
+    // only hashes a local file.
     if remote {
         local = fs::temp_file()?
         log::info("downloading " + source)
-        if let Err(e) = http::download(source, local, Value::Null) {
+        let o = #{ "retries": Value::Int(3) }
+        if want_sha != "" { o.insert("sha256", Value::String(want_sha)) }
+        if let Err(e) = http::download(source, local, Value::Map(o)) {
             fs::delete(local).unwrap_or(())
             return Err(e)
         }
     }
-    let result = import(params, store, local, want_sha)
+    let result = import(params, store, local, if remote { "" } else { want_sha })
     if remote { fs::delete(local).unwrap_or(()) }
     result?
     // Import-PfxCertificate succeeds on any valid PFX, whatever it holds, so
