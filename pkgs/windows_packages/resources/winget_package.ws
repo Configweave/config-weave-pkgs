@@ -1,11 +1,12 @@
 use value
 use json
 use common
+use vrange
 
 fn validate(params: Value) -> Result[string, string] {
     let id = common::param_str(params, "id", "")
     common::validate_name("id", id)?
-    common::validate_version(common::param_str(params, "version", ""))?
+    vrange::validate("version", common::param_str(params, "version", ""))?
     common::single_line("source", common::param_str(params, "source", ""))?
     let e = ensure(params)?
     if e == "latest" && common::param_str(params, "version", "") != "" { return Err("'version' must be empty with ensure = :latest, which follows the newest version the source offers") }
@@ -112,10 +113,48 @@ fn check(params: Value) -> Result[CheckResult, string] {
         return Ok(CheckResult::AlreadyConfigured)
     }
     if have == "" { return Ok(CheckResult::NotConfigured) }
-    if !common::version_ok(have, common::param_str(params, "version", ""), false) { return Ok(CheckResult::NotConfigured) }
+    if !vrange::satisfies("winget_package " + id, have, common::param_str(params, "version", ""), "winget's installed-package list (Microsoft.WinGet.Client or winget export)")? { return Ok(CheckResult::NotConfigured) }
     if scope(params) != "" && !listed(params, id, scope(params), false)?.unwrap_or(false) { return Ok(CheckResult::NotConfigured) }
     if e == "latest" && listed(params, id, "", true)?.unwrap_or(false) { return Ok(CheckResult::NotConfigured) }
     Ok(CheckResult::AlreadyConfigured)
+}
+
+// Every version of `id` the source offers, newest first as winget prints
+// them (winget show --versions). The table's header is localized, so the
+// versions are the lines after its dashed rule.
+fn available_versions(params: Value, id: string) -> Result[List[string], string] {
+    let script = common::winget_ps() +
+        "$a = @('show', '--id', $env:CW_ID, '--exact', '--versions', '--accept-source-agreements', '--disable-interactivity')\n" +
+        "if ([string]$env:CW_SOURCE -ne '') {{ $a += @('--source', $env:CW_SOURCE) }}\n" +
+        "$o = @(& $winget @a)\n" +
+        "$c = $LASTEXITCODE\n" +
+        "if ($c -ne 0) {{ $o; exit $c }}\n" +
+        "$v = @(); $seen = $false\n" +
+        "foreach ($l in $o) {{ $t = ([string]$l).Trim(); if ($seen) {{ if ($t -ne '') {{ $v += $t }} }} elseif ($t -match '^-{{3,}}$') {{ $seen = $true }} }}\n" +
+        "ConvertTo-Json -Compress @{{ versions = $v }}\n"
+    let out = common::query(script, #{
+        "CW_ID": Value::String(id),
+        "CW_SOURCE": Value::String(common::param_str(params, "source", ""))
+    })?
+    if out.code == common::missing_code() { return Err("winget is not installed or cannot start, so the versions of " + id + " cannot be listed") }
+    if !out.success { return Err(common::failure("winget show --versions " + id, out)) }
+    let found: List[string] = []
+    if let Some(vs) = json::parse(out.stdout.trim())?.get("versions") {
+        for v in vs.as_list().unwrap_or([]) {
+            if let Some(t) = v.as_string() { found.push(t) }
+        }
+    }
+    Ok(found)
+}
+
+// The version to pass to winget install --version: none for any version,
+// an exact version (or a pin that is not range syntax) as written, and for
+// any other range the newest version the source offers that satisfies it.
+fn target_version(params: Value, id: string) -> Result[string, string] {
+    let want = common::param_str(params, "version", "")
+    if vrange::any(want) { return Ok("") }
+    if vrange::exact(want) || vrange::opaque(want) { return Ok(want) }
+    vrange::pick("winget_package " + id, available_versions(params, id)?, want, "winget show --versions")
 }
 
 // :latest upgrades an installed package in place (winget upgrade) and
@@ -128,6 +167,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let verb = "install"
     if e == "absent" { verb = "uninstall" }
     if e == "latest" && have != "" && (scope(params) == "" || listed(params, id, scope(params), false)?.unwrap_or(false)) { verb = "upgrade" }
+    let version = if e == "absent" { "" } else { target_version(params, id)? }
     let script = common::winget_ps() +
         "$a = @($env:CW_VERB, '--exact', '--id', $env:CW_ID, '--silent', '--accept-source-agreements', '--disable-interactivity')\n" +
         "if ($env:CW_VERB -ne 'uninstall') {{ $a += '--accept-package-agreements' }}\n" +
@@ -143,7 +183,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let out = common::action(script, #{
         "CW_VERB": Value::String(verb),
         "CW_ID": Value::String(id),
-        "CW_VERSION": Value::String(if e == "absent" { "" } else { common::param_str(params, "version", "") }),
+        "CW_VERSION": Value::String(version),
         "CW_TYPE": Value::String(installer_type(params)),
         "CW_SCOPE": Value::String(scope(params)),
         "CW_FORCE": Value::String(if verb == "install" && have != "" { "1" } else { "0" }),

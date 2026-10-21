@@ -207,8 +207,8 @@ fn touch_stamp(stamp: string, label: string) -> Result[unit, string] {
 // ---------------------------------------------------------------------
 // Versions
 //
-// Every version decision goes through version_ok, so a richer syntax
-// (ranges) replaces this one function.
+// A package's `version` is a range, matched through lib/vrange.ws. These
+// are the floor comparisons winget_installed's minimum version uses.
 // ---------------------------------------------------------------------
 
 // -1, 0 or 1 as `a` sorts before, with or after `b`. A leading v is

@@ -33,7 +33,7 @@ package "windows_packages" {
       symbol "present" { description = "Install the package" }
       symbol "absent"  { description = "Uninstall the package" }
     }
-    param "version" { description = "Version to hold when present, compared exactly with what choco lists; an installed package at another version is moved with choco upgrade --version --allow-downgrade, up or down. Empty means any version" type = "string" default = "" }
+    param "version" { description = "Version range the installed version (as choco lists it) must satisfy when present, in npm syntax: 1.2.3 is exact, 1.2 any 1.2.x, or >=1.2, ^1.2, ~1.2.3, >=1.2 <2, a || b; empty or * means any version. An installed package outside it is moved with choco upgrade --version --allow-downgrade, up or down, to the exact version given or else the newest one the sources offer that satisfies the range (choco search --all-versions)" type = "string" default = "" }
     param "source" { description = "Optional source name or URL" type = "string" default = "" }
   }
 
@@ -222,7 +222,7 @@ package "windows_packages" {
       symbol "latest"  { description = "Install the package and upgrade it whenever its source offers a newer version (winget list --upgrade-available); `version` must be empty" }
       symbol "absent"  { description = "Uninstall the package" }
     }
-    param "version" { description = "Version to hold when :present, compared numerically with the installed version; an installed package at another version is reinstalled with winget install --version --force. Empty means any version" type = "string" default = "" }
+    param "version" { description = "Version range the installed version must satisfy when :present, in npm syntax: 24.08.1 is exact, 24.08 any 24.08.x, or >=24.08, ^7, ~7.4, >=1.2 <2, a || b; empty or * means any version. Outside it, winget install --version (--force over an installed package) installs the exact version given, or else the newest one the source offers that satisfies the range (winget show --versions)" type = "string" default = "" }
     param "source" { description = "Optional winget source" type = "string" default = "" }
     param "scope" {
       description = "Install scope, passed as --scope"
@@ -378,7 +378,7 @@ package "windows_packages" {
   // Setup bootstraps Chocolatey from the community repository (the guests
   // have NAT internet) and seeds the drift the steps converge away from:
   //   chocolatey-core.extension            installed, to be removed
-  //   chocolatey-dotnetfx.extension 1.0.1  installed, to be held at 1.0.0
+  //   chocolatey-dotnetfx.extension 1.0.1  installed, to be held below it (1.0.0)
   //   cwtest   source at an old URL
   //   cwdis    source disabled by hand
   //   cwgone   source to be removed
@@ -411,10 +411,10 @@ package "windows_packages" {
     }
 
     step "dotnetfx_held" {
-      description = "Hold a package at an older version than the installed one"
+      description = "Hold a package below the installed version with a range: <1.0.1 resolves to 1.0.0 through choco search --all-versions"
       resource = "chocolatey_package"
       requires = ["core_extension_absent"]
-      properties { name = "chocolatey-dotnetfx.extension" version = "1.0.0" }
+      properties { name = "chocolatey-dotnetfx.extension" version = "<1.0.1" }
     }
 
     step "ghost_absent" {
@@ -634,7 +634,7 @@ package "windows_packages" {
   // package step names source = "winget". Steps are chained so that only
   // one winget runs at a time.
   test "winget_manages_packages" {
-    description = "winget package removal, version hold and source removal converge"
+    description = "winget package removal, version range hold and source removal converge"
     template = "x86_64/windows-server-2025"
     group = "win2025"
     setup = "powershell -NoProfile -ExecutionPolicy Bypass -Command $ProgressPreference='SilentlyContinue'; if (-not (Test-Path C:\\vcr.exe)) { Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile C:\\vcr.exe; $null = Start-Process C:\\vcr.exe -ArgumentList '/install /quiet /norestart' -Wait -PassThru }; $w = @(Get-ChildItem 'C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\\winget.exe')[-1].FullName; foreach ($id in '7zip.7zip','jqlang.jq') { $null = Start-Process -FilePath $w -ArgumentList ('install --exact --id ' + $id + ' --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity') -Wait -NoNewWindow -PassThru }"
@@ -660,7 +660,7 @@ package "windows_packages" {
     }
 
     step "version_held" {
-      description = "An installed package at another version is reinstalled at the held version"
+      description = "An installed package outside the range is reinstalled at the newest version inside it: 24.08 is any 24.08.x, resolved through winget show --versions"
       resource = "winget_package"
       requires = ["id_any_case"]
       properties { id = "7zip.7zip" version = "24.08" source = "winget" }
