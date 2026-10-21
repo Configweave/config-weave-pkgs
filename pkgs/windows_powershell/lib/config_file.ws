@@ -5,6 +5,7 @@ use path
 use sys
 use json
 use common
+use user_tree
 
 // The per-user configuration directory, which PowerShell 7 keeps beside the
 // user's profiles.
@@ -17,7 +18,28 @@ fn user_config_dir(home: string) -> string {
 // wins, which is what lets the config resources run on a machine with no
 // PowerShell 7 installed at all. None when the PowerShell that has to be
 // asked is not installed.
+//
+// A current-user file is in a user's tree, so a link there is refused (see
+// user_tree): every resource resolves its file through this, so check and
+// apply both error on one.
 fn config_path_for(params: Value, scope: string) -> Result[Option[string], string] {
+    let resolved = unguarded_path_for(params, scope)?
+    if let Some(file) = resolved { user_tree::guard(user_root_for(params, scope), file)? }
+    Ok(resolved)
+}
+
+// The user root a configuration file lives under: None for the all-users
+// file or an explicit `path`, Some(home) for the current user's.
+fn user_root_for(params: Value, scope: string) -> Option[string] {
+    if common::param_str(params, "path", "") != "" || scope == "all_users" { return None }
+    Some(user_tree::root_of(common::param_str(params, "home", "")))
+}
+
+fn user_root(params: Value) -> Option[string] {
+    user_root_for(params, common::param_str(params, "scope", "all_users"))
+}
+
+fn unguarded_path_for(params: Value, scope: string) -> Result[Option[string], string] {
     let explicit = common::param_str(params, "path", "")
     if explicit != "" { return Ok(Some(explicit)) }
     let edition = common::param_str(params, "edition", "pwsh")
@@ -46,10 +68,12 @@ fn require_config_path(params: Value) -> Result[string, string] {
 }
 
 // A missing or empty file is an empty document. A BOM (Windows PowerShell
-// writes one) is skipped. A file that is not UTF-8 or not JSON is an error.
-fn read_doc(p: string) -> Result[Value, string] {
-    if !fs::is_file(p) { return Ok(Value::Map(#{})) }
-    let text = fs::read(p)?
+// writes one) is skipped. A file that is not UTF-8 or not JSON is an error,
+// and so is a link in a user's tree. `root` is user_root's answer.
+fn read_doc(root: Option[string], p: string) -> Result[Value, string] {
+    let read = user_tree::read(root, p)?
+    if read.is_none() { return Ok(Value::Map(#{})) }
+    let text = read.unwrap()
     if text.starts_with("\u{FEFF}") { text = text.slice(1, text.len()) }
     text = text.trim()
     if text == "" { return Ok(Value::Map(#{})) }
@@ -58,10 +82,8 @@ fn read_doc(p: string) -> Result[Value, string] {
     parsed
 }
 
-fn write_doc(p: string, doc: Value) -> Result[unit, string] {
-    let parent = path::parent(p)
-    if parent != "" { fs::mkdir(parent)? }
-    fs::write(p, json::to_string_pretty(doc) + "\n")
+fn write_doc(root: Option[string], p: string, doc: Value) -> Result[unit, string] {
+    user_tree::write(root, p, json::to_string_pretty(doc) + "\n")
 }
 
 // json::to_string sorts its keys, so this is a stable structural comparison.

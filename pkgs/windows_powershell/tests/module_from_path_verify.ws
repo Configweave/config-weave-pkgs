@@ -37,5 +37,11 @@ fn verify(facts: Value) -> Result[bool, string] {
     if fs::exists(base + "/CwMismatch") { return Err("a module whose manifest contradicts its version folder was installed anyway") }
     if fs::exists(base + "/CwSeededManual") { return Err("the hand-installed module was not removed") }
     if !listed("CwSeededManual")?.is_empty() { return Err("PowerShell still lists the removed module") }
+
+    // The symlink planted in /cwmodhome is left alone, and so is its target.
+    let planted = "/root/cw-protected-mods/share/powershell/Modules"
+    if fs::read_link("/cwmodhome/.local")? != "/root/cw-protected-mods" { return Err("the planted .local symlink was replaced or removed") }
+    if fs::list_dir(planted)? != ["CwPlanted"] { return Err("a module was copied through the planted symlink: " + fs::list_dir(planted)?.join(", ")) }
+    if !fs::is_file(planted + "/CwPlanted/CwPlanted.psm1") { return Err("a module was deleted through the planted symlink") }
     Ok(true)
 }

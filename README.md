@@ -413,7 +413,10 @@ policy keys) live in `pkgs/windows_powershell/lib/`.
   override, which is what lets them run on a machine with no PowerShell 7
   installed at all. `log_setting` writes the all-users file only (the only
   one PowerShell reads for logging), with `LogChannels` and `LogKeywords` as
-  the comma-separated strings PowerShell parses.
+  the comma-separated strings PowerShell parses. A `:current_user` file is
+  in a user's tree, so a symlink at it, or a symlink or directory junction
+  on a directory between the home and it, is an error in check and apply,
+  never read or written through.
 - `execution_policy`, `script_block_logging`, `module_logging`,
   `transcription`, `protected_event_logging` and
   `console_session_configuration` — what `Set-ExecutionPolicy` writes and
@@ -436,7 +439,12 @@ policy keys) live in `pkgs/windows_powershell/lib/`.
   files keep CRLF, and a profile Windows PowerShell 5.1 loads gets a UTF-8
   BOM (5.1 reads a BOM-less script as ANSI). With `home` empty, the
   current-user profiles are those of the account config-weave runs as —
-  usually SYSTEM or root. `psreadline_option` carries the whole documented
+  usually SYSTEM or root. A current-user profile is in a user's tree, so a
+  symlink at it, or a symlink or directory junction on a directory between
+  the home and it, is an error in check and apply, never read, written or
+  deleted through; replace a dotfiles-style link with a regular file. The
+  all-users profiles and an explicit `path` are not checked.
+  `psreadline_option` carries the whole documented
   `Set-PSReadLineOption` surface, each option defaulting to `:unmanaged`,
   `-1` or `""`.
 - `repository`, `module`, `module_from_path`, `script_resource`,
@@ -448,7 +456,9 @@ policy keys) live in `pkgs/windows_powershell/lib/`.
   trusted silently. `module_from_path` is the manual install: a directory,
   zip or nupkg, local or fetched, copied into the `<Name>/<Version>/` layout
   `Get-Module -ListAvailable` needs, compared by content, and refused when the
-  manifest contradicts the version folder. The update windows keep a stamp
+  manifest contradicts the version folder. With `:current_user`, a symlink
+  or junction between the home and the module directory is an error. The
+  update windows keep a stamp
   per edition, scope and module set, and `help_updated` fails without
   stamping when every module failed to update.
 

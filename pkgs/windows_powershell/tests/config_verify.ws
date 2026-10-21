@@ -93,6 +93,13 @@ fn verify(facts: Value) -> Result[bool, string] {
     if !at(ep, ["Microsoft.PowerShell:ExecutionPolicy"]).is_null() { return Err("the seeded machine execution policy was not removed") }
     if at(ep, ["CWKeep"]).as_int().unwrap_or(0) != 1 { return Err("removing the execution policy lost another key") }
 
+    // The links planted in the user homes are left alone, and so are their
+    // targets: nothing was written through them.
+    if fs::read_link("/cwcfglink/.config/powershell/powershell.config.json")? != "/root/cw-secret.config.json" { return Err("the planted configuration-file symlink was replaced or removed") }
+    if fs::read("/root/cw-secret.config.json")? != "{{\"CwSecret\":1}}" { return Err("the configuration-file symlink's target was changed") }
+    if fs::read_link("/cwcfgdir/.config/powershell")? != "/root/cw-protected-cfg" { return Err("the planted configuration-directory symlink was replaced or removed") }
+    if fs::read("/root/cw-protected-cfg/powershell.config.json")? != "{{\"CwSecret\":1}}" { return Err("a configuration file was written through the symlinked directory") }
+
     // log_setting writes the lists as the comma-separated strings PowerShell
     // parses — a JSON array is not read at all.
     if at(doc, ["LogLevel"]).as_string().unwrap_or("") != "Informational" { return Ok(false) }

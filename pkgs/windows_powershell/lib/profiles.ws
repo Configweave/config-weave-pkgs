@@ -6,6 +6,7 @@ use fs
 use path
 use sys
 use common
+use user_tree
 
 // None when the PowerShell that has to be asked is not installed.
 fn profile_dir(params: Value, all_users: bool) -> Result[Option[string], string] {
@@ -43,8 +44,24 @@ fn profile_path(params: Value) -> Result[Option[string], string] {
     Ok(None)
 }
 
+// The user root a profile path lives under (see user_tree): None for an
+// all-users profile or an explicit `path`, Some(home) for a current-user one.
+fn user_root(params: Value) -> Option[string] {
+    if common::param_str(params, "path", "") != "" { return None }
+    if common::param_str(params, "scope", "current_user_current_host").starts_with("all_users") { return None }
+    Some(user_tree::root_of(common::param_str(params, "home", "")))
+}
+
+// profile_path, with a link in the user's tree refused. Every resource
+// resolves its profile through this, so check and apply both error on one.
+fn guarded_profile_path(params: Value) -> Result[Option[string], string] {
+    let resolved = profile_path(params)?
+    if let Some(file) = resolved { user_tree::guard(user_root(params), file)? }
+    Ok(resolved)
+}
+
 fn require_profile_path(params: Value) -> Result[string, string] {
-    if let Some(file) = profile_path(params)? { return Ok(file) }
+    if let Some(file) = guarded_profile_path(params)? { return Ok(file) }
     Err("cannot resolve the profile path: " + common::not_installed(common::param_str(params, "edition", "auto")))
 }
 
@@ -64,17 +81,16 @@ fn strip_bom(text: string) -> string {
 fn norm_eol(text: string) -> string { text.replace("\r\n", "\n") }
 
 // None when the file does not exist. An unreadable file (not UTF-8) is an
-// error the caller decides about.
-fn read_text(file: string) -> Result[Option[string], string] {
-    if !fs::is_file(file) { return Ok(None) }
-    Ok(Some(fs::read(file)?))
+// error the caller decides about. A link in a user's tree is an error too:
+// resolve the path with guarded_profile_path first so check reports it
+// rather than reading it as drift.
+fn read_text(params: Value, file: string) -> Result[Option[string], string] {
+    user_tree::read(user_root(params), file)
 }
 
-fn write_text(file: string, text: string, bom: bool) -> Result[unit, string] {
-    let parent = path::parent(file)
-    if parent != "" { fs::mkdir(parent)? }
+fn write_text(params: Value, file: string, text: string, bom: bool) -> Result[unit, string] {
     let body = strip_bom(text)
-    fs::write(file, if bom { "\u{FEFF}" + body } else { body })
+    user_tree::write(user_root(params), file, if bom { "\u{FEFF}" + body } else { body })
 }
 
 fn begin_marker(name: string) -> string { "# BEGIN config-weave: " + name }
@@ -160,13 +176,13 @@ fn merge_block(text: string, name: string, body: Option[string]) -> Result[strin
 fn check_block(params: Value, name: string, body: Option[string]) -> Result[CheckResult, string] {
     common::single_line("block name", name)?
     let present = body.is_some()
-    let resolved = profile_path(params)?
+    let resolved = guarded_profile_path(params)?
     if resolved.is_none() {
         if present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
     let file = resolved.unwrap()
-    let read = read_text(file)
+    let read = read_text(params, file)
     // A profile that exists but is not UTF-8 cannot be compared; apply will
     // say why it cannot rewrite it.
     if read.is_err() { return Ok(CheckResult::NotConfigured) }
@@ -193,23 +209,23 @@ fn apply_block(params: Value, name: string, body: Option[string]) -> Result[Appl
     let file = require_profile_path(params)?
     let existing = ""
     let bom = wants_bom(params)
-    if fs::is_file(file) {
-        let read = fs::read(file)
-        if let Err(e) = read { return Err("cannot read the profile '" + file + "' as UTF-8 (" + e + ") — re-save it as UTF-8 so config-weave can edit it without corrupting it") }
-        existing = read.unwrap()
+    let read = read_text(params, file)
+    if let Err(e) = read { return Err("cannot read the profile '" + file + "' as UTF-8 (" + e + ") — re-save it as UTF-8 so config-weave can edit it without corrupting it") }
+    if let Some(text) = read.unwrap() {
+        existing = text
         if has_bom(existing) { bom = true }
     }
     let merged = merge_block(strip_bom(existing), name, body)?
-    write_text(file, merged, bom && merged != "")?
+    write_text(params, file, merged, bom && merged != "")?
     Ok(ApplyResult::Success)
 }
 
 // The body of one block, or None when the profile, the file or the block is
 // missing or the file cannot be read.
 fn current_block(params: Value, name: string) -> Result[Option[string], string] {
-    let resolved = profile_path(params)?
+    let resolved = guarded_profile_path(params)?
     if resolved.is_none() { return Ok(None) }
-    let read = read_text(resolved.unwrap())
+    let read = read_text(params, resolved.unwrap())
     if read.is_err() { return Ok(None) }
     if let Some(text) = read.unwrap() { return extract_block(strip_bom(text), name) }
     Ok(None)

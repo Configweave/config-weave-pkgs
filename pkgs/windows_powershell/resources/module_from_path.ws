@@ -9,6 +9,7 @@ use json
 use encoding
 use common
 use psget
+use user_tree
 
 fn name(params: Value) -> Result[string, string] {
     let n = common::param_str(params, "name", "")
@@ -48,6 +49,14 @@ fn modules_dir(params: Value) -> Result[Option[string], string] {
     // No home: the account config-weave runs as, usually SYSTEM or root.
     let script = "if ($PSVersionTable.PSEdition -eq 'Desktop') {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'WindowsPowerShell\\Modules' }} elseif ($IsWindows) {{ Join-Path ([Environment]::GetFolderPath('MyDocuments', 'DoNotVerify')) 'PowerShell\\Modules' }} else {{ Join-Path $HOME '.local/share/powershell/Modules' }}"
     common::query(edition, script)
+}
+
+// The user root a :current_user module directory lives under (see
+// user_tree), None for :all_users or an explicit `destination`.
+fn user_root(params: Value) -> Option[string] {
+    if common::param_str(params, "destination", "") != "" { return None }
+    if common::param_str(params, "scope", "current_user") == "all_users" { return None }
+    Some(user_tree::root_of(common::param_str(params, "home", "")))
 }
 
 fn require_modules_dir(params: Value) -> Result[string, string] {
@@ -239,6 +248,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
     }
     let dir = resolved.unwrap()
     let target = target_dir(dir, params)?
+    // A link in the user's tree on the way to the module is an error, not
+    // drift: apply refuses to delete or copy through it.
+    user_tree::guard(user_root(params), target)?
     if !present {
         // Removing a versioned install only removes that version; removing an
         // unversioned one takes the whole module.
@@ -258,6 +270,8 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     let dir = require_modules_dir(params)?
     let root = path::join(dir, n)
     let target = target_dir(dir, params)?
+    let user = user_root(params)
+    user_tree::guard(user, target)?
 
     if !common::want_present(params)? {
         let doomed = if v == "" { root } else { target }
@@ -293,6 +307,13 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     // Replaced rather than merged, so a shrinking module does not leave
     // orphaned files behind.
     if fs::is_dir(target) { fs::delete_dir(target)? }
+    // copy_tree creates the missing directories: check again first, so a
+    // link planted since the check above is not created through
+    let guarded = user_tree::guard(user, target)
+    if let Err(e) = guarded {
+        fs::delete_dir(work)?
+        return Err(e)
+    }
     let copied = copy_tree(from, target)
     fs::delete_dir(work)?
     copied?

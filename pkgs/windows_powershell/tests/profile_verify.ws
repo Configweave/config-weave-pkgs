@@ -52,5 +52,15 @@ fn verify(facts: Value) -> Result[bool, string] {
         return Err("the Windows PowerShell profile was written without a UTF-8 BOM")
     }
     if !fs::read("/cwhome/winps_profile.ps1")?.contains("Write-Host 'café'") { return Err("the accented content did not survive") }
+
+    // The links planted in the user homes are left alone, and so are their
+    // targets: nothing was read, written, deleted or created through them.
+    if fs::read_link("/cwlinkhome/.config/powershell/profile.ps1")? != "/root/cw-secret-profile.ps1" { return Err("the planted profile symlink was replaced or removed") }
+    if fs::read("/root/cw-secret-profile.ps1")? != "# secret\n" { return Err("the profile symlink's target was changed") }
+    if fs::read_link("/cwdirhome/.config")? != "/root/cw-protected" { return Err("the planted .config symlink was replaced or removed") }
+    if fs::list_dir("/root/cw-protected/powershell")? != ["profile.ps1"] { return Err("a file was created inside the symlinked directory's target") }
+    if fs::read("/root/cw-protected/powershell/profile.ps1")? != "# protected\n" { return Err("a profile was written through the symlinked directory") }
+    if fs::read_link("/cwmkhome/.config")? != "/root/cw-empty" { return Err("the planted empty-directory symlink was replaced or removed") }
+    if !fs::list_dir("/root/cw-empty")?.is_empty() { return Err("a directory was created inside the symlinked directory's target") }
     Ok(true)
 }

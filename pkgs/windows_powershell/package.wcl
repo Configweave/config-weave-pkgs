@@ -217,7 +217,7 @@ package "windows_powershell" {
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json — applies to every session of the install" }
-      symbol "current_user" { description = "The per-user configuration directory beside $PROFILE.CurrentUserCurrentHost" }
+      symbol "current_user" { description = "The per-user configuration directory beside $PROFILE.CurrentUserCurrentHost. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -258,7 +258,7 @@ package "windows_powershell" {
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
+      symbol "current_user" { description = "The per-user configuration directory. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -291,7 +291,7 @@ package "windows_powershell" {
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
+      symbol "current_user" { description = "The per-user configuration directory. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -330,7 +330,7 @@ package "windows_powershell" {
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
+      symbol "current_user" { description = "The per-user configuration directory. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -441,7 +441,7 @@ package "windows_powershell" {
 
       symbol "machine_policy" { description = "The machine Group Policy scope — HKLM policy key, highest precedence" }
       symbol "user_policy"    { description = "The user Group Policy scope — HKCU policy key" }
-      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds for 5.1, the user's powershell.config.json for PowerShell 7" }
+      symbol "current_user"   { description = "The per-user preference — HKCU ShellIds for 5.1, the user's powershell.config.json for PowerShell 7, where a symlink at that file, or a symlink or directory junction on a directory between the home and it, is an error" }
       symbol "local_machine"  { description = "The machine preference — HKLM ShellIds for 5.1, $PSHOME/powershell.config.json for PowerShell 7" }
     }
     param "edition" {
@@ -607,6 +607,12 @@ package "windows_powershell" {
   // the account config-weave runs as — usually SYSTEM or root. Set `home` to
   // manage an interactive user's profile.
   //
+  // A current-user profile sits in a user's tree and config-weave writes it
+  // as SYSTEM or root, so a symlink at the profile, or a symlink or
+  // directory junction on any directory between the home and it, is an
+  // error in check and apply for both `ensure` values (lib/user_tree.ws).
+  // The all-users profiles and an explicit `path` are not checked.
+  //
   // All are `global`: several of them write the same profile file.
   // ---------------------------------------------------------------------
 
@@ -635,8 +641,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"        { description = "$PSHOME/profile.ps1 — every user, every host" }
       symbol "all_users_current_host"     { description = "$PSHOME/<host>_profile.ps1 — every user, one host" }
-      symbol "current_user_all_hosts"     { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host"  { description = "The user profile directory's <host>_profile.ps1 — the one usually called your profile" }
+      symbol "current_user_all_hosts"     { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host"  { description = "The user profile directory's <host>_profile.ps1 — the one usually called your profile. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -674,8 +680,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"       { description = "$PSHOME/profile.ps1" }
       symbol "all_users_current_host"    { description = "$PSHOME/<host>_profile.ps1" }
-      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1" }
+      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -833,8 +839,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"       { description = "$PSHOME/profile.ps1" }
       symbol "all_users_current_host"    { description = "$PSHOME/<host>_profile.ps1" }
-      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1" }
+      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -883,8 +889,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"       { description = "$PSHOME/profile.ps1" }
       symbol "all_users_current_host"    { description = "$PSHOME/<host>_profile.ps1" }
-      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1" }
+      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -932,8 +938,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"       { description = "$PSHOME/profile.ps1" }
       symbol "all_users_current_host"    { description = "$PSHOME/<host>_profile.ps1" }
-      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1" }
+      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -1005,8 +1011,8 @@ package "windows_powershell" {
 
       symbol "all_users_all_hosts"       { description = "$PSHOME/profile.ps1" }
       symbol "all_users_current_host"    { description = "$PSHOME/<host>_profile.ps1" }
-      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1" }
-      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1" }
+      symbol "current_user_all_hosts"    { description = "The user profile directory's profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
+      symbol "current_user_current_host" { description = "The user profile directory's <host>_profile.ps1. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell the profile belongs to"
@@ -1174,7 +1180,7 @@ package "windows_powershell" {
       type = "symbol"
       default = :current_user
 
-      symbol "current_user" { description = "The user's module directory" }
+      symbol "current_user" { description = "The user's module directory. A symlink or directory junction between the home and the module's directory is an error" }
       symbol "all_users"    { description = "The machine-wide module directory" }
     }
     param "destination" { description = "Exact directory the module is installed under, replacing the one derived from `scope`; the <Name>/<Version> layout is still applied beneath it" type = "string" default = "" }
@@ -1467,7 +1473,7 @@ package "windows_powershell" {
       default = :all_users
 
       symbol "all_users"    { description = "$PSHOME/powershell.config.json" }
-      symbol "current_user" { description = "The per-user configuration directory" }
+      symbol "current_user" { description = "The per-user configuration directory. A symlink at the file, or a symlink or directory junction on a directory between the home and it, is an error" }
     }
     param "edition" {
       description = "Which PowerShell install tree the file belongs to"
@@ -1526,7 +1532,10 @@ package "windows_powershell" {
     group = "pwsh"
     // Seeds the drift each :absent step converges away from. Run 1 checks
     // every step before any apply, so the seeded keys must exist up front.
-    setup = "mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json && printf '%s' '{\"Microsoft.PowerShell:ExecutionPolicy\":\"Bypass\",\"CWKeep\":1}' > /etc/cw/ep.config.json"
+    //
+    // /cwcfglink's powershell.config.json is a symlink to a root-only file,
+    // and /cwcfgdir's .config/powershell a symlink to a root-only directory.
+    setup = "mkdir -p /root/cw-protected-cfg /cwcfglink/.config/powershell /cwcfgdir/.config && printf '%s' '{\"CwSecret\":1}' > /root/cw-secret.config.json && printf '%s' '{\"CwSecret\":1}' > /root/cw-protected-cfg/powershell.config.json && chmod 600 /root/cw-secret.config.json /root/cw-protected-cfg/powershell.config.json && ln -sfn /root/cw-secret.config.json /cwcfglink/.config/powershell/powershell.config.json && ln -sfn /root/cw-protected-cfg /cwcfgdir/.config/powershell && mkdir -p /etc/cw && printf '%s' '{\"ExperimentalFeatures\":[\"PSStale\"],\"CWStale\":\"gone\"}' > /etc/cw/powershell.config.json && printf '%s' '{\"PSModulePath\":\"/seeded/one:/seeded/two\"}' > /etc/cw/merge.config.json && printf '%s' '{\"Microsoft.PowerShell:ExecutionPolicy\":\"Bypass\",\"CWKeep\":1}' > /etc/cw/ep.config.json"
     verify = "tests/config_verify.ws"
 
     step "execution_policy_key" {
@@ -1690,6 +1699,27 @@ package "windows_powershell" {
       }
     }
 
+    step "config_file_link" {
+      description = "A symlink at the current user's powershell.config.json is an error even when its target already holds the value"
+      resource = "config_setting"
+      expect = "error"
+      properties { key = "CwSecret" value = "1" value_type = :int scope = :current_user home = "/cwcfglink" }
+    }
+
+    step "config_file_link_absent" {
+      description = "Removing a key through a symlinked current-user configuration file is an error"
+      resource = "experimental_feature"
+      expect = "error"
+      properties { name = "PSStale" ensure = :absent scope = :current_user home = "/cwcfglink" }
+    }
+
+    step "config_dir_link" {
+      description = "A symlink on a directory between the home and the configuration file is an error"
+      resource = "execution_policy"
+      expect = "error"
+      properties { policy = :bypass scope = :current_user edition = :pwsh home = "/cwcfgdir" }
+    }
+
     // Gathers run before the steps, so this asserts the seeded file, not the
     // converged one — the converged contents are what verify checks.
     gather "cfg" {
@@ -1713,7 +1743,13 @@ package "windows_powershell" {
     // Three more seeded files: one with CRLF line endings, which a rewrite
     // must keep; one with a BEGIN marker and no END, which must be refused
     // rather than truncated; and a preference block for the :absent step.
-    setup = "mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' '# BEGIN config-weave: preference-warning-preference' '$WarningPreference = 1' '# END config-weave: preference-warning-preference' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1 && printf '# keep\\r\\n# BEGIN config-weave: old\\r\\nWrite-Host old\\r\\n# END config-weave: old\\r\\n# keep too\\r\\n' > /cwhome/crlf_profile.ps1 && printf '# BEGIN config-weave: broken\\nWrite-Host broken\\n# hand written after the unterminated block\\n' > /cwhome/broken_profile.ps1"
+    //
+    // Then three homes with a link planted in the user's tree, each aimed at
+    // a root-only target: /cwlinkhome's profile.ps1 is a symlink to a file
+    // that already holds the wanted content, /cwdirhome's .config is a
+    // symlink to a directory holding a profile, and /cwmkhome's .config is a
+    // symlink to an empty directory a write would have to mkdir inside.
+    setup = "mkdir -p /root/cw-protected/powershell /root/cw-empty /cwlinkhome/.config/powershell /cwdirhome /cwmkhome && printf '# secret\\n' > /root/cw-secret-profile.ps1 && printf '# protected\\n' > /root/cw-protected/powershell/profile.ps1 && chmod 600 /root/cw-secret-profile.ps1 /root/cw-protected/powershell/profile.ps1 && ln -sfn /root/cw-secret-profile.ps1 /cwlinkhome/.config/powershell/profile.ps1 && ln -sfn /root/cw-protected /cwdirhome/.config && ln -sfn /root/cw-empty /cwmkhome/.config && mkdir -p /cwhome/.config/powershell && printf '%s\\n' '# hand written above' '# BEGIN config-weave: stale' 'Write-Host old' '# END config-weave: stale' '# hand written below' '# BEGIN config-weave: preference-warning-preference' '$WarningPreference = 1' '# END config-weave: preference-warning-preference' > /cwhome/.config/powershell/Microsoft.PowerShell_profile.ps1 && printf '# keep\\r\\n# BEGIN config-weave: old\\r\\nWrite-Host old\\r\\n# END config-weave: old\\r\\n# keep too\\r\\n' > /cwhome/crlf_profile.ps1 && printf '# BEGIN config-weave: broken\\nWrite-Host broken\\n# hand written after the unterminated block\\n' > /cwhome/broken_profile.ps1"
     verify = "tests/profile_verify.ws"
 
     step "all_hosts_profile" {
@@ -1844,6 +1880,41 @@ package "windows_powershell" {
         edition = :windows_powershell
         path = "/cwhome/winps_profile.ps1"
       }
+    }
+
+    step "profile_file_link" {
+      description = "A symlink at a current-user profile is an error even when its target already holds the wanted content"
+      resource = "profile"
+      expect = "error"
+      properties { scope = :current_user_all_hosts home = "/cwlinkhome" content = "# secret\n" edition = :pwsh }
+    }
+
+    step "profile_file_link_absent" {
+      description = "Deleting a current-user profile that is a symlink is an error"
+      resource = "profile"
+      expect = "error"
+      properties { scope = :current_user_all_hosts home = "/cwlinkhome" ensure = :absent edition = :pwsh }
+    }
+
+    step "snippet_file_link" {
+      description = "Editing a block in a current-user profile that is a symlink is an error"
+      resource = "profile_snippet"
+      expect = "error"
+      properties { name = "planted" content = "Write-Host planted" scope = :current_user_all_hosts home = "/cwlinkhome" edition = :pwsh }
+    }
+
+    step "profile_dir_link" {
+      description = "A symlink on a directory between the home and the profile is an error"
+      resource = "profile"
+      expect = "error"
+      properties { scope = :current_user_all_hosts home = "/cwdirhome" content = "# written through the link\n" edition = :pwsh }
+    }
+
+    step "preference_dir_link_mkdir" {
+      description = "A symlinked directory is refused before anything is created inside its target"
+      resource = "preference_variable"
+      expect = "error"
+      properties { name = :error_action_preference value = "Stop" edition = :pwsh home = "/cwmkhome" }
     }
   }
 
@@ -2153,7 +2224,10 @@ package "windows_powershell" {
     // disagrees with the version asked for, a hand-installed module for the
     // :absent step to remove, and a stale copy of CwLocalDir already in place
     // under the right version folder — present, but with the wrong content.
-    setup = "pwsh -NoProfile -NonInteractive -Command 'foreach ($p in \"CwLocalDir:2.1.0\",\"CwLocalZip:1.4.2\",\"CwMismatch:1.0.0\") { $n,$v = $p -split \":\"; $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $m = \"/cwhome3/.local/share/powershell/Modules\"; $seed = Join-Path $m \"CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"; $stale = Join-Path $m \"CwLocalDir/2.1.0\"; New-Item -ItemType Directory -Force -Path $stale | Out-Null; Copy-Item /srv/cwsrc/CwLocalDir/* $stale; Set-Content -LiteralPath (Join-Path $stale \"CwLocalDir.psm1\") -Value \"function Get-CwLocalDir { 0 }\"'"
+    //
+    // /cwmodhome's .local is a symlink planted at a root-only directory that
+    // already holds a module, for the steps that must refuse it.
+    setup = "mkdir -p /root/cw-protected-mods/share/powershell/Modules/CwPlanted /cwmodhome && printf 'function Get-CwPlanted { 1 }\\n' > /root/cw-protected-mods/share/powershell/Modules/CwPlanted/CwPlanted.psm1 && ln -sfn /root/cw-protected-mods /cwmodhome/.local && pwsh -NoProfile -NonInteractive -Command 'foreach ($p in \"CwLocalDir:2.1.0\",\"CwLocalZip:1.4.2\",\"CwMismatch:1.0.0\") { $n,$v = $p -split \":\"; $d = Join-Path /srv/cwsrc $n; New-Item -ItemType Directory -Force -Path $d | Out-Null; Set-Content -LiteralPath (Join-Path $d ($n + \".psm1\")) -Value (\"function Get-\" + $n + \" { 1 }\"); New-ModuleManifest -Path (Join-Path $d ($n + \".psd1\")) -ModuleVersion $v -RootModule ($n + \".psm1\") -Author cw -Description cw }; $w = New-Item -ItemType Directory -Force -Path /srv/cwzip/CwLocalZip; Copy-Item /srv/cwsrc/CwLocalZip/* $w; Compress-Archive -Path $w -DestinationPath /srv/cwsrc/CwLocalZip.zip -Force; $m = \"/cwhome3/.local/share/powershell/Modules\"; $seed = Join-Path $m \"CwSeededManual/1.0.0\"; New-Item -ItemType Directory -Force -Path $seed | Out-Null; Set-Content -LiteralPath (Join-Path $seed \"CwSeededManual.psm1\") -Value \"function Get-CwSeededManual { 1 }\"; $stale = Join-Path $m \"CwLocalDir/2.1.0\"; New-Item -ItemType Directory -Force -Path $stale | Out-Null; Copy-Item /srv/cwsrc/CwLocalDir/* $stale; Set-Content -LiteralPath (Join-Path $stale \"CwLocalDir.psm1\") -Value \"function Get-CwLocalDir { 0 }\"'"
     verify = "tests/module_from_path_verify.ws"
 
     step "from_dir" {
@@ -2209,6 +2283,20 @@ package "windows_powershell" {
         edition = :pwsh
         home = "/cwhome3"
       }
+    }
+
+    step "planted_link" {
+      description = "A symlink on a directory between the home and the module directory is an error, and nothing is copied through it"
+      resource = "module_from_path"
+      expect = "error"
+      properties { name = "CwLocalDir" version = "2.1.0" source = "/srv/cwsrc/CwLocalDir" scope = :current_user edition = :pwsh home = "/cwmodhome" }
+    }
+
+    step "planted_link_absent" {
+      description = "Removing a module through a symlinked directory in the home is an error, and nothing is deleted through it"
+      resource = "module_from_path"
+      expect = "error"
+      properties { name = "CwPlanted" ensure = :absent scope = :current_user edition = :pwsh home = "/cwmodhome" }
     }
   }
 
@@ -2552,7 +2640,15 @@ package "windows_powershell" {
     // policy for PowerShell 7 to remove, a PowerShell 7 module-logging list
     // that is enabled with the two wanted names plus one nobody asked for,
     // and Windows PowerShell module logging to switch off.
-    setup = "mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & reg add HKCU\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore /v ExecutionPolicy /t REG_SZ /d Restricted /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v Microsoft.PowerShell.Utility /t REG_SZ /d Microsoft.PowerShell.Utility /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v PSReadLine /t REG_SZ /d PSReadLine /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v CwExtra /t REG_SZ /d CwExtra /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames /v CwSeeded /t REG_SZ /d CwSeeded /f & exit 0"
+    //
+    // Then links planted in three user homes, each aimed at a target that
+    // stands in for a file the user cannot touch: junchome's Documents is a
+    // directory junction (which a non-admin user can create) onto a
+    // directory holding a Windows PowerShell profile but no PowerShell
+    // folder; cfghome's Documents\PowerShell is a junction onto a directory
+    // holding a powershell.config.json; and linkhome's all-hosts profile and
+    // configuration file are file symlinks.
+    setup = "mkdir C:\\weave-ps\\protected\\WindowsPowerShell 2>NUL & echo # protected>C:\\weave-ps\\protected\\WindowsPowerShell\\profile.ps1 & mkdir C:\\weave-ps\\junchome 2>NUL & mklink /J C:\\weave-ps\\junchome\\Documents C:\\weave-ps\\protected & mkdir C:\\weave-ps\\protectedcfg 2>NUL & echo {\"CwSecret\":1}>C:\\weave-ps\\protectedcfg\\powershell.config.json & mkdir C:\\weave-ps\\cfghome\\Documents 2>NUL & mklink /J C:\\weave-ps\\cfghome\\Documents\\PowerShell C:\\weave-ps\\protectedcfg & echo # secret>C:\\weave-ps\\secret.ps1 & echo {\"CwSecret\":1}>C:\\weave-ps\\secret.config.json & mkdir C:\\weave-ps\\linkhome\\Documents\\WindowsPowerShell 2>NUL & mkdir C:\\weave-ps\\linkhome\\Documents\\PowerShell 2>NUL & mklink C:\\weave-ps\\linkhome\\Documents\\WindowsPowerShell\\profile.ps1 C:\\weave-ps\\secret.ps1 & mklink C:\\weave-ps\\linkhome\\Documents\\PowerShell\\powershell.config.json C:\\weave-ps\\secret.config.json & mkdir C:\\weave-ps 2>NUL & mkdir C:\\weave-ps\\home 2>NUL & mkdir C:\\weave-ps\\feed 2>NUL & reg add HKCU\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore /v ExecutionPolicy /t REG_SZ /d Restricted /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v Microsoft.PowerShell.Utility /t REG_SZ /d Microsoft.PowerShell.Utility /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v PSReadLine /t REG_SZ /d PSReadLine /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ModuleLogging\\ModuleNames /v CwExtra /t REG_SZ /d CwExtra /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging /v EnableModuleLogging /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ModuleLogging\\ModuleNames /v CwSeeded /t REG_SZ /d CwSeeded /f & exit 0"
     verify = "tests/windows_verify.ws"
 
     step "user_execution_policy" {
@@ -2713,6 +2809,65 @@ package "windows_powershell" {
         edition = :windows_powershell
         home = "C:\\weave-ps\\home"
       }
+    }
+
+    // Links planted in a user's tree: every step must refuse them, and
+    // verify checks that no target changed and nothing was created inside
+    // one.
+    step "profile_junction" {
+      description = "A directory junction between the home and a current-user profile is an error"
+      resource = "profile"
+      expect = "error"
+      properties { scope = :current_user_all_hosts edition = :windows_powershell home = "C:\\weave-ps\\junchome" content = "# written through the junction\n" }
+    }
+
+    step "snippet_junction_mkdir" {
+      description = "A junction is refused before a missing profile directory is created inside its target"
+      resource = "profile_snippet"
+      expect = "error"
+      properties { name = "planted" content = "Write-Host planted" edition = :pwsh home = "C:\\weave-ps\\junchome" }
+    }
+
+    step "config_junction" {
+      description = "A junction on the directory holding the current user's powershell.config.json is an error"
+      resource = "config_setting"
+      expect = "error"
+      properties { key = "CwSecret" value = "2" value_type = :int scope = :current_user home = "C:\\weave-ps\\cfghome" }
+    }
+
+    step "execution_policy_junction_absent" {
+      description = "Removing the PowerShell 7 current-user execution policy through a junction is an error"
+      resource = "execution_policy"
+      expect = "error"
+      properties { ensure = :absent scope = :current_user edition = :pwsh home = "C:\\weave-ps\\cfghome" }
+    }
+
+    step "profile_file_link" {
+      description = "A file symlink at a current-user profile is an error"
+      resource = "profile"
+      expect = "error"
+      properties { scope = :current_user_all_hosts edition = :windows_powershell home = "C:\\weave-ps\\linkhome" content = "# secret\n" }
+    }
+
+    step "profile_file_link_absent" {
+      description = "Deleting a current-user profile that is a file symlink is an error"
+      resource = "profile"
+      expect = "error"
+      properties { ensure = :absent scope = :current_user_all_hosts edition = :windows_powershell home = "C:\\weave-ps\\linkhome" }
+    }
+
+    step "snippet_file_link" {
+      description = "Editing a block in a current-user profile that is a file symlink is an error"
+      resource = "profile_snippet"
+      expect = "error"
+      properties { name = "planted" content = "Write-Host planted" scope = :current_user_all_hosts edition = :windows_powershell home = "C:\\weave-ps\\linkhome" }
+    }
+
+    step "config_file_link_absent" {
+      description = "Removing a key from a current-user powershell.config.json that is a file symlink is an error"
+      resource = "config_setting"
+      expect = "error"
+      properties { key = "CwSecret" ensure = :absent scope = :current_user home = "C:\\weave-ps\\linkhome" }
     }
 
     step "inbox_module" {
