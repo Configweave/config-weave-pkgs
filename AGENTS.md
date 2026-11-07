@@ -42,7 +42,9 @@ To test both repos together, point `CONFIG_WEAVE` at a local build:
   then `git config core.sshCommand "ssh -o IdentitiesOnly=yes -i $HOME/.ssh/cw-pkgs.pub"`.
 - There is no affected-test selector: validation always covers every package,
   and it takes seconds.
-- This repo has no GitHub CI.
+- GitHub CI runs only on pushes to `main` (`.github/workflows/release.yml`):
+  `just ci::check`, then a tag and GitHub release when HEAD carries
+  `pre-release: true` (vX.Y.Z-alpha) or `release: true` (vX.Y.Z).
 
 ## Convergence (required before merge)
 
