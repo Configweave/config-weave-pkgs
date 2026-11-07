@@ -83,8 +83,8 @@ The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
 rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
-- `linux_files`: files (exact content or URL-fetched), directories,
-  symlinks/hard links, archives and modes.
+- `linux_files`: files (exact content or URL-fetched), single lines in
+  text files, directories, symlinks/hard links, archives and modes.
 - `linux_packages`: the package-manager detection gatherer.
 - `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper`:
   one package per package manager — install, cache refresh and, where the
@@ -124,7 +124,8 @@ extensions into Visual Studio and VS Code.
 
 ### `linux_files`
 
-Files, directories, links, archives and modes. 6 resources and 2 gatherers:
+Files, lines, directories, links, archives and modes. 7 resources and 2
+gatherers:
 
 - `file` — exact `content`, or fetched from `url`. Writes go to a temp file
   beside the target and are renamed into place, keeping the old file's owner
@@ -138,6 +139,20 @@ Files, directories, links, archives and modes. 6 resources and 2 gatherers:
   `group`, `check` runs no shell command.
 - `template` — a Tera template rendered the same way as `file`; takes
   `ensure`.
+- `line_in_file` — one literal `line` in a text file. `:present` keeps
+  exactly one copy: it appends the line when missing and collapses duplicate
+  matches to the first; `:absent` removes every match. Lines are compared
+  whole and byte for byte (no regex, no trimming, and a line ending in CR
+  does not match); an empty `line` or one holding CR or LF is an error.
+  Other lines keep their content and order. A missing file is created
+  (with its parent directories) when `create` is true, the default, and is
+  an error when it is false; `:absent` never creates a file. Newline policy:
+  a file that already holds the right lines is never rewritten, so a missing
+  final newline alone is not drift; every write ends the file with a newline,
+  and removing the only line leaves an empty file. Writes keep the file's
+  owner, group and mode and go through a symlink at `path`. A file that is
+  not valid UTF-8, or a directory at `path`, is an error, never rewritten.
+  Steps that edit the same file must be ordered with `requires`.
 - `directory` — creates missing parents. `:absent` is recursive and refuses
   `/` and every top-level directory.
 - `symlink` — symbolic or hard links. A dangling link at `path` is replaced,
