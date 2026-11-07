@@ -124,7 +124,7 @@ extensions into Visual Studio and VS Code.
 
 ### `linux_files`
 
-Files, lines, directories, links, archives and modes. 7 resources and 2
+Files, lines, blocks, directories, links, archives and modes. 8 resources and 2
 gatherers:
 
 - `file` — exact `content`, or fetched from `url`. Writes go to a temp file
@@ -153,6 +153,26 @@ gatherers:
   owner, group and mode and go through a symlink at `path`. A file that is
   not valid UTF-8, or a directory at `path`, is an error, never rewritten.
   Steps that edit the same file must be ordered with `requires`.
+- `block_in_file` — one managed `block` of lines between the marker lines
+  `# BEGIN <marker_label>` and `# END <marker_label>` (`marker_label`
+  defaults to `config-weave`). `:present` appends the block when the file
+  has none and replaces only the lines between its own markers; `:absent`
+  removes the block and both markers and needs no `block`. Text outside the
+  block and blocks with other labels keep their bytes and order. Markers
+  are whole lines compared byte for byte, so a marker with extra spaces or a
+  trailing CR is ordinary text. Malformed markers are an error and leave the
+  file untouched: a BEGIN without a later END, an END without an earlier
+  BEGIN, or more than one BEGIN or END line for the label (nested or
+  duplicate blocks). An empty `block` with `:present`, a `block` holding its
+  own marker line, and an empty or multi-line `marker_label` are errors.
+  `create` works as in `line_in_file`. Newline policy: one trailing newline
+  of `block` is dropped, so `"a"` and `"a\n"` are the same block; a file
+  that already holds the wanted state is never rewritten, so a missing final
+  newline alone is not drift; every write ends the file with a newline, and
+  removing a block that was the whole file leaves an empty file. Writes keep
+  the file's owner, group and mode and go through a symlink at `path`. A
+  file that is not valid UTF-8, or a directory at `path`, is an error. Steps
+  that edit the same file must be ordered with `requires`.
 - `directory` — creates missing parents. `:absent` is recursive and refuses
   `/` and every top-level directory.
 - `symlink` — symbolic or hard links. A dangling link at `path` is replaced,
