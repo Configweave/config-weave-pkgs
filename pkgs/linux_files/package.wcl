@@ -126,6 +126,24 @@ package "linux_files" {
     param "create" { description = "With :present, create a missing file (and its parent directories) holding only the line; when false a missing file is an error. Ignored with :absent, which never creates a file" type = "bool" default = true }
   }
 
+  resource "block_in_file" {
+    description = "Ensure one managed block of lines is in a text file between the marker lines '# BEGIN <marker_label>' and '# END <marker_label>', or is gone with its markers. :present appends the block when the file has none and replaces only the lines between its own markers; :absent removes the block and both markers. Text outside the block, and blocks with other labels, keep their bytes and order. Markers are whole lines compared byte for byte (a marker with extra spaces or a trailing CR is ordinary text). Malformed markers are an error and the file is left untouched: a BEGIN without a later END, an END without an earlier BEGIN, or more than one BEGIN or END line for the label (nested or duplicate blocks). Newline policy: one trailing newline of block is dropped, so 'a' and 'a\\n' are the same block; a file that already holds the wanted state is never rewritten, so a missing final newline alone is not drift; every write ends the file with a newline, and removing a block that was the whole file leaves an empty file. Writes go to a temp file beside the target and are renamed into place, keeping the file's owner, group and mode; a symlink at path is written through. A file that is not valid UTF-8 text, or a directory at path, is an error"
+    script = "resources/block_in_file.ws"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
+    param "block" { description = "The block's lines, without the marker lines. Required and not empty with :present; must not contain a line equal to its own BEGIN or END marker. Ignored with :absent" type = "string" default = "" }
+    param "marker_label" { description = "The label in the marker lines; must not be empty or contain CR or LF. Blocks with different labels are independent" type = "string" default = "config-weave" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Keep the block with exactly this content, appending it when missing" }
+      symbol "absent"  { description = "Remove the block and its markers; a missing file or block is left as it is" }
+    }
+    param "create" { description = "With :present, create a missing file (and its parent directories) holding only the block; when false a missing file is an error. Ignored with :absent, which never creates a file" type = "bool" default = true }
+  }
+
   gatherer "path_stat" {
     description = "Report a path's existence, type, size and mode. Describes the path itself and never follows a symlink: a dangling symlink exists, and a symlink to a directory reports is_symlink rather than is_dir"
     script = "gatherers/path_stat.ws"
@@ -674,6 +692,219 @@ TMPL
       resource = "line_in_file"
       expect = "error"
       properties { path = "/tmp/cw-line-bad/binary.conf" line = "a" ensure = :absent }
+    }
+  }
+
+  // Seeds: a file with no final newline and an unmanaged owner and mode,
+  // a block between text with a tab and a look-alike marker with a
+  // trailing space, a block with another label, an already-correct block
+  // with no final newline, and a symlink to a 0600 file.
+  // tests/block_verify.ws checks the bytes, the attributes and that the
+  // symlink survives.
+  test "blocks_converge" {
+    description = "block_in_file appends, replaces only its own block, removes blocks with their markers, creates files and keeps surrounding text, attributes and symlinks"
+    image = "debian:12"
+    group = "files"
+    setup = "mkdir -p /tmp/cw-block && cd /tmp/cw-block && printf 'x\\ny' > append.conf && chown 65534:65534 append.conf && chmod 640 append.conf && printf 'head \\t\\n# BEGIN config-weave\\nold\\n# END config-weave\\n# BEGIN other\\nkeep\\n# END other\\n# BEGIN config-weave \\ntail\\n' > replace.conf && printf 'a\\n# BEGIN config-weave\\nsame\\n# END config-weave' > exact.conf && printf '# BEGIN config-weave\\nx\\n# END config-weave\\n' > label.conf && printf 'base\\n' > multi.conf && printf 'a\\n# BEGIN config-weave\\nsecret\\n# END config-weave\\nb\\n' > remove.conf && printf '# BEGIN other\\nk\\n# END other\\n' > remove_other.conf && printf '# BEGIN config-weave\\nz\\n# END config-weave\\n' > remove_whole.conf && printf 'r\\n' > real.conf && chown 65534:65534 real.conf && chmod 600 real.conf && ln -s /tmp/cw-block/real.conf link.conf"
+    verify = "tests/block_verify.ws"
+
+    step "append" {
+      description = "A missing block is appended after a last line with no newline, keeping owner and mode"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/append.conf" block = "b1\nb2" }
+    }
+
+    step "replace" {
+      description = "Only the owned block is replaced; surrounding text, a look-alike marker and another label's block keep their bytes"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/replace.conf" block = "new1\nnew2\n" }
+    }
+
+    step "exact" {
+      description = "A file holding the block is already configured; a trailing newline in block and a missing final newline are not drift"
+      resource = "block_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-block/exact.conf" block = "same\n" }
+    }
+
+    step "label" {
+      description = "A block with another marker_label is added beside the default block, which is untouched"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/label.conf" block = "y" marker_label = "app" }
+    }
+
+    step "multi_a" {
+      description = "First of two blocks in one file"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/multi.conf" block = "1" marker_label = "a" }
+    }
+
+    step "multi_b" {
+      description = "Second block in the same file, ordered after the first"
+      resource = "block_in_file"
+      requires = ["multi_a"]
+      properties { path = "/tmp/cw-block/multi.conf" block = "2" marker_label = "b" }
+    }
+
+    step "remove" {
+      description = "Absent removes the block and both markers without needing block content"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/remove.conf" ensure = :absent }
+    }
+
+    step "remove_other" {
+      description = "Absent with no block for the label is already configured and keeps other labels"
+      resource = "block_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-block/remove_other.conf" ensure = :absent }
+    }
+
+    step "remove_whole" {
+      description = "Removing a block that was the whole file leaves an empty file"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/remove_whole.conf" ensure = :absent }
+    }
+
+    step "remove_missing" {
+      description = "Absent on a missing file is already configured and creates nothing"
+      resource = "block_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-block/missing.conf" ensure = :absent create = true }
+    }
+
+    step "create" {
+      description = "Present creates a missing file and its parent directory"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/new/created.conf" block = "hello" }
+    }
+
+    step "no_create" {
+      description = "Present on a missing file with create = false is an error"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block/nocreate.conf" block = "hello" create = false }
+    }
+
+    step "via_link" {
+      description = "A symlink at path is written through, stays a symlink, and the target keeps its owner, group and mode"
+      resource = "block_in_file"
+      properties { path = "/tmp/cw-block/link.conf" block = "s" }
+    }
+  }
+
+  // Every step is an error and writes nothing, so steps that share a file
+  // need no requires. tests/block_verify.ws checks that each seeded file
+  // still holds its seed bytes.
+  test "block_invalid_input" {
+    description = "block_in_file rejects bad blocks, labels and paths, malformed markers, directories and non-UTF-8 files, and leaves them untouched"
+    image = "debian:12"
+    group = "files"
+    setup = "mkdir -p /tmp/cw-block-bad && cd /tmp/cw-block-bad && printf 'k\\n' > keep.conf && printf '# BEGIN config-weave\\nx\\n' > begin_only.conf && printf 'x\\n# END config-weave\\n' > end_only.conf && printf '# END config-weave\\n# BEGIN config-weave\\n' > reversed.conf && printf '# BEGIN config-weave\\n# BEGIN config-weave\\nx\\n# END config-weave\\n# END config-weave\\n' > nested.conf && printf '# BEGIN config-weave\\na\\n# END config-weave\\n# BEGIN config-weave\\nb\\n# END config-weave\\n' > duplicate.conf && printf '\\377\\376\\n' > binary.conf"
+    verify = "tests/block_verify.ws"
+
+    step "empty_block" {
+      description = "An empty block is rejected with :present"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "" }
+    }
+
+    step "newline_block" {
+      description = "A block of only one newline is empty and rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "\n" }
+    }
+
+    step "empty_label" {
+      description = "An empty marker_label is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "a" marker_label = "" }
+    }
+
+    step "multiline_label" {
+      description = "A marker_label with an embedded LF is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "a" marker_label = "a\nb" }
+    }
+
+    step "block_has_begin" {
+      description = "A block holding its own BEGIN marker is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "x\n# BEGIN config-weave" }
+    }
+
+    step "block_has_end" {
+      description = "A block holding its own END marker is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/keep.conf" block = "x\n# END config-weave\ny" }
+    }
+
+    step "begin_only" {
+      description = "A BEGIN marker without an END marker is an error"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/begin_only.conf" block = "a" }
+    }
+
+    step "end_only" {
+      description = "An END marker without a BEGIN marker is an error, also for absent"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/end_only.conf" ensure = :absent }
+    }
+
+    step "reversed" {
+      description = "An END marker before the BEGIN marker is an error"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/reversed.conf" block = "a" }
+    }
+
+    step "nested" {
+      description = "Nested marker pairs are an error, also for absent"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/nested.conf" ensure = :absent }
+    }
+
+    step "duplicate" {
+      description = "Two marker pairs with the same label are an error"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/duplicate.conf" block = "a" }
+    }
+
+    step "relative" {
+      description = "A relative path is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "tmp/cw-block-bad/rel.conf" block = "a" }
+    }
+
+    step "dotdot" {
+      description = "A path with a .. segment is rejected"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/../cw-block-escape.conf" block = "a" }
+    }
+
+    step "directory" {
+      description = "A directory at path is an error"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad" block = "a" }
+    }
+
+    step "binary" {
+      description = "A non-UTF-8 file is an error and is not rewritten"
+      resource = "block_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-block-bad/binary.conf" block = "a" }
     }
   }
 }
