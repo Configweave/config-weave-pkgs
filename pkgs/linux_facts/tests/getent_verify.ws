@@ -84,6 +84,16 @@ fn gathers(facts: Value) -> Result[bool, string] {
     Ok(true)
 }
 
+fn get_bool(m: Value, key: string, fallback: bool) -> bool {
+    if let Some(v) = m.get(key) { return v.as_bool().unwrap_or(fallback) }
+    fallback
+}
+
+fn get_int(m: Value, key: string, fallback: int) -> int {
+    if let Some(v) = m.get(key) { return v.as_int().unwrap_or(fallback) }
+    fallback
+}
+
 // lookup() with PATH pointing at a fixture directory only.
 fn with_path(dir: string, db: string, key: string) -> Result[Value, string] {
     let old = env::get("PATH").unwrap_or("/usr/sbin:/usr/bin:/sbin:/bin")
@@ -126,11 +136,11 @@ fn errors(facts: Value) -> Result[bool, string] {
 
     // A keyed exit 2 from the fixture is not found, not an error.
     let nf = with_path("/tmp/cw-getent-exit2", "hosts", "cw-x")?
-    if nf.get("found").and_then(|v| v.as_bool()).unwrap_or(true) { return Err("keyed exit 2: found should be false") }
+    if get_bool(nf, "found", true) || get_int(nf, "count", -1) != 0 { return Err("keyed exit 2: expected found = false and count = 0") }
 
     // Operands reach getent unchanged, after "--".
     let ok = with_path("/tmp/cw-getent-args", "passwd", "a b'c $HOME")?
-    if ok.get("count").and_then(|v| v.as_int()).unwrap_or(0) != 1 { return Err("args fixture: expected 1 record") }
+    if get_int(ok, "count", 0) != 1 { return Err("args fixture: expected 1 record") }
     let argv = fs::read("/tmp/cw-getent-args.out")?
     if argv != "--\npasswd\na b'c $HOME\n" { return Err("getent got the wrong operands: " + argv.replace("\n", "|")) }
     Ok(true)
