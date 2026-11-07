@@ -2,7 +2,6 @@ use value
 use fs
 use path
 use log
-use shell
 use common
 
 // One managed block of lines in a text file, between the marker lines
@@ -30,27 +29,6 @@ struct Want {
     create: bool,
 }
 
-// The file's lines without the terminator after the last one: "" gives no
-// lines, "a\nb\n" and "a\nb" both give ["a", "b"].
-fn split_lines(text: string) -> List[string] {
-    let out: List[string] = []
-    if text == "" { return out }
-    let parts = text.split("\n")
-    let n = parts.len()
-    if text.ends_with("\n") { n = n - 1 }
-    let i = 0
-    while i < n {
-        out.push(parts.get(i).unwrap_or(""))
-        i = i + 1
-    }
-    out
-}
-
-fn join_lines(lines: List[string]) -> string {
-    if lines.is_empty() { return "" }
-    lines.join("\n") + "\n"
-}
-
 fn want_label(params: Value) -> Result[string, string] {
     let label = common::param_str(params, "marker_label", "config-weave")
     if label == "" { return Err("'marker_label' must not be empty") }
@@ -65,7 +43,7 @@ fn want_body(params: Value, begin: string, end: string) -> Result[List[string], 
     // "\n" is one dropped trailing newline, so it is empty too; split_lines
     // alone would read it as one empty line.
     let text = common::param_str(params, "block", "")
-    let body = split_lines(text)
+    let body = common::split_lines(text)
     if text == "\n" || body.is_empty() { return Err("missing 'block' parameter (an empty block is not allowed with :present)") }
     for l in body {
         if l == begin || l == end {
@@ -99,13 +77,6 @@ fn want(params: Value) -> Result[Want, string] {
         present: present,
         create: common::param_bool(params, "create", true),
     })
-}
-
-// A file that cannot be read as UTF-8 text is an error, not drift: a
-// rewrite would destroy content this resource does not understand.
-fn read_text(p: string) -> Result[string, string] {
-    if let Ok(text) = fs::read(p) { return Ok(text) }
-    Err("cannot read '" + p + "' as UTF-8 text; block_in_file edits text files only")
 }
 
 // The owned block as [begin index, end index], or [-1, -1] when the file
@@ -170,28 +141,6 @@ fn edited(lines: List[string], w: Want) -> Result[Option[List[string]], string] 
     Ok(Some(out))
 }
 
-// Put the edited temp file in place. A symlink at path is written through
-// by common::install_tmp, and that copy gives the target the temp file's
-// mode. So for a symlink to an existing file, read the target's owner,
-// group and mode first (stat -L, numeric ids) and set them back after the
-// write. chown and chmod follow the link, so the link itself is kept.
-fn install(tmp: string, p: string, params: Value) -> Result[unit, string] {
-    let none = common::attrs(params)?
-    if fs::read_link(p).is_err() || !fs::is_file(p) { return common::install_tmp(tmp, p, none) }
-    let out = shell::bash("stat -L -c '%a %u %g' -- " + common::q(p), Value::Null)?
-    if !out.success {
-        fs::delete(tmp).unwrap_or(())
-        return Err(common::cmd_err("stat " + p, out))
-    }
-    let f = out.stdout.trim().split(" ")
-    let mode = f.get(0).unwrap_or("")
-    let ids = f.get(1).unwrap_or("") + ":" + f.get(2).unwrap_or("")
-    common::install_tmp(tmp, p, none)?
-    // chown first: it clears setuid/setgid bits, which the chmod puts back.
-    common::run("chown " + p, "chown -- " + common::q(ids) + " " + common::q(p))?
-    common::run("chmod " + p, "chmod -- " + common::q(mode) + " " + common::q(p))
-}
-
 fn check(params: Value) -> Result[CheckResult, string] {
     let w = want(params)?
     if !fs::is_file(w.path) {
@@ -201,7 +150,7 @@ fn check(params: Value) -> Result[CheckResult, string] {
         if w.present { return Ok(CheckResult::NotConfigured) }
         return Ok(CheckResult::AlreadyConfigured)
     }
-    let next = edited(split_lines(read_text(w.path)?), w)?
+    let next = edited(common::split_lines(common::read_text(w.path, "block_in_file")?), w)?
     if next.is_none() { Ok(CheckResult::AlreadyConfigured) } else { Ok(CheckResult::NotConfigured) }
 }
 
@@ -216,16 +165,16 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         log::info("creating " + w.path)
         fs::mkdir(path::parent(w.path))?
         let tmp = common::tmp_sibling(w.path)
-        fs::write(tmp, join_lines(wanted_block(w)))?
-        install(tmp, w.path, params)?
+        fs::write(tmp, common::join_lines(wanted_block(w)))?
+        common::install_edited(tmp, w.path, params)?
         return Ok(ApplyResult::Success)
     }
-    let next = edited(split_lines(read_text(w.path)?), w)?
+    let next = edited(common::split_lines(common::read_text(w.path, "block_in_file")?), w)?
     if let Some(lines) = next {
         log::info("editing " + w.path)
         let tmp = common::tmp_sibling(w.path)
-        fs::write(tmp, join_lines(lines))?
-        install(tmp, w.path, params)?
+        fs::write(tmp, common::join_lines(lines))?
+        common::install_edited(tmp, w.path, params)?
     }
     Ok(ApplyResult::Success)
 }
