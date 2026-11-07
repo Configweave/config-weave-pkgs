@@ -14,7 +14,7 @@ fn services(facts: Value) -> Result[List[Value], string] {
 }
 
 fn show(m: Value) -> string {
-    field(m, "name") + " {active=" + field(m, "active") + " sub=" + field(m, "sub") + " enabled=" + field(m, "enabled") + "}"
+    field(m, "name") + " (active=" + field(m, "active") + " sub=" + field(m, "sub") + " enabled=" + field(m, "enabled") + ")"
 }
 
 // Test services_no_manager: no manager is complete, so no services.

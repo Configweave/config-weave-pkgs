@@ -14,7 +14,7 @@ fn services(facts: Value) -> Result[List[Value], string] {
 }
 
 fn show(m: Value) -> string {
-    field(m, "name") + " {active=" + field(m, "active") + " sub=" + field(m, "sub") + " enabled=" + field(m, "enabled") + "}"
+    field(m, "name") + " (active=" + field(m, "active") + " sub=" + field(m, "sub") + " enabled=" + field(m, "enabled") + ")"
 }
 
 // Every entry is complete, enabled is enabled or disabled, and no name
@@ -34,7 +34,7 @@ fn well_formed(svc: List[Value]) -> Result[unit, string] {
 }
 
 fn expect_entry(svc: List[Value], name: string, active: string, sub: string, enabled: string) -> Result[unit, string] {
-    let want = name + " {active=" + active + " sub=" + sub + " enabled=" + enabled + "}"
+    let want = name + " (active=" + active + " sub=" + sub + " enabled=" + enabled + ")"
     if let Some(s) = svc.find(|s| field(s, "name") == name) {
         if show(s) != want { return Err("want " + want + ", got " + show(s)) }
         return Ok(())
