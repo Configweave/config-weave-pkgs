@@ -40,12 +40,29 @@ To test both repos together, point `CONFIG_WEAVE` at a local build:
   then `git config core.sshCommand "ssh -o IdentitiesOnly=yes -i $HOME/.ssh/cw-pkgs.pub"`.
 - There is no affected-test selector: validation always covers every package,
   and it takes seconds.
-- `ci::check` does not prove that a package converges. When a card changes a
-  package's behaviour, also run its convergence tests with a filter, for
-  example `just test linux_files` or `just test mssql:config_converges`, when
-  the target has vmlab and KVM. Put the result in the move comment, or say
-  that the target could not run it. Never run `just test` unfiltered.
 - This repo has no GitHub CI.
+
+## Convergence (required before merge)
+
+`ci::check` does not prove that a package converges. A card that adds or
+changes a resource also runs its own test declarations on the vmlab target
+`config-weave-helios-vmlab` (operator decision, 2026-11-07). It has vmlab,
+KVM and the static config-weave v0.11.0-alpha on `PATH` (`~/.local/bin`).
+One filter per run, `package:test`:
+
+```
+terrarium repo checkout config-weave-pkgs --target config-weave-helios-vmlab --branch <card-branch> --path /home/configweave/src/<card-id>
+terrarium run config-weave-helios-vmlab --name <card-id>-converge -- sh -c 'export PATH=$HOME/.local/bin:$PATH; cd $HOME/src/<card-id> && config-weave test . <package>:<test>'
+```
+
+Put each test's summary line and any failure lines in the move comment.
+Never run `just test` unfiltered. Notes on the testlab:
+- Every step is checked before the first apply, so a step that `requires`
+  an earlier step on the same file sees the file before that step ran. The
+  protocol's second apply already proves idempotence: do not add "run it
+  again" steps.
+- Package installs inside the micro-VMs are slow (minutes for one apt
+  package): keep setups small.
 
 ## Flow (the `delivery-process` skill)
 
