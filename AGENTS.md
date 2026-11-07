@@ -16,12 +16,26 @@ just ci::check
 It runs `config-weave validate .`: a WCL parse, schema check and wscript
 compile of every package and the harness playbook (`.just/ci/mod.just`). It
 needs the `config-weave` binary on `PATH`, at the release pinned in
-`justfile` (`config_weave_version`). Install it with `just install-tool`, or
-point `CONFIG_WEAVE` at a local build to test both repos together:
+`justfile` (`config_weave_version`). On the target the pinned binary lives in
+`/work/config-weave/lead/.tools` (it survives a target rebuild). The full
+command, the same one the merge queue runs, installs it when it is missing
+(`cargo install` skips a tag that is already installed):
+
+```
+export CARGO_INSTALL_ROOT=/work/config-weave/lead/.tools PATH="/work/config-weave/lead/.tools/bin:$PATH"; just install-tool && just ci::check
+```
+
+To test both repos together, point `CONFIG_WEAVE` at a local build:
 `CONFIG_WEAVE=../config-weave/target/debug/config-weave just ci::check`.
 
 - Target: `config-weave-helios-build`. The sandbox has no compilers.
-  `terrarium exec config-weave-helios-build -- sh -c 'cd <your checkout>/config-weave-pkgs && just ci::check'`
+  Run the command above with `terrarium exec config-weave-helios-build -- sh -c 'cd <checkout> && ...'`.
+  The target sees only `/work/config-weave/lead`: until your workspace is
+  mounted there, ask the lead to check out your pushed commit under
+  `/work/config-weave/lead/checks/<card-id>`, and validate in that directory.
+- Pushing: the ssh-agent holds two deploy keys. Pin this checkout to its own
+  key, or GitHub denies the push: `ssh-add -L | grep 'github-deploy-config-weave-pkgs$' > ~/.ssh/cw-pkgs.pub`,
+  then `git config core.sshCommand "ssh -o IdentitiesOnly=yes -i $HOME/.ssh/cw-pkgs.pub"`.
 - There is no affected-test selector: validation always covers every package,
   and it takes seconds.
 - `ci::check` does not prove that a package converges. When a card changes a
