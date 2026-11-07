@@ -67,6 +67,9 @@ Never run `just test` unfiltered. Notes on the testlab:
   again" steps.
 - Package installs inside the micro-VMs are slow (minutes for one apt
   package): keep setups small.
+- `config-weave test` writes no JUnit, TAP or CTRF file. Do not write one by
+  hand for `terrarium test push`: the test output lines in the move comment
+  are the evidence, and the lead re-runs the tests at review.
 
 ## Flow (the `delivery-process` skill)
 
