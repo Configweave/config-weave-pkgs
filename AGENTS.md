@@ -34,7 +34,9 @@ To test both repos together, point `CONFIG_WEAVE` at a local build:
   `terrarium repo checkout config-weave-pkgs --target config-weave-helios-build --branch <card-branch> --path /tmp/src/<card-id>`
   `terrarium exec config-weave-helios-build -- sh -c 'cd /tmp/src/<card-id> && <the command above>'`
   The first install of the pinned binary takes about 9 minutes: use
-  `terrarium run` then. After a new push, run `repo checkout` again.
+  `terrarium run` then. After a new push, run `repo checkout` again and check the HEAD line it
+  prints. After a rebase or force push it says "the branch has diverged" and
+  keeps the old commit: use a new `--path` then.
 - Pushing: the ssh-agent holds two deploy keys. Pin this checkout to its own
   key, or GitHub denies the push: `ssh-add -L | grep 'github-deploy-config-weave-pkgs$' > ~/.ssh/cw-pkgs.pub`,
   then `git config core.sshCommand "ssh -o IdentitiesOnly=yes -i $HOME/.ssh/cw-pkgs.pub"`.
