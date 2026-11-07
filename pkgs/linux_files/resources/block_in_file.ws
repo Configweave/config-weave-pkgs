@@ -62,8 +62,11 @@ fn want_label(params: Value) -> Result[string, string] {
 
 // The block's lines. Only checked for :present; :absent needs no content.
 fn want_body(params: Value, begin: string, end: string) -> Result[List[string], string] {
-    let body = split_lines(common::param_str(params, "block", ""))
-    if body.is_empty() { return Err("missing 'block' parameter (an empty block is not allowed with :present)") }
+    // "\n" is one dropped trailing newline, so it is empty too; split_lines
+    // alone would read it as one empty line.
+    let text = common::param_str(params, "block", "")
+    let body = split_lines(text)
+    if text == "\n" || body.is_empty() { return Err("missing 'block' parameter (an empty block is not allowed with :present)") }
     for l in body {
         if l == begin || l == end {
             return Err("'block' must not contain its own marker line '" + l + "'")
