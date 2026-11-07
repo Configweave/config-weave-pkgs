@@ -249,6 +249,28 @@ reports `:unknown`. `network.network_system` is a symbol (`:netplan`,
 `:unknown`), and a daemon counts as running under any init system, not
 only when systemd reports it. `services` includes installed unit files that
 are not loaded, each with an `enabled` state.
+
+`services` reads the first service manager present: systemd when
+`systemctl` reaches it, else OpenRC (`/run/openrc` exists and `rc-status`
+works), else runit (`runsv` supervises an entry of `/var/service`,
+`/etc/service`, `/service` or `/run/runit/service`), else SysV (`/etc/init.d`
+holds scripts and `service` exists), else none (`[]`). It does not use
+`init_system`, so a container whose PID 1 is an entrypoint still reports its
+services. Every entry is `{ name, active, sub, enabled }`; systemd's values
+are unchanged. The other managers use systemd's `active` words, their own
+`sub` word, and `enabled` = `enabled` or `disabled`:
+
+| Manager | Source | active / sub | enabled |
+|---|---|---|---|
+| OpenRC | `rc-service <name> status` exit code | 0 `active`/`started`, 3 `inactive`/`stopped`, 4 `deactivating`/`stopping`, 8 `activating`/`starting`, 16 `inactive`/`inactive`, 32 `failed`/`crashed` | linked into any `/etc/runlevels/<runlevel>` |
+| runit | `sv status` of the service-dir entry | `run` `active`/`run`, `down` `inactive`/`down`, `finish` `deactivating`/`finish`; a definition in `/etc/sv` or `/etc/runit/sv` that is not linked is `inactive`/`down` | linked into the service dir |
+| SysV | the script's `status` verb (LSB codes) | 0 `active`/`running`, 1 or 2 `failed`/`dead`, 3 `inactive`/`stopped` | an `/etc/rc?.d/S??<name>` start link |
+
+Installed but stopped services are listed. A service whose state command
+fails or answers another code (a runit link that nothing supervises yet, a
+SysV script whose missing `status` verb exits with a code other than 0 to
+3) is left out, and the gather does not fail. Such a script that exits 1
+reads as `failed`/`dead`, which is what LSB defines for that code.
 ### `linux_systemd`, `linux_openrc`, `linux_runit` and `linux_sysvinit`
 
 One package per init system, each with a `service` resource of the same

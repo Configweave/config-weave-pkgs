@@ -1,6 +1,7 @@
 use value
 use shell
 use common
+use services_backend
 
 fn systemctl(args: string) -> Option[string] {
     let out = shell::bash("systemctl " + args + " --type=service --no-pager --no-legend --plain 2>/dev/null", Value::Null).unwrap_or(CmdOutput { stdout: "", stderr: "", code: 127, success: false })
@@ -16,13 +17,12 @@ fn unit_fields(line: string) -> List[string] {
 }
 
 fn gather(params: Value) -> Result[Value, string] {
-    // No service manager => no services: an Err here would abort the whole
-    // gather phase on non-systemd hosts (and in containers, where systemctl
-    // is missing or cannot reach systemd). Consumers disambiguate via
-    // init_system.init.
-    let none: List[Value] = []
+    // No reachable systemd: OpenRC, runit or SysV, else an empty list. An
+    // Err here would abort the whole gather phase on hosts with no service
+    // manager (and in containers, where systemctl is missing or cannot
+    // reach systemd).
     let Some(units) = systemctl("list-units --all") else {
-        return Ok(Value::Map(#{ "services": Value::List(none) }))
+        return Ok(Value::Map(#{ "services": Value::List(services_backend::services()) }))
     }
 
     // Unit-file state (enabled, disabled, static, masked, ...) by name.
