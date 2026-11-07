@@ -184,7 +184,8 @@ gatherers:
 - `permissions` — owner, group and mode on an existing path (not recursive).
 - `path_stat` and `paths_matching` gatherers. `path_stat` describes the path
   itself and never follows a symlink; `mode` is the permission bits (420 for
-  0644).
+  0644). `uid` and `gid` are the numeric owner and group of the path itself
+  (a link's own owner, not its target's); a missing path has neither key.
 
 Paths must be absolute and free of `..`. `mode` is 3 or 4 octal digits;
 `owner` and `group` take a name or a numeric id. Every resource follows a

@@ -155,6 +155,8 @@ package "linux_files" {
     returns "is_symlink" { description = "True for a symlink (only when exists)" type = "bool" }
     returns "mode" { description = "Permission bits as an int, without file-type bits: 420 for 0644 (only when exists)" type = "int" }
     returns "modified" { description = "mtime as a unix timestamp (only when exists)" type = "int" }
+    returns "uid" { description = "Numeric owner of the path itself, a link's own owner and not its target's (only when exists; absent for a missing path, never 0 by default)" type = "int" }
+    returns "gid" { description = "Numeric group of the path itself, a link's own group and not its target's (only when exists; absent for a missing path, never 0 by default)" type = "int" }
     param "path" { description = "Target path" type = "string" required = true }
   }
 
@@ -529,6 +531,60 @@ TMPL
   }
   // stat stands in for a host with no shell tools at all: it is deleted,
   // so a check or apply that shelled out to it would fail.
+  // Seeds owners that no passwd entry names (numeric ids only). The symlink's
+  // owner differs from its target's, and the dangling link has its own owner.
+  // tests/path_stat_verify.ws checks uid and gid of each path, and that a
+  // missing path reports neither key. No resource steps.
+  test "path_stat_ownership" {
+    description = "path_stat reports the numeric uid and gid of the path itself, a link's own owner and not its target's, and no ids for a missing path"
+    image = "debian:12"
+    group = "files-stat"
+    setup = "mkdir -p /tmp/cw-own && printf 'f\\n' > /tmp/cw-own/file.txt && chown 3001:3002 /tmp/cw-own/file.txt && mkdir -p /tmp/cw-own/dir && chown 3003:3004 /tmp/cw-own/dir && printf 't\\n' > /tmp/cw-own/target.txt && chown 3007:3008 /tmp/cw-own/target.txt && ln -s /tmp/cw-own/target.txt /tmp/cw-own/link && chown -h 3005:3006 /tmp/cw-own/link && ln -s /tmp/cw-own/gone /tmp/cw-own/dangling && chown -h 3009:3009 /tmp/cw-own/dangling"
+    verify = "tests/path_stat_verify.ws"
+
+    gather "own_file" {
+      description = "A regular file reports its own ids"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/file.txt" }
+      expect { exists = true is_file = true }
+    }
+
+    gather "own_dir" {
+      description = "A directory reports its own ids"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/dir" }
+      expect { exists = true is_dir = true }
+    }
+
+    gather "own_link" {
+      description = "A symlink reports its own ids, not those of the file it points at"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/link" }
+      expect { exists = true is_symlink = true }
+    }
+
+    gather "own_target" {
+      description = "The symlink's target reports its own, different ids"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/target.txt" }
+      expect { exists = true is_file = true }
+    }
+
+    gather "own_dangling" {
+      description = "A dangling symlink reports its own ids"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/dangling" }
+      expect { exists = true is_symlink = true }
+    }
+
+    gather "own_missing" {
+      description = "A missing path reports exists = false and no ids"
+      from = "path_stat"
+      params { path = "/tmp/cw-own/missing" }
+      expect { exists = false }
+    }
+  }
+
   test "file_without_stat" {
     description = "file with no mode, owner or group checks and replaces content without running stat"
     image = "debian:12"
