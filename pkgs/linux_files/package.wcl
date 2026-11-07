@@ -109,6 +109,23 @@ package "linux_files" {
     param "group" { description = "Optional group, as a group name or numeric gid" type = "string" default = "" }
   }
 
+  resource "line_in_file" {
+    description = "Ensure one literal line is in a text file exactly once, or in it nowhere. Lines are compared whole and byte for byte (no regex, no trimming; a line ending in CR does not match). :present appends the line when it is missing and collapses duplicate matches to the first one; :absent removes every match. Other lines keep their content and order. Newline policy: a file that already holds the right lines is never rewritten, so a missing final newline alone is not drift; every write ends the file with a newline, and removing the only line leaves an empty file. Writes go to a temp file beside the target and are renamed into place, keeping the file's owner, group and mode; a symlink at path is written through. A file that is not valid UTF-8 text, or a directory at path, is an error"
+    script = "resources/line_in_file.ws"
+    concurrency = "parallel"
+    param "path" { description = "Absolute file path (no .. segments)" type = "string" required = true }
+    param "line" { description = "The exact line, without its newline; must not be empty or contain CR or LF" type = "string" required = true }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Keep exactly one copy of the line, appending it when missing" }
+      symbol "absent"  { description = "Remove every copy of the line; a missing file is left missing" }
+    }
+    param "create" { description = "With :present, create a missing file (and its parent directories) holding only the line; when false a missing file is an error. Ignored with :absent, which never creates a file" type = "bool" default = true }
+  }
+
   gatherer "path_stat" {
     description = "Report a path's existence, type, size and mode. Describes the path itself and never follows a symlink: a dangling symlink exists, and a symlink to a directory reports is_symlink rather than is_dir"
     script = "gatherers/path_stat.ws"
@@ -510,6 +527,169 @@ TMPL
       description = "A new file is written"
       resource = "file"
       properties { path = "/srv-new.txt" content = "new" }
+    }
+  }
+
+  // Seeds: duplicates with a prefix look-alike (ab), a file with no final
+  // newline and an unmanaged owner and mode, a symlink to a 0600 file, and
+  // files that already hold the wanted state. tests/line_verify.ws checks
+  // the bytes, the attributes and that the symlink survives.
+  test "line_edits_converge" {
+    description = "line_in_file appends, collapses duplicates, removes every match, creates files and keeps attributes and symlinks"
+    image = "debian:12"
+    group = "files"
+    setup = "mkdir -p /tmp/cw-line && cd /tmp/cw-line && printf 'a\\nkeep=1\\na\\nab\\na\\n' > dup.conf && printf 'x\\ny' > append.conf && chown 65534:65534 append.conf && chmod 640 append.conf && printf 'one\\ntwo\\n' > exact.conf && printf 'only' > nonl.conf && printf 'p\\nq\\np\\n p\\np \\n' > rm.conf && printf 'q\\n' > rm_none.conf && printf 'p\\n' > last.conf && printf 'r\\n' > real.conf && chmod 600 real.conf && ln -s /tmp/cw-line/real.conf link.conf"
+    verify = "tests/line_verify.ws"
+
+    step "dup" {
+      description = "Duplicate matches collapse to the first; unrelated lines keep their order"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/dup.conf" line = "a" }
+    }
+
+    step "dup_again" {
+      description = "A second run on the edited file changes nothing"
+      resource = "line_in_file"
+      requires = ["dup"]
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/dup.conf" line = "a" }
+    }
+
+    step "append" {
+      description = "A missing line is appended after a last line with no newline, keeping owner and mode"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/append.conf" line = "z" }
+    }
+
+    step "exact" {
+      description = "A file holding the line once is already configured"
+      resource = "line_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/exact.conf" line = "two" }
+    }
+
+    step "no_final_newline" {
+      description = "A missing final newline alone is not drift"
+      resource = "line_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/nonl.conf" line = "only" }
+    }
+
+    step "remove" {
+      description = "Absent removes every exact match and keeps lines with extra spaces"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/rm.conf" line = "p" ensure = :absent }
+    }
+
+    step "remove_again" {
+      description = "A second removal changes nothing"
+      resource = "line_in_file"
+      requires = ["remove"]
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/rm.conf" line = "p" ensure = :absent }
+    }
+
+    step "remove_no_match" {
+      description = "Absent with no match is already configured"
+      resource = "line_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/rm_none.conf" line = "p" ensure = :absent }
+    }
+
+    step "remove_last" {
+      description = "Removing the only line leaves an empty file"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/last.conf" line = "p" ensure = :absent }
+    }
+
+    step "remove_missing" {
+      description = "Absent on a missing file is already configured and creates nothing"
+      resource = "line_in_file"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-line/missing.conf" line = "p" ensure = :absent create = true }
+    }
+
+    step "create" {
+      description = "Present creates a missing file and its parent directory"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/new/created.conf" line = "hello" }
+    }
+
+    step "no_create" {
+      description = "Present on a missing file with create = false is an error"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line/nocreate.conf" line = "hello" create = false }
+    }
+
+    step "via_link" {
+      description = "A symlink at path is written through and stays a symlink"
+      resource = "line_in_file"
+      properties { path = "/tmp/cw-line/link.conf" line = "s" }
+    }
+  }
+
+  test "line_invalid_input" {
+    description = "line_in_file rejects bad lines and paths, directories and non-UTF-8 files, and leaves them untouched"
+    image = "debian:12"
+    group = "files"
+    setup = "mkdir -p /tmp/cw-line-bad && printf '\\377\\376\\n' > /tmp/cw-line-bad/binary.conf && printf 'k\\n' > /tmp/cw-line-bad/keep.conf"
+    verify = "tests/line_verify.ws"
+
+    step "empty_line" {
+      description = "An empty line is rejected"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/keep.conf" line = "" ensure = :absent }
+    }
+
+    step "multiline" {
+      description = "A line with an embedded LF is rejected"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/keep.conf" line = "a\nb" }
+    }
+
+    step "carriage_return" {
+      description = "A line with an embedded CR is rejected"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/keep.conf" line = "a\r" }
+    }
+
+    step "relative" {
+      description = "A relative path is rejected"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "tmp/cw-line-bad/rel.conf" line = "a" }
+    }
+
+    step "dotdot" {
+      description = "A path with a .. segment is rejected"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/../cw-line-escape.conf" line = "a" }
+    }
+
+    step "directory" {
+      description = "A directory at path is an error"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad" line = "a" }
+    }
+
+    step "binary_present" {
+      description = "A non-UTF-8 file is an error for present and is not rewritten"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/binary.conf" line = "a" }
+    }
+
+    step "binary_absent" {
+      description = "A non-UTF-8 file is an error for absent and is not rewritten"
+      resource = "line_in_file"
+      expect = "error"
+      properties { path = "/tmp/cw-line-bad/binary.conf" line = "a" ensure = :absent }
     }
   }
 }
