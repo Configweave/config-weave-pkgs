@@ -104,7 +104,9 @@ rules (epochs, `~`, `-release`); a value that reads as a range is an error.
   (`user`, `core`, `commit`, `push`, `pull`, `fetch`, `merge`, `diff`,
   `rebase`, `init`, `status`, `log`, `color`), plus `alias`,
   `safe_directory` and `config_entry` for anything else. Shells out to
-  `git config`, so the target needs git installed.
+  `git config`, so the target needs git installed. `checkout` clones and
+  updates a working tree at a branch, tag or commit, and removes it with
+  `ensure = :absent` (Linux).
 - `linux_system`: sysctl, hostname, timezone, locales, cron and fstab.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
@@ -361,8 +363,9 @@ apply while the user is logged out, or reload the component afterwards (for
 example `qdbus org.kde.KWin /KWin reconfigure`) or log in again.
 ### `git`
 
-Global and system git configuration. Every resource shells out to
-`git config`, so git must be installed on the target; `home` needs
+Global and system git configuration, and git checkouts. Every config
+resource shells out to `git config`, so git must be installed on the
+target (`checkout` needs it too); `home` needs
 git 2.30 or later.
 
 - Section resources (`user`, `core`, `init`, `commit`, `push`, `pull`,
@@ -384,6 +387,51 @@ git 2.30 or later.
   briefly visible in the process list while git runs.
 - `scope` is `:global` (the default) or `:system`. `home` points global
   scope at `<home>/.gitconfig` and is ignored under `:system`.
+
+`checkout` manages a working tree rather than config. It runs the git CLI
+through bash on Linux, takes no `scope` or `home`, and changes no git
+config. Params: `dest` (absolute path), `repo` (required when present),
+`ref` (empty for the remote's default branch), `depth` (0 for full
+history), `force` and `ensure`.
+
+- Converged means `dest` is the top of a git work tree, its
+  `remote.origin.url` equals `repo` exactly, and its HEAD is the commit
+  that `ref` resolves to on the remote now. Check asks the remote with
+  `git ls-remote` and writes nothing, so a branch that moved on the remote
+  is drift. An unreachable remote, or a ref the remote does not have, is an
+  error, not drift.
+- `ref` is a branch, a tag, `refs/heads/<name>`, `refs/tags/<name>`, or a
+  full commit id (40 or 64 hex digits; abbreviated ids are not accepted).
+  A branch is checked out as a local branch of the same name, and a tag or
+  commit as a detached HEAD. A name that is both a branch and a tag on the
+  remote is an error.
+- A missing `dest` or an empty directory is cloned into. The clone is made
+  in a scratch directory beside `dest` (`.<name>.cw-clone`) and moved into
+  place only when it is complete. `depth` applies to that clone only and
+  never shrinks or deepens an existing checkout. Git ignores `--depth` for a
+  plain local path, so use a `file://` URL for a shallow local clone.
+- The resource never changes a checkout of another origin, a non-empty
+  directory that is not a checkout, or a symlink, also with `force = true`.
+  Without `force`, local changes to tracked files block an update, and a
+  local branch with commits the remote lacks is not reset. Local changes on
+  a checkout that is already at the target are left alone. With `force`,
+  tracked changes are discarded and the branch is reset. Untracked files
+  are never deleted by an update.
+- `ensure = :absent` needs no `repo` or `ref`. It deletes `dest` and
+  everything in it only when `dest` is the top of a git work tree with its
+  own `.git` directory. It refuses `/`, top-level directories, symlinks and
+  any other directory, also with `force = true`. With `repo` set, it removes
+  only a checkout of that origin. A checkout with local changes or
+  untracked files is removed only with `force = true`. The source
+  repository is never touched.
+- All inputs reach git through environment variables, never through shell
+  text. `repo` and `ref` may not start with `-`, `ref` allows only the
+  characters of a plain ref name, and `repo` may not use the `ext::` or
+  `fd::` transport. Credentials do not belong in `repo`: a password, or any
+  user part on an http(s) URL, is rejected, and messages show the user part
+  of a URL as `***`. Authenticate with an ssh key or a credential helper.
+  Git runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails
+  instead of waiting for input. Submodules are not handled.
 
 ### `windows_powershell`
 
