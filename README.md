@@ -82,7 +82,7 @@ The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
 `version` an exact pin, because distro versions follow their own ordering
 rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 
-- `linux_facts`: Linux OS, init system, services, mounts and network facts.
+- `linux_facts`: Linux OS, init system, services, mounts, network and getent (passwd, group, hosts) facts.
 - `linux_files`: files (exact content or URL-fetched), single lines,
   blocks and regex substitutions in text files, directories, symlinks/hard
   links, archives and modes.
@@ -242,7 +242,7 @@ Core system settings. 6 resources:
 ### `linux_facts`
 
 OS facts as gatherers: `os_release` (with `/usr/lib/os-release` as
-fallback), `init_system`, `network`, `services` and `mounts`.
+fallback), `init_system`, `network`, `services`, `mounts` and `getent`.
 `init_system` reads PID 1, so a container whose PID 1 is an entrypoint
 reports `:unknown`. `network.network_system` is a symbol (`:netplan`,
 `:network_manager`, `:systemd_networkd`, `:wicked`, `:ifupdown`,
@@ -271,6 +271,19 @@ fails or answers another code (a runit link that nothing supervises yet, a
 SysV script whose missing `status` verb exits with a code other than 0 to
 3) is left out, and the gather does not fail. Such a script that exits 1
 reads as `failed`/`dead`, which is what LSB defines for that code.
+
+`getent` reads the `passwd`, `group` or `hosts` database (`database`, a
+symbol; `shadow` and `gshadow` are not offered) through `getent -- <database>
+<key>`, for one `key` (a name or number) or, with `key = ""`, every entry. It
+returns `database`, `key`, `found`, `count` and `entries`, one `{ fields }`
+per record with the columns in database order: `passwd` and `group` split on
+`:` and keep empty columns, `hosts` splits on whitespace and keeps aliases, and
+one name can give several `hosts` entries. A key that is not found (exit 2) is
+`found = false`, `count = 0`, `entries = []`. A key with a NUL, a line break or
+a leading `-`, a missing `getent`, any other exit code and a malformed record
+are errors, never an empty result. NSS may consult remote backends (LDAP,
+SSSD, NIS, DNS), so the answer is what NSS returns, not only the local files.
+
 ### `linux_systemd`, `linux_openrc`, `linux_runit` and `linux_sysvinit`
 
 One package per init system, each with a `service` resource of the same
