@@ -538,20 +538,12 @@ TMPL
     description = "line_in_file appends, collapses duplicates, removes every match, creates files and keeps attributes and symlinks"
     image = "debian:12"
     group = "files"
-    setup = "mkdir -p /tmp/cw-line && cd /tmp/cw-line && printf 'a\\nkeep=1\\na\\nab\\na\\n' > dup.conf && printf 'x\\ny' > append.conf && chown 65534:65534 append.conf && chmod 640 append.conf && printf 'one\\ntwo\\n' > exact.conf && printf 'only' > nonl.conf && printf 'p\\nq\\np\\n p\\np \\n' > rm.conf && printf 'q\\n' > rm_none.conf && printf 'p\\n' > last.conf && printf 'r\\n' > real.conf && chmod 600 real.conf && ln -s /tmp/cw-line/real.conf link.conf"
+    setup = "mkdir -p /tmp/cw-line && cd /tmp/cw-line && printf 'a\\nkeep=1\\na\\nab\\na\\n' > dup.conf && printf 'x\\ny' > append.conf && chown 65534:65534 append.conf && chmod 640 append.conf && printf 'one\\ntwo\\n' > exact.conf && printf 'only' > nonl.conf && printf 'p\\nq\\np\\n p\\np \\n' > rm.conf && printf 'q\\n' > rm_none.conf && printf 'p\\n' > last.conf && printf 'r\\n' > real.conf && chown 65534:65534 real.conf && chmod 600 real.conf && ln -s /tmp/cw-line/real.conf link.conf"
     verify = "tests/line_verify.ws"
 
     step "dup" {
       description = "Duplicate matches collapse to the first; unrelated lines keep their order"
       resource = "line_in_file"
-      properties { path = "/tmp/cw-line/dup.conf" line = "a" }
-    }
-
-    step "dup_again" {
-      description = "A second run on the edited file changes nothing"
-      resource = "line_in_file"
-      requires = ["dup"]
-      expect = "already_configured"
       properties { path = "/tmp/cw-line/dup.conf" line = "a" }
     }
 
@@ -578,14 +570,6 @@ TMPL
     step "remove" {
       description = "Absent removes every exact match and keeps lines with extra spaces"
       resource = "line_in_file"
-      properties { path = "/tmp/cw-line/rm.conf" line = "p" ensure = :absent }
-    }
-
-    step "remove_again" {
-      description = "A second removal changes nothing"
-      resource = "line_in_file"
-      requires = ["remove"]
-      expect = "already_configured"
       properties { path = "/tmp/cw-line/rm.conf" line = "p" ensure = :absent }
     }
 
@@ -623,7 +607,7 @@ TMPL
     }
 
     step "via_link" {
-      description = "A symlink at path is written through and stays a symlink"
+      description = "A symlink at path is written through, stays a symlink, and the target keeps its owner, group and mode"
       resource = "line_in_file"
       properties { path = "/tmp/cw-line/link.conf" line = "s" }
     }

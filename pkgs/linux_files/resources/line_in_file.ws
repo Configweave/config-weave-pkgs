@@ -2,6 +2,7 @@ use value
 use fs
 use path
 use log
+use shell
 use common
 
 // One literal line in a text file: present exactly once, or absent.
@@ -79,6 +80,28 @@ fn require_not_dir(p: string) -> Result[unit, string] {
     Ok(())
 }
 
+// Put the edited temp file in place. A symlink at path is written through
+// by common::install_tmp, and that copy gives the target the temp file's
+// mode. So for a symlink to an existing file, read the target's owner,
+// group and mode first (stat -L, numeric ids) and set them back after the
+// write. chown and chmod follow the link, so the link itself is kept.
+fn install(tmp: string, p: string, params: Value) -> Result[unit, string] {
+    let none = common::attrs(params)?
+    if fs::read_link(p).is_err() || !fs::is_file(p) { return common::install_tmp(tmp, p, none) }
+    let out = shell::bash("stat -L -c '%a %u %g' -- " + common::q(p), Value::Null)?
+    if !out.success {
+        fs::delete(tmp).unwrap_or(())
+        return Err(common::cmd_err("stat " + p, out))
+    }
+    let f = out.stdout.trim().split(" ")
+    let mode = f.get(0).unwrap_or("")
+    let ids = f.get(1).unwrap_or("") + ":" + f.get(2).unwrap_or("")
+    common::install_tmp(tmp, p, none)?
+    // chown first: it clears setuid/setgid bits, which the chmod puts back.
+    common::run("chown " + p, "chown -- " + common::q(ids) + " " + common::q(p))?
+    common::run("chmod " + p, "chmod -- " + common::q(mode) + " " + common::q(p))
+}
+
 struct Want {
     path: string,
     line: string,
@@ -111,9 +134,9 @@ fn check(params: Value) -> Result[CheckResult, string] {
 
 fn apply(params: Value) -> Result[ApplyResult, string] {
     let w = want(params)?
-    // No mode/owner/group params: install_tmp keeps the old file's owner,
-    // group and mode, and writes through a symlink at path.
-    let none = common::attrs(params)?
+    // No mode/owner/group params: install keeps the old file's owner,
+    // group and mode (of the target when path is a symlink), and writes
+    // through a symlink at path.
     if !fs::is_file(w.path) {
         if !w.present { return Ok(ApplyResult::Success) }
         if !w.create { return Err("'" + w.path + "' does not exist and create is false") }
@@ -121,7 +144,7 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
         fs::mkdir(path::parent(w.path))?
         let tmp = common::tmp_sibling(w.path)
         fs::write(tmp, w.line + "\n")?
-        common::install_tmp(tmp, w.path, none)?
+        install(tmp, w.path, params)?
         return Ok(ApplyResult::Success)
     }
     let lines = split_lines(read_text(w.path)?)
@@ -130,6 +153,6 @@ fn apply(params: Value) -> Result[ApplyResult, string] {
     log::info("editing " + w.path)
     let tmp = common::tmp_sibling(w.path)
     fs::write(tmp, join_lines(edited(lines, w.line, w.present)))?
-    common::install_tmp(tmp, w.path, none)?
+    install(tmp, w.path, params)?
     Ok(ApplyResult::Success)
 }

@@ -32,7 +32,7 @@ fn verify_edits() -> Result[unit, string] {
     if fs::lexists(d + "nocreate.conf") { return Err("create = false created nocreate.conf") }
     expect("link.conf target", fs::read_link(d + "link.conf")?, "/tmp/cw-line/real.conf")?
     expect("real.conf", fs::read(d + "real.conf")?, "r\ns\n")?
-    expect("real.conf attrs", stat(d + "real.conf")?, "600 0 0")?
+    expect("real.conf attrs", stat(d + "real.conf")?, "600 65534 65534")?
     if !fs::glob("/tmp/cw-line/.*.cw-tmp")?.is_empty() { return Err("a temp file was left behind") }
     Ok(())
 }
