@@ -31,8 +31,12 @@
 //
 // git 2.54 defines ~995 config variables; this package covers the everyday
 // global ones. git.config_entry reaches the rest.
+//
+// git.checkout is the one resource that is not about config: it manages a
+// working tree with the git CLI through bash (lib/checkout.ws), and shares
+// nothing with the git-config command builder in lib/common.ws.
 package "git" {
-  description = "Manage global and system git configuration"
+  description = "Manage global and system git configuration, and git checkouts"
 
   // ---------------------------------------------------------------------
   // Identity and core behaviour
@@ -813,6 +817,40 @@ package "git" {
   }
 
   // ---------------------------------------------------------------------
+  // Working trees
+  // ---------------------------------------------------------------------
+
+  resource "checkout" {
+    description = "Ensure a git checkout of a repository at a branch, tag or commit is present at a path, or remove it (Linux; needs git installed)"
+    script = "resources/checkout.ws"
+    // Different destinations are independent. Steps on the same dest
+    // must be ordered with `requires`.
+    concurrency = "parallel"
+    // Converged means: dest is the top of a git work tree whose
+    // remote.origin.url equals `repo` exactly and whose HEAD is the commit
+    // `ref` resolves to on the remote right now (git ls-remote), so a
+    // branch that moved on the remote is drift. An unreachable remote or a
+    // ref the remote does not have is an error, never drift. The step
+    // never changes a checkout of another origin, a non-empty directory
+    // that is not a checkout, a symlink, or local changes without force.
+    // No credentials, submodules or git config changes: authenticate with
+    // an ssh key or a credential helper set up separately.
+    param "dest" { description = "Absolute path of the working tree; its parent is created when missing. Must not be a symlink. With ensure = :present it may be missing, an empty directory or an existing checkout of repo" type = "string" required = true }
+    param "repo" { description = "Repository URL or path, as given to git clone and compared exactly with remote.origin.url (required when present). Must not embed credentials (no password, no user part on http(s)), start with '-' or use the ext:: or fd:: transport. When absent and set, only a checkout of this origin is removed" type = "string" default = "" }
+    param "ref" { description = "Branch, tag, refs/heads/<name>, refs/tags/<name>, or a full 40 or 64 hex commit id; empty = the remote's default branch. A branch is checked out as a local branch of that name, a tag or commit as a detached HEAD. A name that is both a branch and a tag is an error" type = "string" default = "" }
+    param "depth" { description = "History depth for the initial clone (git clone --depth); 0 = full history. Applies only when cloning, never shrinks or deepens an existing checkout. Use a file:// URL for a shallow clone of a local path" type = "int" default = 0 }
+    param "force" { description = "Discard local changes to tracked files and reset a local branch that holds commits the remote does not have. With ensure = :absent, also remove a checkout with local changes or untracked files. Never permits changing another origin's checkout or a non-checkout path" type = "bool" default = false }
+    param "ensure" {
+      description = "Desired state: :present or :absent. Absent removes dest and everything in it, but only when dest is the top of a git work tree (with its own .git directory), never /, a top-level directory or a symlink, and not when it has local changes unless force is set"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Clone or update the checkout" }
+      symbol "absent"  { description = "Remove the checkout; the source repository is not touched" }
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Tests
   //
   // The resources shell out to `git config`, so the image needs git —
@@ -1385,6 +1423,436 @@ package "git" {
       description = "Untrust the seeded system-wide path"
       resource = "safe_directory"
       properties { path = "/srv/sys-stale" ensure = :absent scope = :system }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // git.checkout
+  //
+  // One debian:12 instance for all four (group "git-checkout", apart from
+  // the git-config group so their setups never meet). Every fixture is a
+  // local bare origin built in setup from a seed repository with fixed
+  // author, committer and dates, so the commit ids are the same on every
+  // run and a step can pin one statically:
+  //
+  //   main:  one (tag v1) -> two (annotated tag v2) -> three
+  //   dev:   two -> dev
+  //
+  //   one   dd9e4c0a10e31eb0bfe338f90f63d02bd69fe99e
+  //   two   e9435b3d6779ea2cd83e33940c3f5755f413fdf9
+  //   three c51c8b4293577366a769e1b4b4c3f82c74262c39
+  //   dev   eb1f260b73e0db3a0676031ec72f464a6afc1280
+  //
+  // No network is needed once git is installed. Each test works under its
+  // own /srv/cw-co/<test> directory and rebuilds it in setup.
+  //
+  // Untested by design: git missing from the target (git is shared by the
+  // whole group, so it cannot be uninstalled for one test); an unreachable
+  // origin covers the same error path.
+  // ---------------------------------------------------------------------
+
+  test "checkout_converges" {
+    description = "git.checkout clones the default branch, a branch, both tag kinds, a pinned commit and a shallow clone, and leaves a correct checkout alone"
+    image = "debian:12"
+    group = "git-checkout"
+    setup = <<'SETUP'
+set -e
+command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+export GIT_AUTHOR_NAME=cw GIT_AUTHOR_EMAIL=cw@example.invalid GIT_COMMITTER_NAME=cw GIT_COMMITTER_EMAIL=cw@example.invalid GIT_AUTHOR_DATE='1767225600 +0000' GIT_COMMITTER_DATE='1767225600 +0000'
+B=/srv/cw-co/converge
+rm -rf "$B" && mkdir -p "$B"
+git init -q --bare -b main "$B/origin.git"
+git init -q -b main "$B/seed"
+cm() { echo "$1" > "$B/seed/file.txt" && git -C "$B/seed" add file.txt && git -C "$B/seed" commit -q -m "$1"; }
+cm one && git -C "$B/seed" tag v1
+cm two && git -C "$B/seed" tag -a v2 -m v2
+cm three
+git -C "$B/seed" checkout -q -b dev HEAD~1 && cm dev
+git -C "$B/seed" push -q "$B/origin.git" main dev v1 v2
+git clone -q "$B/origin.git" "$B/ready"
+mkdir "$B/empty"
+SETUP
+    verify = "tests/checkout_verify.ws"
+
+    step "default_branch" {
+      description = "An empty ref clones the remote's default branch"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/default" repo = "/srv/cw-co/converge/origin.git" }
+    }
+
+    step "branch" {
+      description = "A named branch is checked out as a local branch"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/dev" repo = "/srv/cw-co/converge/origin.git" ref = "dev" }
+    }
+
+    // The space in dest proves the path reaches git as one argument.
+    step "annotated_tag" {
+      description = "An annotated tag checks out the commit it points to, into a path with a space"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/tag v2" repo = "/srv/cw-co/converge/origin.git" ref = "v2" }
+    }
+
+    step "lightweight_tag" {
+      description = "A lightweight tag given as a full refs/tags/ name"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/v1" repo = "/srv/cw-co/converge/origin.git" ref = "refs/tags/v1" }
+    }
+
+    step "pinned_commit" {
+      description = "A full commit id is checked out as a detached HEAD"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/pinned" repo = "/srv/cw-co/converge/origin.git" ref = "e9435b3d6779ea2cd83e33940c3f5755f413fdf9" }
+    }
+
+    // git ignores --depth for a plain local path, hence file://.
+    step "shallow" {
+      description = "depth = 1 makes a one-commit shallow clone"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/shallow" repo = "file:///srv/cw-co/converge/origin.git" depth = 1 }
+    }
+
+    step "into_empty_dir" {
+      description = "An existing empty directory is cloned into"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/converge/empty" repo = "/srv/cw-co/converge/origin.git" }
+    }
+
+    step "already_correct" {
+      description = "A checkout already at the remote's default branch is converged"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-co/converge/ready" repo = "/srv/cw-co/converge/origin.git" }
+    }
+  }
+
+  // Every checkout here is cloned in setup while main is at "two"; then
+  // setup pushes "three". So run 1 (check only) must see the remote
+  // branch move: a checkout that exists, with the right origin and a
+  // clean tree, is still not_configured.
+  test "checkout_updates" {
+    description = "git.checkout follows a moved remote branch and switches refs, but never discards local work or touches another origin's checkout without cause"
+    image = "debian:12"
+    group = "git-checkout"
+    setup = <<'SETUP'
+set -e
+command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+export GIT_AUTHOR_NAME=cw GIT_AUTHOR_EMAIL=cw@example.invalid GIT_COMMITTER_NAME=cw GIT_COMMITTER_EMAIL=cw@example.invalid GIT_AUTHOR_DATE='1767225600 +0000' GIT_COMMITTER_DATE='1767225600 +0000'
+B=/srv/cw-co/updates
+rm -rf "$B" && mkdir -p "$B"
+git init -q --bare -b main "$B/origin.git"
+git init -q --bare -b main "$B/other.git"
+git init -q -b main "$B/seed"
+cm() { echo "$1" > "$B/seed/file.txt" && git -C "$B/seed" add file.txt && git -C "$B/seed" commit -q -m "$1"; }
+cm one && git -C "$B/seed" tag v1
+cm two && git -C "$B/seed" tag -a v2 -m v2
+git -C "$B/seed" checkout -q -b dev && cm dev && git -C "$B/seed" checkout -q main
+git -C "$B/seed" push -q "$B/origin.git" main dev v1 v2
+git -C "$B/seed" push -q "$B/other.git" main
+for d in moved retag switch dirty force ahead; do git clone -q "$B/origin.git" "$B/$d"; done
+git clone -q "$B/other.git" "$B/wrong"
+echo local-edit > "$B/dirty/file.txt"
+echo local-edit > "$B/force/file.txt"
+git -C "$B/ahead" commit -q --allow-empty -m ahead
+mkdir "$B/occupied" && echo mine > "$B/occupied/keep.txt"
+cm three && git -C "$B/seed" push -q "$B/origin.git" main
+git clone -q "$B/origin.git" "$B/edited" && echo local-edit > "$B/edited/file.txt"
+SETUP
+    verify = "tests/checkout_updates_verify.ws"
+
+    step "remote_moved" {
+      description = "A clean checkout of the default branch follows the branch after it moved on the remote"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/updates/moved" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "to_tag" {
+      description = "A branch checkout is moved to a tag"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/updates/retag" repo = "/srv/cw-co/updates/origin.git" ref = "v1" }
+    }
+
+    step "to_branch" {
+      description = "A checkout of main is switched to another branch"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/updates/switch" repo = "/srv/cw-co/updates/origin.git" ref = "dev" }
+    }
+
+    step "dirty_refused" {
+      description = "Local changes block an update when force is false"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/dirty" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "dirty_at_target" {
+      description = "Local changes on a checkout already at the target are left alone when force is false"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-co/updates/edited" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "force_reset" {
+      description = "force = true discards local changes and updates a matching-origin checkout"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/updates/force" repo = "/srv/cw-co/updates/origin.git" force = true }
+    }
+
+    step "local_commits_refused" {
+      description = "A local branch with commits the remote lacks is not reset when force is false"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/ahead" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "wrong_origin" {
+      description = "A checkout of another origin is an error"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/wrong" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "wrong_origin_forced" {
+      description = "A checkout of another origin is an error with force = true too"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/wrong" repo = "/srv/cw-co/updates/origin.git" force = true }
+    }
+
+    step "occupied" {
+      description = "A non-empty directory that is not a checkout is an error"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/occupied" repo = "/srv/cw-co/updates/origin.git" }
+    }
+
+    step "occupied_forced" {
+      description = "A non-empty directory that is not a checkout is an error with force = true too"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/occupied" repo = "/srv/cw-co/updates/origin.git" force = true }
+    }
+
+    step "unknown_ref" {
+      description = "A ref the remote does not have is an error, not drift"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/unknown" repo = "/srv/cw-co/updates/origin.git" ref = "no-such-branch" }
+    }
+
+    step "unknown_commit" {
+      description = "A commit id the remote does not have is an error and leaves nothing behind"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/nocommit" repo = "/srv/cw-co/updates/origin.git" ref = "0123456789abcdef0123456789abcdef01234567" }
+    }
+
+    step "unreachable" {
+      description = "An origin that cannot be read is an error"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/updates/unreachable" repo = "/srv/cw-co/updates/missing.git" }
+    }
+  }
+
+  // Every :absent step targets state seeded by setup. The refusals use
+  // force = true where it applies, to prove force does not widen them.
+  test "checkout_removal" {
+    description = "git.checkout with ensure = :absent removes only recognized checkouts"
+    image = "debian:12"
+    group = "git-checkout"
+    setup = <<'SETUP'
+set -e
+command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+export GIT_AUTHOR_NAME=cw GIT_AUTHOR_EMAIL=cw@example.invalid GIT_COMMITTER_NAME=cw GIT_COMMITTER_EMAIL=cw@example.invalid GIT_AUTHOR_DATE='1767225600 +0000' GIT_COMMITTER_DATE='1767225600 +0000'
+B=/srv/cw-co/removal
+rm -rf "$B" && mkdir -p "$B"
+git init -q --bare -b main "$B/origin.git"
+git init -q --bare -b main "$B/other.git"
+git init -q -b main "$B/seed"
+echo one > "$B/seed/file.txt" && git -C "$B/seed" add file.txt && git -C "$B/seed" commit -q -m one
+git -C "$B/seed" push -q "$B/origin.git" main
+git -C "$B/seed" push -q "$B/other.git" main
+for d in clean dirty forced target nested; do git clone -q "$B/origin.git" "$B/$d"; done
+git clone -q "$B/other.git" "$B/wrongorigin"
+echo scratch > "$B/dirty/untracked.txt"
+echo edit > "$B/forced/file.txt"
+ln -s "$B/target" "$B/link"
+mkdir "$B/nested/sub" && echo s > "$B/nested/sub/s.txt"
+mkdir "$B/foreign" && echo mine > "$B/foreign/keep.txt"
+mkdir "$B/empty"
+SETUP
+    verify = "tests/checkout_removal_verify.ws"
+
+    step "rm_clean" {
+      description = "Remove a clean checkout; no repo is needed"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/removal/clean" ensure = :absent }
+    }
+
+    step "rm_missing" {
+      description = "A missing dest is already absent"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-co/removal/never" ensure = :absent }
+    }
+
+    step "rm_dirty_refused" {
+      description = "A checkout with untracked files is kept when force is false"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/dirty" ensure = :absent }
+    }
+
+    step "rm_forced" {
+      description = "force = true removes a checkout with local changes, matching the given origin"
+      resource = "checkout"
+      properties { dest = "/srv/cw-co/removal/forced" repo = "/srv/cw-co/removal/origin.git" force = true ensure = :absent }
+    }
+
+    step "rm_wrong_origin" {
+      description = "With repo set, a checkout of another origin is kept"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/wrongorigin" repo = "/srv/cw-co/removal/origin.git" force = true ensure = :absent }
+    }
+
+    step "rm_foreign" {
+      description = "A directory that is not a checkout is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/foreign" force = true ensure = :absent }
+    }
+
+    step "rm_empty" {
+      description = "An empty directory is not a checkout and is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/empty" force = true ensure = :absent }
+    }
+
+    step "rm_symlink" {
+      description = "A symlink to a checkout is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/link" force = true ensure = :absent }
+    }
+
+    step "rm_nested" {
+      description = "A directory inside a checkout is not itself a checkout and is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/removal/nested/sub" force = true ensure = :absent }
+    }
+
+    step "rm_root" {
+      description = "/ is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/" force = true ensure = :absent }
+    }
+
+    step "rm_top_level" {
+      description = "A top-level directory is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv" force = true ensure = :absent }
+    }
+  }
+
+  // Script-level rejections, all before any git command runs. The
+  // injection attempts would create /tmp/cw-injected if any reached a
+  // shell or git as an option; the verify script asserts it does not
+  // exist. No step uses a real credential: the URLs only have the shape.
+  test "checkout_invalid_input" {
+    description = "git.checkout rejects unsafe paths, option and shell injection, credentials in URLs and bad refs"
+    image = "debian:12"
+    group = "git-checkout"
+    setup = "command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git); rm -rf /srv/cw-co/input /tmp/cw-injected; mkdir -p /srv/cw-co/input"
+    verify = "tests/checkout_input_verify.ws"
+
+    step "relative_dest" {
+      description = "A relative dest"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "srv/cw-co/input/rel" repo = "/srv/cw-co/input/origin.git" }
+    }
+
+    step "dotdot_dest" {
+      description = "A dest with a .. segment"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/../escape" repo = "/srv/cw-co/input/origin.git" }
+    }
+
+    step "newline_dest" {
+      description = "A dest with a line break"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/a\nb" repo = "/srv/cw-co/input/origin.git" }
+    }
+
+    step "missing_repo" {
+      description = "ensure = :present without repo"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/norepo" }
+    }
+
+    step "repo_option" {
+      description = "A repo that git would read as an option"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/opt" repo = "--upload-pack=touch /tmp/cw-injected" }
+    }
+
+    step "repo_ext_transport" {
+      description = "The ext:: transport, which runs a command"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/ext" repo = "ext::sh -c touch% /tmp/cw-injected" }
+    }
+
+    step "repo_https_user" {
+      description = "A user part on an https URL, where it is usually a token"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/https" repo = "https://cw@example.invalid/repo.git" }
+    }
+
+    step "repo_password" {
+      description = "A password in an ssh URL"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/pw" repo = "ssh://git:x@example.invalid/repo.git" }
+    }
+
+    step "ref_option" {
+      description = "A ref that git would read as an option"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/refopt" repo = "/srv/cw-co/input/origin.git" ref = "--upload-pack=touch /tmp/cw-injected" }
+    }
+
+    step "ref_shell" {
+      description = "A ref carrying shell syntax"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/refsh" repo = "/srv/cw-co/input/origin.git" ref = "main;touch /tmp/cw-injected" }
+    }
+
+    step "ref_revision" {
+      description = "A revision expression rather than a ref"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/refrev" repo = "/srv/cw-co/input/origin.git" ref = "main~1" }
+    }
+
+    step "negative_depth" {
+      description = "A negative depth"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-co/input/depth" repo = "/srv/cw-co/input/origin.git" depth = -1 }
     }
   }
 }
