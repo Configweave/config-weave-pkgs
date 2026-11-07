@@ -33,7 +33,7 @@
 // global ones. git.config_entry reaches the rest.
 //
 // git.checkout is the one resource that is not about config: it manages a
-// working tree with the git CLI through bash (lib/checkout.ws), and shares
+// working tree with the git CLI through bash (lib/worktree.ws), and shares
 // nothing with the git-config command builder in lib/common.ws.
 package "git" {
   description = "Manage global and system git configuration, and git checkouts"
