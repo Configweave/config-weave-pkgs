@@ -1,0 +1,304 @@
+package "linux_python" {
+  description = "Manage Python distributions with pip, in a virtual environment or through a chosen pip"
+
+  resource "pip_package" {
+    description = "Ensure a Python distribution is installed with pip, at an exact version if one is given, or absent. check reads the installed metadata of the selected environment with pip list: it installs nothing and contacts no index. The environment is <virtualenv>/bin/python -m pip when virtualenv is set, else the pip named by executable. Install uses pip's own index settings (pip.conf, PIP_* variables) and installs dependencies; removal uninstalls this distribution only and leaves its dependencies. A pip error is an error, and so is a PEP 668 externally-managed-environment refusal: no --break-system-packages, --user or index option is ever added. No virtual environment is created. Steps share the lock group \"pip\", so no two run at the same time"
+    script = "resources/pip_package.ws"
+    // pip read-modify-writes site-packages; two pips in one environment race
+    concurrency = "exclusive"
+    lock = "pip"
+    param "name" { description = "Distribution name only (letters, digits, and '.', '_' or '-' between them), matched against installed metadata after PEP 503 normalization, so CW_Tool and cw-tool are one distribution. A URL, path, version specifier, extra or pip option is rejected" type = "string" required = true }
+    param "version" { description = "Exact version to install when present (1.4.2, 2.0rc1, 1.0.post1); empty means any installed version. Compared with the installed version as pip list shows it, except that plain release numbers ignore trailing zeros (1.0 equals 1.0.0). A version below the installed one is a downgrade, which is allowed. A range or specifier (>=1, ~=1.4, 1.*) is rejected. Not needed for :absent" type = "string" default = "" }
+    param "virtualenv" { description = "Absolute path of an existing virtual environment; pip runs as <virtualenv>/bin/python -m pip. A missing directory, or one without bin/python or without pip, is an error. Empty uses executable" type = "string" default = "" }
+    param "executable" { description = "pip to run when virtualenv is empty: a name looked up on PATH or an absolute path. Setting it together with virtualenv is an error. A missing executable is an error" type = "string" default = "pip3" }
+    param "ensure" {
+      description = "Desired state: :present or :absent"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Install the distribution, or reinstall it at the pinned version" }
+      symbol "absent"  { description = "Uninstall the distribution when it is installed. Its dependencies stay installed" }
+    }
+  }
+
+  // Every step works on state that setup seeds, offline: a local wheelhouse
+  // of tiny pure-Python wheels at 1.0 and 2.0 (built with zipfile, so no
+  // build tool is needed) and an /etc/pip.conf with no-index and
+  // find-links, so no public index is used. Setup is idempotent: the group
+  // shares one container.
+  test "pip_package_converges" {
+    description = "pip_package installs, pins up and down, keeps an unpinned install, matches normalized names, removes without dependencies, and selects the environment by virtualenv or executable"
+    image = "python:3.12-slim"
+    group = "python-pip"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+w=/srv/cw-wheels
+rm -rf "$w" /opt/cw/main /opt/cw/exe && mkdir -p "$w" /srv/cw-sys-wheels /opt/cw
+python3 - "$w" <<'PY'
+import base64, hashlib, sys, zipfile
+out = sys.argv[1]
+def mk(name, ver, requires=()):
+    mod = name.replace("-", "_")
+    di = "%s-%s.dist-info" % (mod, ver)
+    files = [
+        ("%s/__init__.py" % mod, "__version__ = %r\n" % ver),
+        ("%s/METADATA" % di, "Metadata-Version: 2.1\nName: %s\nVersion: %s\n%s" % (name, ver, "".join("Requires-Dist: %s\n" % r for r in requires))),
+        ("%s/WHEEL" % di, "Wheel-Version: 1.0\nGenerator: config-weave-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"),
+    ]
+    rec = []
+    with zipfile.ZipFile("%s/%s-%s-py3-none-any.whl" % (out, mod, ver), "w") as z:
+        for path, text in files:
+            data = text.encode()
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            rec.append("%s,sha256=%s,%d" % (path, digest, len(data)))
+            z.writestr(path, data)
+        rec.append("%s/RECORD,," % di)
+        z.writestr("%s/RECORD" % di, "\n".join(rec) + "\n")
+for n in ["cw-fresh", "cw-latest", "cw-drift", "cw-down", "cw-same", "cw-zeros", "cw-any", "cw-gone", "cw-lib", "cw-exe"]:
+    mk(n, "1.0")
+    mk(n, "2.0")
+mk("cw-app", "1.0", ["cw-lib"])
+PY
+printf '[global]\nno-index = true\nfind-links =\n    /srv/cw-wheels\n    /srv/cw-sys-wheels\n' > /etc/pip.conf
+python3 -m venv /opt/cw/main
+python3 -m venv /opt/cw/exe
+/opt/cw/main/bin/python -m pip install -q --disable-pip-version-check cw-drift==1.0 cw-down==2.0 cw-same==2.0 cw-zeros==2.0 cw-any==1.0 cw-gone==1.0 cw-app==1.0
+SETUP
+    verify = "tests/pip_verify.ws"
+
+    step "fresh_pinned" {
+      description = "Install a missing distribution at a pinned version"
+      resource = "pip_package"
+      properties { name = "cw-fresh" version = "2.0" virtualenv = "/opt/cw/main" }
+    }
+
+    step "fresh_any" {
+      description = "Install a missing distribution with no pin"
+      resource = "pip_package"
+      properties { name = "cw-latest" virtualenv = "/opt/cw/main" }
+    }
+
+    step "upgrade" {
+      description = "A pin above the installed version reinstalls at the pin"
+      resource = "pip_package"
+      properties { name = "cw-drift" version = "2.0" virtualenv = "/opt/cw/main" }
+    }
+
+    step "downgrade" {
+      description = "A pin below the installed version reinstalls at the pin"
+      resource = "pip_package"
+      properties { name = "cw-down" version = "1.0" virtualenv = "/opt/cw/main" }
+    }
+
+    step "pinned_same" {
+      description = "The pinned version is already installed"
+      resource = "pip_package"
+      expect = "already_configured"
+      properties { name = "cw-same" version = "2.0" virtualenv = "/opt/cw/main" }
+    }
+
+    step "trailing_zeros" {
+      description = "A pin of 2.0.0 matches an installed 2.0"
+      resource = "pip_package"
+      expect = "already_configured"
+      properties { name = "cw-zeros" version = "2.0.0" virtualenv = "/opt/cw/main" }
+    }
+
+    step "unpinned_installed" {
+      description = "Any installed version satisfies an unpinned step, and the name matches after normalization"
+      resource = "pip_package"
+      expect = "already_configured"
+      properties { name = "CW_Any" virtualenv = "/opt/cw/main" }
+    }
+
+    step "remove" {
+      description = "Uninstall an installed distribution; :absent needs no version"
+      resource = "pip_package"
+      properties { name = "cw-gone" ensure = :absent virtualenv = "/opt/cw/main" }
+    }
+
+    step "remove_keeps_deps" {
+      description = "Uninstalling a distribution leaves the dependency it pulled in"
+      resource = "pip_package"
+      properties { name = "cw-app" ensure = :absent virtualenv = "/opt/cw/main" }
+    }
+
+    step "absent_stays_absent" {
+      description = "A distribution that was never installed is already absent"
+      resource = "pip_package"
+      expect = "already_configured"
+      properties { name = "cw-never" ensure = :absent virtualenv = "/opt/cw/main" }
+    }
+
+    step "by_executable" {
+      description = "executable selects another environment's pip"
+      resource = "pip_package"
+      properties { name = "cw-exe" version = "1.0" executable = "/opt/cw/exe/bin/pip" }
+    }
+  }
+
+  // Errors, each against its own fixture. The system python gets a PEP 668
+  // EXTERNALLY-MANAGED marker after cw-sys2 is installed, and the wheelhouse
+  // holds cw-sys, so only the marker stops the default pip3. Setup also
+  // makes a venv without pip and a directory that is not a venv.
+  test "pip_package_invalid_input" {
+    description = "pip_package rejects option injection, URLs, specifiers, ranges, bad selectors and missing environments, and returns pip errors and PEP 668 refusals as errors"
+    image = "python:3.12-slim"
+    group = "python-pip"
+    setup = <<'SETUP'
+set -e
+export PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+stdlib=$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
+rm -f "$stdlib/EXTERNALLY-MANAGED" /tmp/cw-pwned
+rm -rf /srv/cw-sys-wheels /opt/cw/inv /opt/cw/nopip /opt/cw/plain && mkdir -p /srv/cw-wheels /srv/cw-sys-wheels /opt/cw/plain
+python3 - /srv/cw-sys-wheels <<'PY'
+import base64, hashlib, sys, zipfile
+out = sys.argv[1]
+for name in ["cw-sys", "cw-sys2"]:
+    mod = name.replace("-", "_")
+    di = "%s-1.0.dist-info" % mod
+    files = [
+        ("%s/__init__.py" % mod, "\n"),
+        ("%s/METADATA" % di, "Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n" % name),
+        ("%s/WHEEL" % di, "Wheel-Version: 1.0\nGenerator: config-weave-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"),
+    ]
+    rec = []
+    with zipfile.ZipFile("%s/%s-1.0-py3-none-any.whl" % (out, mod), "w") as z:
+        for path, text in files:
+            data = text.encode()
+            digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+            rec.append("%s,sha256=%s,%d" % (path, digest, len(data)))
+            z.writestr(path, data)
+        rec.append("%s/RECORD,," % di)
+        z.writestr("%s/RECORD" % di, "\n".join(rec) + "\n")
+PY
+printf '[global]\nno-index = true\nfind-links =\n    /srv/cw-wheels\n    /srv/cw-sys-wheels\n' > /etc/pip.conf
+python3 -m venv /opt/cw/inv
+python3 -m venv --without-pip /opt/cw/nopip
+pip3 uninstall -y -q cw-sys >/dev/null 2>&1 || true
+PIP_ROOT_USER_ACTION=ignore pip3 install -q --disable-pip-version-check cw-sys2
+printf '[externally-managed]\nError=config-weave test marker\n' > "$stdlib/EXTERNALLY-MANAGED"
+SETUP
+    verify = "tests/pip_invalid_verify.ws"
+
+    step "pep668_install" {
+      description = "The default pip3 refuses an install in an externally managed environment, and that is an error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" }
+    }
+
+    step "pep668_remove" {
+      description = "The default pip3 refuses a removal in an externally managed environment, and that is an error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys2" ensure = :absent }
+    }
+
+    step "pip_error" {
+      description = "A distribution pip cannot find is a pip error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-not-in-wheelhouse" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "option_name" {
+      description = "A name pip would read as an option is rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "--index-url=http://evil.invalid/simple" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "url_name" {
+      description = "A URL is not a distribution name"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "https://evil.invalid/cw_sys-1.0-py3-none-any.whl" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "specifier_name" {
+      description = "A version specifier inside the name is rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys==1.0" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "shell_name" {
+      description = "Shell syntax in the name is rejected and never runs"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys;touch /tmp/cw-pwned" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "range_version" {
+      description = "A version range is rejected: version is an exact pin"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" version = ">=1.0" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "option_version" {
+      description = "pip options smuggled into version are rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" version = "1.0 --index-url http://evil.invalid/simple" virtualenv = "/opt/cw/inv" }
+    }
+
+    step "executable_args" {
+      description = "Arguments in executable are rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" executable = "pip3 --break-system-packages" }
+    }
+
+    step "relative_executable" {
+      description = "A relative executable path is rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" executable = "bin/pip" }
+    }
+
+    step "missing_executable" {
+      description = "An executable that does not exist is an error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" executable = "cw-no-such-pip" }
+    }
+
+    step "both_selectors" {
+      description = "virtualenv together with a non-default executable is an error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" virtualenv = "/opt/cw/inv" executable = "pip" }
+    }
+
+    step "missing_venv" {
+      description = "A virtualenv that does not exist is an error, not created"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" virtualenv = "/opt/cw/no-such-venv" }
+    }
+
+    step "relative_venv" {
+      description = "A relative virtualenv path is rejected"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" virtualenv = "opt/cw/inv" }
+    }
+
+    step "not_a_venv" {
+      description = "A directory without bin/python is not a virtualenv"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" virtualenv = "/opt/cw/plain" }
+    }
+
+    step "venv_without_pip" {
+      description = "A virtualenv without pip is an error"
+      resource = "pip_package"
+      expect = "error"
+      properties { name = "cw-sys" virtualenv = "/opt/cw/nopip" }
+    }
+  }
+}
