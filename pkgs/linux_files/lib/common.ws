@@ -205,3 +205,56 @@ fn install_tmp(tmp: string, p: string, a: Attrs) -> Result[unit, string] {
     }
     Ok(())
 }
+
+// The file's lines without the terminator after the last one: "" gives no
+// lines, "a\nb\n" and "a\nb" both give ["a", "b"].
+fn split_lines(text: string) -> List[string] {
+    let out: List[string] = []
+    if text == "" { return out }
+    let parts = text.split("\n")
+    let n = parts.len()
+    if text.ends_with("\n") { n = n - 1 }
+    let i = 0
+    while i < n {
+        out.push(parts.get(i).unwrap_or(""))
+        i = i + 1
+    }
+    out
+}
+
+// The lines joined with "\n", each line ended by "\n"; no lines give "".
+fn join_lines(lines: List[string]) -> string {
+    if lines.is_empty() { return "" }
+    lines.join("\n") + "\n"
+}
+
+// A file that cannot be read as UTF-8 text is an error, not drift: a
+// rewrite would destroy content this resource does not understand. `who`
+// names the resource in the error ("line_in_file", ...).
+fn read_text(p: string, who: string) -> Result[string, string] {
+    if let Ok(text) = fs::read(p) { return Ok(text) }
+    Err("cannot read '" + p + "' as UTF-8 text; " + who + " edits text files only")
+}
+
+// Put the edited temp file `tmp` in place at `p` for a text-edit resource.
+// A symlink at path is written through by install_tmp, and that copy gives
+// the target the temp file's mode. So for a symlink to an existing file,
+// read the target's owner, group and mode first (stat -L, numeric ids) and
+// set them back after the write. chown and chmod follow the link, so the
+// link itself is kept.
+fn install_edited(tmp: string, p: string, params: Value) -> Result[unit, string] {
+    let none = attrs(params)?
+    if fs::read_link(p).is_err() || !fs::is_file(p) { return install_tmp(tmp, p, none) }
+    let out = shell::bash("stat -L -c '%a %u %g' -- " + q(p), Value::Null)?
+    if !out.success {
+        fs::delete(tmp).unwrap_or(())
+        return Err(cmd_err("stat " + p, out))
+    }
+    let f = out.stdout.trim().split(" ")
+    let mode = f.get(0).unwrap_or("")
+    let ids = f.get(1).unwrap_or("") + ":" + f.get(2).unwrap_or("")
+    install_tmp(tmp, p, none)?
+    // chown first: it clears setuid/setgid bits, which the chmod puts back.
+    run("chown " + p, "chown -- " + q(ids) + " " + q(p))?
+    run("chmod " + p, "chmod -- " + q(mode) + " " + q(p))
+}
