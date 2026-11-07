@@ -108,6 +108,9 @@ rules (epochs, `~`, `-release`); a value that reads as a range is an error.
   `git config`, so the target needs git installed. `checkout` clones and
   updates a working tree at a branch, tag or commit, and removes it with
   `ensure = :absent` (Linux).
+- `subversion`: `checkout` checks out and updates a Subversion working copy
+  at HEAD or a pinned revision, and removes it with `ensure = :absent`
+  (Linux; needs svn installed).
 - `linux_system`: sysctl, hostname, timezone, locales, cron and fstab.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
@@ -522,6 +525,46 @@ history), `force` and `ensure`.
   of a URL as `***`. Authenticate with an ssh key or a credential helper.
   Git runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails
   instead of waiting for input. Submodules are not handled.
+
+### `subversion`
+
+`checkout` manages a Subversion working copy with the svn client through
+bash on Linux. The target needs `svn` and `svnversion` (Debian: the
+`subversion` package); the resource never installs them. Params: `dest`
+(absolute path), `repo` (required when present), `revision` (`""` for HEAD,
+or a positive number) and `ensure`. There is no `force`, no credential
+param and no way to pass other svn options.
+
+- Converged means `dest` is the root of a working copy whose URL equals the
+  repository's canonical form of `repo`, and every path in it is at the
+  wanted revision with no switched path. The whole working copy is read
+  with `svnversion`, so mixed revisions are drift even when the root is at
+  the wanted revision. `""` asks the repository for HEAD on every check, so
+  a new commit is drift; a number stays pinned, also when it is lower than
+  the working copy's revision. Check writes nothing.
+- A missing `dest` is checked out in a scratch directory beside it
+  (`.<name>.cw-checkout`) and moved into place when complete; its parent is
+  created. An existing working copy is updated, up or down, only when it
+  has the same URL and no local edits, unversioned, switched or locked
+  paths. A symlink, a file, an empty directory, any other directory and a
+  working copy of another URL are refused, never overwritten. Local edits
+  on a working copy already at the wanted revision are left alone.
+- `ensure = :absent` needs only `dest`, and a missing `dest` is already
+  absent. It deletes `dest` only when it is the root of a working copy with
+  no local edits, unversioned or ignored files, switched or locked paths,
+  and no other working copy inside it. It refuses `/`, top-level
+  directories, symlinks and unrelated trees. With `repo` set, it removes
+  only a working copy of that URL. The repository is never touched.
+- An unreadable repository, a revision it does not have, a URL that is not
+  a directory, an auth or network failure and a missing svn are errors,
+  never drift. Every svn call has `--non-interactive` (no prompt and no
+  automatic certificate trust) and `--ignore-externals`: externals are not
+  checked out or updated.
+- Inputs reach svn through environment variables, never through shell
+  text. `repo` must be a `file://`, `http://`, `https://`, `svn://` or
+  `svn+ssh://` URL without a password and without a user part on http(s).
+  `dest` and `repo` may not contain `@` (svn reads it as a peg revision),
+  except in an `svn+ssh://` user name.
 
 ### `windows_powershell`
 
