@@ -111,6 +111,8 @@ rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
 - `linux_kde`: KDE Plasma KConfig entries.
+- `linux_python`: Python distributions installed with pip, in an existing
+  virtual environment or through a chosen pip.
 
 Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
@@ -381,6 +383,29 @@ Without `home`, both use the passwd home of the account config-weave runs
 as. A running Plasma session can write its own settings back over an edit:
 apply while the user is logged out, or reload the component afterwards (for
 example `qdbus org.kde.KWin /KWin reconfigure`) or log in again.
+
+### `linux_python`
+
+Python distributions managed with pip. 1 resource:
+
+- `pip_package` — one distribution, with `name`, an exact `version` (empty
+  for any version) and `ensure`. With `virtualenv` (an absolute path to an
+  existing venv) pip runs as `<virtualenv>/bin/python -m pip`; otherwise
+  `executable` (default `pip3`, a name on `PATH` or an absolute path) is
+  the pip. Setting both is an error. check reads installed metadata with
+  `pip list`: it installs nothing and contacts no index. Names match after
+  PEP 503 normalization, and plain release numbers ignore trailing zeros
+  (`1.0` equals `1.0.0`). Install uses pip's own index settings and
+  installs dependencies. `:absent` needs no version and uninstalls only
+  this distribution, so its dependencies stay.
+
+`name` is a distribution name only: a URL, path, specifier, extra or pip
+option is rejected, and `version` takes no ranges. Values reach pip through
+the environment, after `--`. A missing executable, venv or pip, a pip
+error, and a PEP 668 `externally-managed-environment` refusal are errors:
+the resource never adds `--break-system-packages`, `--user` or an index
+option, and never creates a venv. Use a venv for system Pythons that are
+externally managed. Steps share the lock group `"pip"`.
 ### `git`
 
 Global and system git configuration, and git checkouts. Every config
