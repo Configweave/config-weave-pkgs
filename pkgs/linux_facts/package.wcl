@@ -45,9 +45,9 @@ package "linux_facts" {
   }
 
   gatherer "services" {
-    description = "List systemd services: every loaded service unit (systemctl list-units --all) plus every installed unit file that is not loaded (list-unit-files), with their active and enabled state. Template units (foo@.service) are left out; their instances appear once loaded"
+    description = "List services, from the first manager present: systemd when systemctl reaches it; else OpenRC when /run/openrc exists and rc-status works; else runit when runsv supervises an entry of /var/service, /etc/service, /service or /run/runit/service; else SysV when /etc/init.d holds scripts and `service` exists; else none. init_system is not consulted, so a container with an entrypoint as PID 1 still reports the manager its services run under. systemd: every loaded service unit (systemctl list-units --all) plus every installed unit file that is not loaded (list-unit-files); template units (foo@.service) are left out, their instances appear once loaded. OpenRC: every script that rc-service --list names. runit: every entry of the service dir, plus every definition in /etc/sv or /etc/runit/sv with a run script. SysV: every executable script in /etc/init.d. A service whose state command errors or answers an unknown state is left out"
     script = "gatherers/services.ws"
-    returns "services" { description = "One { name, active, sub, enabled } map per service. enabled is the unit-file state (enabled, disabled, static, masked, ...), empty for a unit with no unit file; a unit file that is not loaded reads active = inactive, sub = dead. Empty without a reachable systemd" type = "list" }
+    returns "services" { description = "One { name, active, sub, enabled } map per service; empty with no manager. systemd: active and sub are the unit's states, enabled the unit-file state (enabled, disabled, static, masked, ...), empty for a unit with no unit file; a unit file that is not loaded reads active = inactive, sub = dead. The other managers use systemd's active words and their own sub word, and enabled is enabled or disabled. OpenRC (rc-service status exit code): 0 active/started, 3 inactive/stopped, 4 deactivating/stopping, 8 activating/starting, 16 inactive/inactive, 32 failed/crashed; enabled when linked into any /etc/runlevels/<runlevel>. runit (sv status): run active/run, down inactive/down, finish deactivating/finish; enabled when linked into the service dir; an unlinked definition is inactive/down, a link that runsv does not supervise is left out. SysV (the script's status verb, LSB codes): 0 active/running, 1 or 2 failed/dead, 3 inactive/stopped; enabled when an /etc/rc?.d/S??<name> start link exists" type = "list" }
   }
 
   gatherer "mounts" {
@@ -152,7 +152,7 @@ SH
     }
 
     gather "svc" {
-      description = "services degrades to an empty list without systemd"
+      description = "services returns a list without systemd"
       from = "services"
     }
   }
@@ -202,6 +202,120 @@ SH
 
     gather "svc" {
       description = "services is empty without systemd"
+      from = "services"
+    }
+  }
+
+  // One test per non-systemd backend, with the real tools, as the
+  // linux_openrc, linux_runit and linux_sysvinit tests run them. Each seeds
+  // a running enabled, a stopped enabled and a stopped disabled service.
+  // OpenRC is not PID 1 here: a marked softlevel is all rc-service needs.
+  test "services_openrc" {
+    description = "services lists OpenRC services with their status and runlevel membership"
+    image = "alpine:3.23"
+    setup = <<'SH'
+apk add -q openrc >/dev/null 2>&1 || exit 1
+mkdir -p /run/openrc && touch /run/openrc/softlevel
+mk() {
+printf '#!/sbin/openrc-run\ncommand=/bin/sleep\ncommand_args=3600\ncommand_background=true\npidfile=/run/%s.pid\n' $1 > /etc/init.d/$1
+chmod +x /etc/init.d/$1
+}
+for s in cw-run cw-stop cw-off cw-crash; do mk $s; done
+rc-update add cw-run default >/dev/null && rc-update add cw-stop default >/dev/null || exit 1
+rc-service cw-run start >/dev/null 2>&1 && rc-service cw-crash start >/dev/null 2>&1 || exit 1
+# Marked started, its daemon gone: status 32.
+kill $(cat /run/cw-crash.pid)
+SH
+    verify = "tests/services_openrc_verify.ws"
+
+    gather "svc" {
+      description = "OpenRC services"
+      from = "services"
+    }
+  }
+
+  // runsvdir supervises /var/service. cw-stop is linked with a down file,
+  // cw-off is defined in /etc/sv and not linked.
+  test "services_runit" {
+    description = "services lists runit services with their sv status and service-dir links"
+    image = "alpine:3.23"
+    setup = <<'SH'
+apk add -q runit >/dev/null 2>&1 || exit 1
+for s in cw-run cw-stop cw-off; do
+mkdir -p /etc/sv/$s && printf '#!/bin/sh\nexec sleep 3600\n' > /etc/sv/$s/run && chmod +x /etc/sv/$s/run
+done
+touch /etc/sv/cw-stop/down
+mkdir -p /var/service
+(setsid runsvdir /var/service >/dev/null 2>&1 &)
+ln -s /etc/sv/cw-run /var/service/cw-run && ln -s /etc/sv/cw-stop /var/service/cw-stop
+for i in $(seq 1 30); do
+  sv status /var/service/cw-run 2>/dev/null | grep -q '^run:' && sv status /var/service/cw-stop >/dev/null 2>&1 && break
+  sleep 1
+done
+sv status /var/service/cw-run | grep -q '^run:' || exit 1
+sv status /var/service/cw-stop | grep -q '^down:' || exit 1
+SH
+    verify = "tests/services_runit_verify.ws"
+
+    gather "svc" {
+      description = "runit services"
+      from = "services"
+    }
+  }
+
+  // LSB status codes: 0 running, 3 stopped. cw-off has kill links only.
+  test "services_sysv" {
+    description = "services lists SysV services with their status verb and rc.d start links"
+    image = "debian:12"
+    setup = <<'SH'
+mk() {
+cat > /etc/init.d/$1 <<EOF
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: $1
+# Required-Start:
+# Required-Stop:
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: config-weave test
+### END INIT INFO
+P=/run/$1.pid
+case "\$1" in
+start) setsid sleep 3600 >/dev/null 2>&1 & echo \$! > \$P ;;
+stop) if [ -f \$P ]; then kill \$(cat \$P) 2>/dev/null; rm -f \$P; fi ;;
+status) [ -f \$P ] && kill -0 \$(cat \$P) 2>/dev/null && exit 0; exit 3 ;;
+esac
+EOF
+chmod +x /etc/init.d/$1
+}
+for s in cw-run cw-stop cw-off; do mk $s; done
+update-rc.d cw-run defaults >/dev/null && update-rc.d cw-stop defaults >/dev/null || exit 1
+update-rc.d cw-off defaults >/dev/null && update-rc.d cw-off disable >/dev/null || exit 1
+/etc/init.d/cw-run start
+SH
+    verify = "tests/services_sysv_verify.ws"
+
+    gather "svc" {
+      description = "SysV services"
+      from = "services"
+    }
+  }
+
+  // Half of each manager is here, never enough to count: /run/openrc with
+  // no OpenRC tools, an /etc/sv definition with no runsvdir, and an init
+  // script with no `service` command.
+  test "services_no_manager" {
+    description = "services is an empty list when no service manager is present"
+    image = "alpine:3.23"
+    setup = <<'SH'
+mkdir -p /run/openrc /etc/sv/cw-def /etc/init.d
+printf '#!/bin/sh\nexec sleep 3600\n' > /etc/sv/cw-def/run && chmod +x /etc/sv/cw-def/run
+printf '#!/bin/sh\nexit 0\n' > /etc/init.d/cw-init && chmod +x /etc/init.d/cw-init
+SH
+    verify = "tests/services_none_verify.ws"
+
+    gather "svc" {
+      description = "No services"
       from = "services"
     }
   }
