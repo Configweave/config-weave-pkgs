@@ -29,10 +29,12 @@ To test both repos together, point `CONFIG_WEAVE` at a local build:
 `CONFIG_WEAVE=../config-weave/target/debug/config-weave just ci::check`.
 
 - Target: `config-weave-helios-build`. The sandbox has no compilers.
-  Run the command above with `terrarium exec config-weave-helios-build -- sh -c 'cd <checkout> && ...'`.
-  The target sees only `/work/config-weave/lead`: until your workspace is
-  mounted there, ask the lead to check out your pushed commit under
-  `/work/config-weave/lead/checks/<card-id>`, and validate in that directory.
+  The target does not see your workspace. Check out your pushed branch on the
+  target, then run the command above in it:
+  `terrarium repo checkout config-weave-pkgs --target config-weave-helios-build --branch <card-branch> --path /tmp/src/<card-id>`
+  `terrarium exec config-weave-helios-build -- sh -c 'cd /tmp/src/<card-id> && <the command above>'`
+  The first install of the pinned binary takes about 9 minutes: use
+  `terrarium run` then. After a new push, run `repo checkout` again.
 - Pushing: the ssh-agent holds two deploy keys. Pin this checkout to its own
   key, or GitHub denies the push: `ssh-add -L | grep 'github-deploy-config-weave-pkgs$' > ~/.ssh/cw-pkgs.pub`,
   then `git config core.sshCommand "ssh -o IdentitiesOnly=yes -i $HOME/.ssh/cw-pkgs.pub"`.
