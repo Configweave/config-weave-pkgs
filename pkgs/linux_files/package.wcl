@@ -144,6 +144,15 @@ package "linux_files" {
     param "create" { description = "With :present, create a missing file (and its parent directories) holding only the block; when false a missing file is an error. Ignored with :absent, which never creates a file" type = "bool" default = true }
   }
 
+  resource "file_substitution" {
+    description = "Replace every match of a regular expression in an existing text file. Every byte outside a match is kept, the final-newline state included; a file with no match is already configured. The substitution must be a fixed point: when applying it to its own output would change that output again (pattern a with replacement aa), the step is an error, in check and in apply, and nothing is written. So a stable substitution converges, and a growing one is rejected instead of rewriting the file on every run. There is no ensure param: a substitution has no inverse, and an empty replacement deletes the matched text. A missing path is an error at apply (check reports it as not configured, so a check-only run does not fail on a file an earlier step creates); a directory at path, a file that is not valid UTF-8 text and an invalid pattern are errors. Writes go to a temp file beside the target and are renamed into place, keeping the file's owner, group and mode; a symlink at path is written through and its target keeps its owner, group and mode. Check is read-only. Steps that edit the same file must be ordered with requires"
+    script = "resources/file_substitution.ws"
+    concurrency = "parallel"
+    param "path" { description = "Absolute path of an existing text file (no .. segments)" type = "string" required = true }
+    param "pattern" { description = "Regular expression in Rust regex syntax; must not be empty. The whole file is one string: ^ and $ match only at its start and end, and . does not match a newline, unless inline flags say otherwise: (?m) makes ^ and $ match at line boundaries, (?s) lets . match a newline, (?i) ignores case, (?x) allows whitespace and # comments. Look-around and backreferences are not supported; an invalid pattern is an error" type = "string" required = true }
+    param "replacement" { description = "Text that replaces each match; empty deletes it. $1 or $name expands a capture group; write ${1} or ${name} when letters, digits or _ follow (in $1a the group name is 1a, which expands to nothing), and $$ for a literal $" type = "string" required = true }
+  }
+
   gatherer "path_stat" {
     description = "Report a path's existence, type, size and mode. Describes the path itself and never follows a symlink: a dangling symlink exists, and a symlink to a directory reports is_symlink rather than is_dir"
     script = "gatherers/path_stat.ws"
@@ -961,6 +970,154 @@ TMPL
       resource = "block_in_file"
       expect = "error"
       properties { path = "/tmp/cw-block-bad/binary.conf" block = "a" }
+    }
+  }
+
+  // One substitution per file, each initial state seeded in setup.
+  // tests/substitution_verify.ws checks the bytes, the attributes and that
+  // the symlink survives.
+  test "substitution_converges" {
+    description = "file_substitution replaces every match with captures, deletes, spans lines, keeps unmatched bytes, the final-newline state, attributes and symlinks, and leaves no-match and already-substituted files alone"
+    image = "debian:12"
+    group = "files-substitution"
+    setup = "mkdir -p /tmp/cw-sub && cd /tmp/cw-sub && printf '# head\\na = 1\\nb = 2\\nc=3\\n' > captures.conf && printf 'mail user@old.example\\nadmin@old.example\\n' > named.conf && printf 'keep # note\\nplain\\nline # other\\n' > delete.conf && printf 'a\\nBEGIN\\nx\\ny\\nEND\\nb\\n' > multiline.conf && printf 'x=old' > nonl.conf && printf 'level=debug\\n' > attrs.conf && chown 65534:65534 attrs.conf && chmod 640 attrs.conf && printf 'level=debug\\n' > real.conf && chown 65534:65534 real.conf && chmod 600 real.conf && ln -s /tmp/cw-sub/real.conf link.conf && printf 'nothing here\\n' > nomatch.conf && printf 'a=1\\nb=2\\n' > done.conf"
+    verify = "tests/substitution_verify.ws"
+
+    step "captures" {
+      description = "Every match is replaced and numbered groups expand; (?m) anchors at lines; unmatched lines keep their bytes"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/captures.conf" pattern = "(?m)^(\\w+) = (\\w+)$" replacement = "${1}=${2}" }
+    }
+
+    step "named" {
+      description = "Named groups expand with $name"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/named.conf" pattern = "(?P<user>\\w+)@old\\.example" replacement = "$user@new.example" }
+    }
+
+    step "delete" {
+      description = "An empty replacement deletes the matched text"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/delete.conf" pattern = " #.*" replacement = "" }
+    }
+
+    step "multiline" {
+      description = "With (?s) a match spans lines"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/multiline.conf" pattern = "(?s)BEGIN.*?END" replacement = "BLOCK" }
+    }
+
+    step "no_final_newline" {
+      description = "A file with no final newline still has none after the substitution"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/nonl.conf" pattern = "old" replacement = "new" }
+    }
+
+    step "attrs" {
+      description = "The file keeps its owner, group and mode"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/attrs.conf" pattern = "debug" replacement = "info" }
+    }
+
+    step "via_link" {
+      description = "A symlink at path is written through, stays a symlink, and the target keeps its owner, group and mode"
+      resource = "file_substitution"
+      properties { path = "/tmp/cw-sub/link.conf" pattern = "debug" replacement = "info" }
+    }
+
+    step "no_match" {
+      description = "A file with no match is already configured and not rewritten"
+      resource = "file_substitution"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-sub/nomatch.conf" pattern = "absent-text" replacement = "x" }
+    }
+
+    step "already_substituted" {
+      description = "A file that already holds the substituted text is already configured"
+      resource = "file_substitution"
+      expect = "already_configured"
+      properties { path = "/tmp/cw-sub/done.conf" pattern = "(?m)^(\\w+) = (\\w+)$" replacement = "${1}=${2}" }
+    }
+  }
+
+  // Every step is an error and writes nothing, so steps that share a file
+  // need no requires. tests/substitution_verify.ws checks that each seeded
+  // file still holds its seed bytes and that the symlink is still one.
+  test "substitution_invalid_input" {
+    description = "file_substitution rejects substitutions that do not converge, invalid and empty patterns, bad and missing paths, directories and non-UTF-8 files, and leaves them untouched"
+    image = "debian:12"
+    group = "files-substitution"
+    setup = "mkdir -p /tmp/cw-sub-bad && cd /tmp/cw-sub-bad && printf 'a\\n' > grow.conf && printf 'abc\\n' > empty_match.conf && printf 'a\\n' > real.conf && chmod 600 real.conf && ln -s /tmp/cw-sub-bad/real.conf link.conf && printf 'k\\n' > keep.conf && printf '\\377\\376\\n' > binary.conf"
+    verify = "tests/substitution_verify.ws"
+
+    step "grows" {
+      description = "a -> aa changes its own output again, so it is an error and the file is not written"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/grow.conf" pattern = "a" replacement = "aa" }
+    }
+
+    step "empty_match" {
+      description = "A pattern that matches the empty string grows the text on every run, so it is an error"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/empty_match.conf" pattern = "x*" replacement = "y" }
+    }
+
+    step "grows_via_link" {
+      description = "A rejected substitution through a symlink leaves the link and its target untouched"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/link.conf" pattern = "a" replacement = "aa" }
+    }
+
+    step "invalid_pattern" {
+      description = "An invalid regular expression is an error"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/keep.conf" pattern = "(k" replacement = "x" }
+    }
+
+    step "empty_pattern" {
+      description = "An empty pattern is rejected"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/keep.conf" pattern = "" replacement = "x" }
+    }
+
+    step "missing" {
+      description = "A missing path is an error and no file is created"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/missing.conf" pattern = "k" replacement = "x" }
+    }
+
+    step "directory" {
+      description = "A directory at path is an error"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad" pattern = "k" replacement = "x" }
+    }
+
+    step "binary" {
+      description = "A non-UTF-8 file is an error and is not rewritten"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/binary.conf" pattern = "a" replacement = "b" }
+    }
+
+    step "relative" {
+      description = "A relative path is rejected"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "tmp/cw-sub-bad/keep.conf" pattern = "k" replacement = "x" }
+    }
+
+    step "dotdot" {
+      description = "A path with a .. segment is rejected"
+      resource = "file_substitution"
+      expect = "error"
+      properties { path = "/tmp/cw-sub-bad/../cw-sub-bad/keep.conf" pattern = "k" replacement = "x" }
     }
   }
 }

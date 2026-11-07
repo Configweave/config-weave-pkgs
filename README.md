@@ -83,8 +83,9 @@ The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
 rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
-- `linux_files`: files (exact content or URL-fetched), single lines in
-  text files, directories, symlinks/hard links, archives and modes.
+- `linux_files`: files (exact content or URL-fetched), single lines,
+  blocks and regex substitutions in text files, directories, symlinks/hard
+  links, archives and modes.
 - `linux_packages`: the package-manager detection gatherer.
 - `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper`:
   one package per package manager — install, cache refresh and, where the
@@ -124,8 +125,8 @@ extensions into Visual Studio and VS Code.
 
 ### `linux_files`
 
-Files, lines, blocks, directories, links, archives and modes. 8 resources and 2
-gatherers:
+Files, lines, blocks, regex substitutions, directories, links, archives and
+modes. 9 resources and 2 gatherers:
 
 - `file` — exact `content`, or fetched from `url`. Writes go to a temp file
   beside the target and are renamed into place, keeping the old file's owner
@@ -173,6 +174,27 @@ gatherers:
   the file's owner, group and mode and go through a symlink at `path`. A
   file that is not valid UTF-8, or a directory at `path`, is an error. Steps
   that edit the same file must be ordered with `requires`.
+- `file_substitution` — replaces every match of the regex `pattern` in an
+  existing text file with `replacement`. Every byte outside a match is kept,
+  the final-newline state included, and a file with no match is already
+  configured. `pattern` uses Rust regex syntax on the whole file as one
+  string: `^`/`$` match at its start and end and `.` does not match a
+  newline unless inline flags say otherwise (`(?m)` line anchors, `(?s)` `.`
+  matches newline, `(?i)` ignore case, `(?x)` verbose); no look-around or
+  backreferences. In `replacement`, `$1` or `$name` expands a capture group;
+  write `${1}` when letters, digits or `_` follow (`$1a` names group `1a`,
+  which expands to nothing), and `$$` for a literal `$`. An empty
+  `replacement` deletes the matched text. Fixed-point rule: when applying
+  the substitution to its own output would change it again (`a` with `aa`,
+  or a pattern that matches the empty string), the step is an error in
+  `check` and in apply, and nothing is written; a stable substitution
+  converges. There is no `ensure`: a substitution has no inverse. A missing
+  file is an error at apply (`check` reports it as not configured, so a
+  check-only run does not fail on a file an earlier step creates); a
+  directory at `path`, a file that is not valid UTF-8, and an empty or
+  invalid `pattern` are errors. Writes keep the file's owner, group and mode
+  and go through a symlink at `path`, whose target keeps its owner, group
+  and mode. Steps that edit the same file must be ordered with `requires`.
 - `directory` — creates missing parents. `:absent` is recursive and refuses
   `/` and every top-level directory.
 - `symlink` — symbolic or hard links. A dangling link at `path` is replaced,
