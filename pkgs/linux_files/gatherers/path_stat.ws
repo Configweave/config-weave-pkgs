@@ -26,6 +26,9 @@ fn gather(params: Value) -> Result[Value, string] {
         "is_dir": md.get("is_dir").unwrap_or(Value::Bool(false)),
         "is_symlink": md.get("is_symlink").unwrap_or(Value::Bool(false)),
         "mode": Value::Int(mode),
-        "modified": md.get("modified").unwrap_or(Value::Int(0))
+        "modified": md.get("modified").unwrap_or(Value::Int(0)),
+        // numeric owner of the path itself (lstat), never its target's
+        "uid": md.get("uid").unwrap_or(Value::Null),
+        "gid": md.get("gid").unwrap_or(Value::Null)
     }))
 }
