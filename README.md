@@ -83,8 +83,9 @@ The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
 rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 
 - `linux_facts`: Linux OS, init system, services, mounts and network facts.
-- `linux_files`: files (exact content or URL-fetched), single lines in
-  text files, directories, symlinks/hard links, archives and modes.
+- `linux_files`: files (exact content or URL-fetched), single lines,
+  blocks and regex substitutions in text files, directories, symlinks/hard
+  links, archives and modes.
 - `linux_packages`: the package-manager detection gatherer.
 - `linux_apt` / `linux_dnf` / `linux_pacman` / `linux_apk` / `linux_zypper`:
   one package per package manager — install, cache refresh and, where the
@@ -111,6 +112,8 @@ rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
 - `linux_kde`: KDE Plasma KConfig entries.
+- `linux_python`: Python distributions installed with pip, in an existing
+  virtual environment or through a chosen pip.
 
 Windows packages (`windows_installers`, `windows_packages`, `windows_features`,
 `windows_registry`, `windows_updates`, `windows_domain`, `windows_sysprep`,
@@ -124,8 +127,8 @@ extensions into Visual Studio and VS Code.
 
 ### `linux_files`
 
-Files, lines, blocks, directories, links, archives and modes. 8 resources and 2
-gatherers:
+Files, lines, blocks, regex substitutions, directories, links, archives and
+modes. 9 resources and 2 gatherers:
 
 - `file` — exact `content`, or fetched from `url`. Writes go to a temp file
   beside the target and are renamed into place, keeping the old file's owner
@@ -173,6 +176,27 @@ gatherers:
   the file's owner, group and mode and go through a symlink at `path`. A
   file that is not valid UTF-8, or a directory at `path`, is an error. Steps
   that edit the same file must be ordered with `requires`.
+- `file_substitution` — replaces every match of the regex `pattern` in an
+  existing text file with `replacement`. Every byte outside a match is kept,
+  the final-newline state included, and a file with no match is already
+  configured. `pattern` uses Rust regex syntax on the whole file as one
+  string: `^`/`$` match at its start and end and `.` does not match a
+  newline unless inline flags say otherwise (`(?m)` line anchors, `(?s)` `.`
+  matches newline, `(?i)` ignore case, `(?x)` verbose); no look-around or
+  backreferences. In `replacement`, `$1` or `$name` expands a capture group;
+  write `${1}` when letters, digits or `_` follow (`$1a` names group `1a`,
+  which expands to nothing), and `$$` for a literal `$`. An empty
+  `replacement` deletes the matched text. Fixed-point rule: when applying
+  the substitution to its own output would change it again (`a` with `aa`,
+  or a pattern that matches the empty string), the step is an error in
+  `check` and in apply, and nothing is written; a stable substitution
+  converges. There is no `ensure`: a substitution has no inverse. A missing
+  file is an error at apply (`check` reports it as not configured, so a
+  check-only run does not fail on a file an earlier step creates); a
+  directory at `path`, a file that is not valid UTF-8, and an empty or
+  invalid `pattern` are errors. Writes keep the file's owner, group and mode
+  and go through a symlink at `path`, whose target keeps its owner, group
+  and mode. Steps that edit the same file must be ordered with `requires`.
 - `directory` — creates missing parents. `:absent` is recursive and refuses
   `/` and every top-level directory.
 - `symlink` — symbolic or hard links. A dangling link at `path` is replaced,
@@ -184,7 +208,8 @@ gatherers:
 - `permissions` — owner, group and mode on an existing path (not recursive).
 - `path_stat` and `paths_matching` gatherers. `path_stat` describes the path
   itself and never follows a symlink; `mode` is the permission bits (420 for
-  0644).
+  0644). `uid` and `gid` are the numeric owner and group of the path itself
+  (a link's own owner, not its target's); a missing path has neither key.
 
 Paths must be absolute and free of `..`. `mode` is 3 or 4 octal digits;
 `owner` and `group` take a name or a numeric id. Every resource follows a
@@ -381,6 +406,29 @@ Without `home`, both use the passwd home of the account config-weave runs
 as. A running Plasma session can write its own settings back over an edit:
 apply while the user is logged out, or reload the component afterwards (for
 example `qdbus org.kde.KWin /KWin reconfigure`) or log in again.
+
+### `linux_python`
+
+Python distributions managed with pip. 1 resource:
+
+- `pip_package` — one distribution, with `name`, an exact `version` (empty
+  for any version) and `ensure`. With `virtualenv` (an absolute path to an
+  existing venv) pip runs as `<virtualenv>/bin/python -m pip`; otherwise
+  `executable` (default `pip3`, a name on `PATH` or an absolute path) is
+  the pip. Setting both is an error. check reads installed metadata with
+  `pip list`: it installs nothing and contacts no index. Names match after
+  PEP 503 normalization, and plain release numbers ignore trailing zeros
+  (`1.0` equals `1.0.0`). Install uses pip's own index settings and
+  installs dependencies. `:absent` needs no version and uninstalls only
+  this distribution, so its dependencies stay.
+
+`name` is a distribution name only: a URL, path, specifier, extra or pip
+option is rejected, and `version` takes no ranges. Values reach pip through
+the environment, after `--`. A missing executable, venv or pip, a pip
+error, and a PEP 668 `externally-managed-environment` refusal are errors:
+the resource never adds `--break-system-packages`, `--user` or an index
+option, and never creates a venv. Use a venv for system Pythons that are
+externally managed. Steps share the lock group `"pip"`.
 ### `git`
 
 Global and system git configuration, and git checkouts. Every config
