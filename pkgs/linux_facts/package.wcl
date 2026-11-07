@@ -57,6 +57,25 @@ package "linux_facts" {
     returns "mounts" { description = "One { spec, mountpoint, fstype, options } map per mount; the kernel's \\040-style escapes in spec and mountpoint are decoded, so a mount point with a space reads as one" type = "list" }
   }
 
+  gatherer "getent" {
+    description = "Read entries of the passwd, group or hosts database through getent(1), which asks NSS. NSS may consult remote backends configured in /etc/nsswitch.conf (LDAP, SSSD, NIS, DNS for hosts), so a lookup can be slow, can reach the network, and reports what NSS answers, not only the local files. shadow and gshadow are not offered. getent runs as `getent -- <database> <key>` with quoted operands and a 120 s timeout. A key with a NUL, a line break or a leading \"-\" is an error. A keyed lookup that getent answers with exit 2 (not found) returns found = false, count = 0 and entries = []. A missing getent, a timeout, any other exit code (an enumeration that exits 2 included), a record with the wrong number of columns, and a keyed exit 0 with no record are errors, never an empty result. Nothing is changed: no account, NSS configuration or cache"
+    script = "gatherers/getent.ws"
+    param "database" {
+      description = "The NSS database to read"
+      type = "symbol"
+      required = true
+      symbol "passwd" { description = "User accounts: name, password placeholder, uid, gid, gecos, home, shell" }
+      symbol "group"  { description = "Groups: name, password placeholder, gid, members (comma-separated, one column)" }
+      symbol "hosts"  { description = "Host names: address, canonical name, then each alias" }
+    }
+    param "key" { description = "Name or number to look up (a user or uid, a group or gid, a host name or address). Empty lists every entry of the database" type = "string" default = "" }
+    returns "database" { description = "The database that was read" type = "string" }
+    returns "key" { description = "The key that was looked up, empty for a listing" type = "string" }
+    returns "found" { description = "True when at least one entry came back" type = "bool" }
+    returns "count" { description = "Number of entries" type = "int" }
+    returns "entries" { description = "One { fields } map per record getent printed, in its order. fields is a list of strings in the database's column order: passwd (7) and group (4) split on \":\" and keep empty columns; hosts splits on whitespace and keeps every alias. A lookup can return several entries, such as one hosts entry per address of a name" type = "list" }
+  }
+
   // In a VM the gatherers must return substance, not just degrade
   // gracefully: real units from systemd, a routable interface, a root
   // filesystem, and a recognised network manager.
@@ -317,6 +336,199 @@ SH
     gather "svc" {
       description = "No services"
       from = "services"
+    }
+  }
+
+  // Local files only, written directly so every id and column is known:
+  // a user with empty gecos, home and shell, a group with two members, and
+  // two hosts rows for one name (multi on merges them for a lookup by name).
+  test "getent_gathers" {
+    description = "getent reads passwd, group and hosts entries by name, by number and as a listing"
+    image = "debian:12"
+    group = "facts-getent"
+    setup = <<'SH'
+printf '%s\n' 'cwalice:x:2101:' 'cwempty:x:2103:' 'cwteam:x:2201:cwalice,cwbob' >> /etc/group
+printf '%s\n' 'cwalice:x:2101:2101:Alice CW,,,:/home/cwalice:/bin/bash' 'cwbob:x:2102:2101::/home/cwbob:/bin/sh' 'cwempty:x:2103:2103:::' >> /etc/passwd
+printf '10.77.0.1 cw-multi.example cw-multi cw-alias1\n10.77.0.2\tcw-multi.example  cw-multi2\n' >> /etc/hosts
+printf 'multi on\n' > /etc/host.conf
+SH
+    verify = "tests/getent_verify.ws"
+
+    gather "pw_name" {
+      description = "A user by name"
+      from = "getent"
+      params { database = :passwd key = "cwalice" }
+      expect {
+        database = "passwd"
+        key = "cwalice"
+        found = true
+        count = 1
+      }
+    }
+
+    gather "pw_uid" {
+      description = "A user by uid"
+      from = "getent"
+      params { database = :passwd key = "2102" }
+      expect {
+        found = true
+        count = 1
+      }
+    }
+
+    gather "pw_empty" {
+      description = "A user whose gecos, home and shell are empty"
+      from = "getent"
+      params { database = :passwd key = "cwempty" }
+      expect {
+        found = true
+        count = 1
+      }
+    }
+
+    gather "pw_all" {
+      description = "Every user"
+      from = "getent"
+      params { database = :passwd }
+      expect {
+        key = ""
+        found = true
+      }
+    }
+
+    gather "gr_name" {
+      description = "A group with members by name"
+      from = "getent"
+      params { database = :group key = "cwteam" }
+      expect {
+        database = "group"
+        found = true
+        count = 1
+      }
+    }
+
+    gather "gr_gid" {
+      description = "A group with no members by gid"
+      from = "getent"
+      params { database = :group key = "2101" }
+      expect {
+        found = true
+        count = 1
+      }
+    }
+
+    gather "gr_all" {
+      description = "Every group"
+      from = "getent"
+      params { database = :group }
+      expect {
+        found = true
+      }
+    }
+
+    gather "ho_name" {
+      description = "A name on two hosts rows"
+      from = "getent"
+      params { database = :hosts key = "cw-multi.example" }
+      expect {
+        database = "hosts"
+        found = true
+        count = 2
+      }
+    }
+
+    gather "ho_alias" {
+      description = "A host by alias"
+      from = "getent"
+      params { database = :hosts key = "cw-alias1" }
+      expect {
+        found = true
+        count = 1
+      }
+    }
+
+    gather "ho_addr" {
+      description = "A host by address"
+      from = "getent"
+      params { database = :hosts key = "10.77.0.2" }
+      expect {
+        found = true
+        count = 1
+      }
+    }
+
+    gather "ho_all" {
+      description = "Every hosts row"
+      from = "getent"
+      params { database = :hosts }
+      expect {
+        found = true
+      }
+    }
+  }
+
+  // Missing keys are gathers. The errors cannot be gathers, because a
+  // gatherer Err fails the test: the verify script calls the gatherer's
+  // lookup() with each invalid input, and with PATH set to one of these
+  // fixture directories in turn (no getent, exit 1, exit 2, exit 3, a
+  // malformed record, a keyed exit 0 with no output, and one that records
+  // its operands).
+  test "getent_errors" {
+    description = "getent: missing keys are empty results; invalid input and failing commands are errors"
+    image = "debian:12"
+    group = "facts-getent"
+    setup = <<'SH'
+mk() {
+mkdir -p /tmp/cw-getent-$1 && printf '#!/bin/sh\n%s\n' "$2" > /tmp/cw-getent-$1/getent && chmod +x /tmp/cw-getent-$1/getent
+}
+mkdir -p /tmp/cw-getent-none
+mk fail 'echo "getent: backend unavailable" >&2; exit 1'
+mk exit2 'exit 2'
+mk exit3 'echo "Enumeration not supported on group" >&2; exit 3'
+mk bad 'echo "cwbad:x:1"'
+mk silent 'exit 0'
+mk args 'printf "%s\n" "$@" > /tmp/cw-getent-args.out; echo "cwq:x:3001:3001::/:/bin/sh"'
+SH
+    verify = "tests/getent_verify.ws"
+
+    gather "miss_user" {
+      description = "A user name that does not exist"
+      from = "getent"
+      params { database = :passwd key = "cw-nobody" }
+      expect {
+        found = false
+        count = 0
+      }
+    }
+
+    gather "miss_uid" {
+      description = "A uid that does not exist"
+      from = "getent"
+      params { database = :passwd key = "59999" }
+      expect {
+        found = false
+        count = 0
+      }
+    }
+
+    gather "miss_group" {
+      description = "A group that does not exist"
+      from = "getent"
+      params { database = :group key = "cw-nogroup" }
+      expect {
+        found = false
+        count = 0
+      }
+    }
+
+    gather "miss_host" {
+      description = "A host name that does not exist (.invalid never resolves)"
+      from = "getent"
+      params { database = :hosts key = "cw-missing.invalid" }
+      expect {
+        found = false
+        count = 0
+      }
     }
   }
 }
