@@ -70,6 +70,12 @@ Never run `just test` unfiltered. Notes on the testlab:
 - `config-weave test` writes no JUnit, TAP or CTRF file. Do not write one by
   hand for `terrarium test push`: the test output lines in the move comment
   are the evidence, and the lead re-runs the tests at review.
+- Full-VM tests (`template =`) run on config-weave-helios-vmlab too: the
+  templates are in vmlab's store (`vmlab template list`: ubuntu-24.04,
+  fedora-44, alpine-3.23, windows-server-2025, windows-server-2022) and
+  vmlab-hv is configured. A VM test takes minutes (Windows longer); run one
+  filter per run with `terrarium run`. If a test reports a missing template
+  or a vmlab error, tell the lead: the store and the target belong to it.
 
 ## Flow (the `delivery-process` skill)
 
