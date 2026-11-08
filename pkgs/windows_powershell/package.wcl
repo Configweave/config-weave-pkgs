@@ -3266,6 +3266,7 @@ package "windows_powershell" {
     setup = "mkdir -p /tmp/cfw42-psreadline_option && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: psreadline\nSet-PSReadLineOption -EditMode Emacs\n# END config-weave: psreadline\n' > /tmp/cfw42-psreadline_option/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-psreadline_option/configured.ps1"
     verify = "tests/psreadline_option_removal_verify.ws"
     step "remove" {
+      description = "Remove the seeded target and keep unrelated content"
       resource = "psreadline_option"
       properties {
         ensure = :absent
@@ -3274,6 +3275,7 @@ package "windows_powershell" {
       }
     }
     step "configured" {
+      description = "An existing file without the target is already configured"
       resource = "psreadline_option"
       expect = "already_configured"
       properties {
@@ -3283,6 +3285,7 @@ package "windows_powershell" {
       }
     }
     step "missing" {
+      description = "A missing target is already configured"
       resource = "psreadline_option"
       expect = "already_configured"
       properties {
@@ -3299,6 +3302,7 @@ package "windows_powershell" {
     setup = "mkdir -p /tmp/cfw42-psreadline_key_handler && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: psreadline-key-Ctrl-x\nSet-PSReadLineKeyHandler -Chord '\\''Ctrl+x'\\'' -Function '\\''Cut'\\''\n# END config-weave: psreadline-key-Ctrl-x\n' > /tmp/cfw42-psreadline_key_handler/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-psreadline_key_handler/configured.ps1"
     verify = "tests/psreadline_key_handler_removal_verify.ws"
     step "remove" {
+      description = "Remove the seeded target and keep unrelated content"
       resource = "psreadline_key_handler"
       properties {
         ensure = :absent
@@ -3307,6 +3311,7 @@ package "windows_powershell" {
       }
     }
     step "configured" {
+      description = "An existing file without the target is already configured"
       resource = "psreadline_key_handler"
       expect = "already_configured"
       properties {
@@ -3316,6 +3321,7 @@ package "windows_powershell" {
       }
     }
     step "missing" {
+      description = "A missing target is already configured"
       resource = "psreadline_key_handler"
       expect = "already_configured"
       properties {
@@ -3332,6 +3338,7 @@ package "windows_powershell" {
     setup = "mkdir -p /tmp/cfw42-default_parameter_values && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: defaultparam-get-childitem-force\n$PSDefaultParameterValues['\\''Get-ChildItem:Force'\\''] = $true\n# END config-weave: defaultparam-get-childitem-force\n' > /tmp/cfw42-default_parameter_values/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-default_parameter_values/configured.ps1"
     verify = "tests/default_parameter_values_removal_verify.ws"
     step "remove" {
+      description = "Remove the seeded target and keep unrelated content"
       resource = "default_parameter_values"
       properties {
         ensure = :absent
@@ -3340,6 +3347,7 @@ package "windows_powershell" {
       }
     }
     step "configured" {
+      description = "An existing file without the target is already configured"
       resource = "default_parameter_values"
       expect = "already_configured"
       properties {
@@ -3349,6 +3357,7 @@ package "windows_powershell" {
       }
     }
     step "missing" {
+      description = "A missing target is already configured"
       resource = "default_parameter_values"
       expect = "already_configured"
       properties {
@@ -3364,6 +3373,7 @@ package "windows_powershell" {
     setup = "mkdir -p /tmp/cfw42-module && printf '%s' '{\"PSModulePath\":\"/keep/one:/remove:/keep/two\",\"Sentinel\":17}' > /tmp/cfw42-module/remove.json && printf '%s' '{\"PSModulePath\":\"/remove\",\"Sentinel\":17}' > /tmp/cfw42-module/last.json && printf '%s' '{\"Sentinel\":17}' > /tmp/cfw42-module/configured.json"
     verify = "tests/module_path_removal_verify.ws"
     step "remove" {
+      description = "Remove the seeded target and keep unrelated content"
       resource = "module_path"
       properties {
         ensure = :absent
@@ -3372,6 +3382,7 @@ package "windows_powershell" {
       }
     }
     step "last" {
+      description = "Remove the final entry and drop its key"
       resource = "module_path"
       properties {
         ensure = :absent
@@ -3380,6 +3391,7 @@ package "windows_powershell" {
       }
     }
     step "configured" {
+      description = "An existing file without the target is already configured"
       resource = "module_path"
       expect = "already_configured"
       properties {
@@ -3389,6 +3401,7 @@ package "windows_powershell" {
       }
     }
     step "missing" {
+      description = "A missing target is already configured"
       resource = "module_path"
       expect = "already_configured"
       properties {
@@ -3404,6 +3417,7 @@ package "windows_powershell" {
     setup = "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ConsoleSessionConfiguration /v EnableConsoleSessionConfiguration /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ConsoleSessionConfiguration /v ConsoleSessionConfigurationName /t REG_SZ /d CwSentinel /f"
     verify = "tests/console_removal_verify.ws"
     step "disable" {
+      description = "Disable the seeded console policy without specifying a name"
       resource = "console_session_configuration"
       properties { ensure = :absent }
     }
