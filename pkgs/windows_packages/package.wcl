@@ -396,6 +396,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       properties { max_age = 24h }
     }
@@ -411,6 +412,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       properties { max_age = 24h }
     }
@@ -426,6 +428,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       expect = "already_configured"
       properties { max_age = 24h }
@@ -442,6 +445,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       expect = "error"
       properties { max_age = 24h }
@@ -458,6 +462,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       expect = "reboot_required"
       properties { max_age = 24h }
@@ -474,6 +479,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='S
 SETUP
     verify = "tests/chocolatey_updated_verify.ws"
     step "upgrade_window" {
+      description = "Exercise the periodic upgrade window and outcome"
       resource = "chocolatey_updated"
       expect = "reboot_required"
       properties { max_age = 24h }
