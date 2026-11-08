@@ -61,7 +61,7 @@ package "windows_packages" {
   // periodic action is upgrading what is installed — hence `updated` rather
   // than `cache_updated`.
   //
-  // Untested by design: it would upgrade every package on the test guest.
+  // Upgrade-all tests use dedicated guests and a deterministic local feed.
   resource "chocolatey_updated" {
     description = "Run choco upgrade all when the last upgrade is older than max_age; exit codes 3010 and 1641 report reboot_required"
     script = "resources/chocolatey_updated.ws"
@@ -385,6 +385,101 @@ package "windows_packages" {
   // Setup runs under `cmd /C`, so the commands hold no double quotes, and
   // choco is called by its full path: the bootstrap's PATH change does not
   // reach this shell. The resources find it there on their own.
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_missing" {
+    description = "Local-feed upgrade with missing outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-missing"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'Set-PowerShellExitCode 0' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'missing'; Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue; Set-Content -LiteralPath ($d+'\before') -Value missing; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      properties { max_age = 24h }
+    }
+  }
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_stale" {
+    description = "Local-feed upgrade with stale outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-stale"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'Set-PowerShellExitCode 0' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'stale'; Set-Content -LiteralPath $stamp -Value sentinel; (Get-Item -LiteralPath $stamp).LastWriteTimeUtc=[DateTime]::UtcNow.AddDays(-2); Set-Content -LiteralPath ($d+'\before') -Value (Get-Item -LiteralPath $stamp).LastWriteTimeUtc.Ticks; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      properties { max_age = 24h }
+    }
+  }
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_fresh" {
+    description = "Local-feed upgrade with fresh outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-fresh"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'Set-PowerShellExitCode 0' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'fresh'; Set-Content -LiteralPath $stamp -Value sentinel; (Get-Item -LiteralPath $stamp).LastWriteTimeUtc=[DateTime]::UtcNow.AddDays(0); Set-Content -LiteralPath ($d+'\before') -Value (Get-Item -LiteralPath $stamp).LastWriteTimeUtc.Ticks; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      expect = "already_configured"
+      properties { max_age = 24h }
+    }
+  }
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_failure" {
+    description = "Local-feed upgrade with failure outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-failure"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'throw ''controlled upgrade failure''' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'failure'; Set-Content -LiteralPath $stamp -Value sentinel; (Get-Item -LiteralPath $stamp).LastWriteTimeUtc=[DateTime]::UtcNow.AddDays(-2); Set-Content -LiteralPath ($d+'\before') -Value (Get-Item -LiteralPath $stamp).LastWriteTimeUtc.Ticks; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      expect = "error"
+      properties { max_age = 24h }
+    }
+  }
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_reboot_3010" {
+    description = "Local-feed upgrade with reboot 3010 outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-reboot_3010"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'Set-PowerShellExitCode 3010' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'reboot_3010'; Set-Content -LiteralPath $stamp -Value sentinel; (Get-Item -LiteralPath $stamp).LastWriteTimeUtc=[DateTime]::UtcNow.AddDays(-2); Set-Content -LiteralPath ($d+'\before') -Value (Get-Item -LiteralPath $stamp).LastWriteTimeUtc.Ticks; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      expect = "reboot_required"
+      properties { max_age = 24h }
+    }
+  }
+
+  // Independent group: upgrade-all must never see other tests' packages.
+  test "chocolatey_updated_reboot_1641" {
+    description = "Local-feed upgrade with reboot 1641 outcome and independent stamp verification"
+    template = "x86_64/windows-server-2025"
+    group = "choco-updated-reboot_1641"
+    setup = <<'SETUP'
+powershell -NoProfile -ExecutionPolicy Bypass -Command $ErrorActionPreference='Stop'; $d='C:\cw-choco-updated'; $stamp='C:\ProgramData\config-weave\chocolatey-updated'; $null=New-Item -ItemType Directory -Force -Path $d,($d+'\feed'),(Split-Path $stamp); $s=Invoke-RestMethod https://community.chocolatey.org/install.ps1; Invoke-Expression $s; $choco='C:\ProgramData\chocolatey\bin\choco.exe'; & $choco feature enable --name=usePackageExitCodes; if($LASTEXITCODE -ne 0){throw 'feature enable failed'}; & $choco pin add --name=chocolatey; if($LASTEXITCODE -ne 0){throw 'pin failed'}; foreach($line in (& $choco source list --limit-output)){ $name=($line -split '\|')[0]; & $choco source remove ('--name='+$name); if($LASTEXITCODE -ne 0){throw 'source removal failed'} }; & $choco source add --name=cw-local --source=($d+'\feed'); if($LASTEXITCODE -ne 0){throw 'local source failed'}; Add-Type -AssemblyName System.IO.Compression.FileSystem; foreach($v in @('1.0.0','2.0.0')){ $p=$d+'\pkg-'+$v; $null=New-Item -ItemType Directory -Force -Path ($p+'\tools'); Set-Content -LiteralPath ($p+'\cw-updated.nuspec') -Value ('<package><metadata><id>cw-updated</id><version>'+$v+'</version><authors>ConfigWeave</authors><description>Local upgrade fixture</description></metadata></package>') -Encoding UTF8; $install='Set-Content -LiteralPath C:\cw-choco-updated\installed -Value '+$v; if($v -eq '2.0.0'){ $install='Add-Content -LiteralPath C:\cw-choco-updated\attempts -Value upgrade'+[Environment]::NewLine+$install+[Environment]::NewLine+'Set-PowerShellExitCode 1641' }; Set-Content -LiteralPath ($p+'\tools\chocolateyinstall.ps1') -Value $install -Encoding UTF8; [IO.Compression.ZipFile]::CreateFromDirectory($p,($d+'\feed\cw-updated.'+$v+'.nupkg')) }; & $choco install cw-updated --version=1.0.0 --source=($d+'\feed') -y --no-progress; if($LASTEXITCODE -ne 0){throw 'seed install failed'}; Set-Content -LiteralPath ($d+'\mode') -Value 'reboot_1641'; Set-Content -LiteralPath $stamp -Value sentinel; (Get-Item -LiteralPath $stamp).LastWriteTimeUtc=[DateTime]::UtcNow.AddDays(-2); Set-Content -LiteralPath ($d+'\before') -Value (Get-Item -LiteralPath $stamp).LastWriteTimeUtc.Ticks; exit 0
+SETUP
+    verify = "tests/chocolatey_updated_verify.ws"
+    step "upgrade_window" {
+      resource = "chocolatey_updated"
+      expect = "reboot_required"
+      properties { max_age = 24h }
+    }
+  }
+
   test "chocolatey_manages_packages" {
     description = "Chocolatey package install, removal, version hold and source management converge"
     template = "x86_64/windows-server-2025"
