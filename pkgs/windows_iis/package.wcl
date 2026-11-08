@@ -4047,6 +4047,175 @@ package "windows_iis" {
     }
   }
 
+
+  test "iis_collection_removal" {
+    description = "Direct collection removal preserves siblings and parents"
+    template = "x86_64/windows-server-2025"
+    group = "removal41"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -Command \"$ErrorActionPreference='Stop'; Install-WindowsFeature Web-Server,Web-Scripting-Tools,Web-Http-Tracing,Web-IP-Security,Web-AppInit,Web-ISAPI-Filter,Web-ISAPI-Ext | Out-Null; $msi=Join-Path $env:TEMP 'rewrite41.msi'; Invoke-WebRequest 'https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi' -OutFile $msi; $sig=Get-AuthenticodeSignature $msi; if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'invalid rewrite signature' }; $p=Start-Process msiexec.exe -ArgumentList @('/i',$msi,'/qn','/norestart') -Wait -PassThru; if ($p.ExitCode -notin @(0,3010,1641)) { throw 'rewrite install failed' }; Add-Type -Path (Join-Path $env:windir 'system32\\inetsrv\\Microsoft.Web.Administration.dll'); $sm=New-Object Microsoft.Web.Administration.ServerManager; if ($null -eq $sm.Sites['remove-site41']) { New-Item -ItemType Directory -Force C:\\remove41 | Out-Null; $sm.Sites.Add('remove-site41','http','*:8941:','C:\\remove41') | Out-Null; $sm.CommitChanges() }; $cfg=$sm.GetApplicationHostConfiguration(); $maps=$cfg.GetSection('system.webServer/rewrite/rewriteMaps','remove-site41').GetCollection(); $e=$maps.CreateElement('rewriteMap'); $e['name']='entries41'; $maps.Add($e); $c=$cfg.GetSection('system.webServer/tracing/traceFailedRequests', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['path']='remove-*'; $c.Add($e); $e=$c.CreateElement('add'); $e['path']='keep-*'; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/ipSecurity', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['ipAddress']='192.0.2.41'; $e['subnetMask']='255.255.255.255'; $e['allowed']=$false; $c.Add($e); $e=$c.CreateElement('add'); $e['ipAddress']='192.0.2.42'; $e['subnetMask']='255.255.255.255'; $e['allowed']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/requestFiltering', 'remove-site41').GetCollection('hiddenSegments'); $e=$c.CreateElement('add'); $e['segment']='remove41'; $c.Add($e); $e=$c.CreateElement('add'); $e['segment']='keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/httpErrors', 'remove-site41').GetCollection(); $e=$c.CreateElement('error'); $e['statusCode']=491; $e['subStatusCode']=-1; $e['path']='/error.html'; $e['responseMode']='ExecuteURL'; $c.Add($e); $e=$c.CreateElement('error'); $e['statusCode']=492; $e['subStatusCode']=-1; $e['path']='/error.html'; $e['responseMode']='ExecuteURL'; $c.Add($e); $c=$cfg.GetSection('system.webServer/staticContent', 'remove-site41').GetCollection(); $e=$c.CreateElement('mimeMap'); $e['fileExtension']='.remove41'; $e['mimeType']='text/plain'; $c.Add($e); $e=$c.CreateElement('mimeMap'); $e['fileExtension']='.keep41'; $e['mimeType']='text/plain'; $c.Add($e); $c=$cfg.GetSection('system.webServer/caching', 'remove-site41').GetCollection('profiles'); $e=$c.CreateElement('add'); $e['extension']='.remove41'; $c.Add($e); $e=$c.CreateElement('add'); $e['extension']='.keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/handlers', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='remove41'; $e['path']='*.never41'; $e['verb']='GET'; $e['modules']='StaticFile'; $e['resourceType']='File'; $c.Add($e); $e=$c.CreateElement('add'); $e['name']='keep41'; $e['path']='*.never41'; $e['verb']='GET'; $e['modules']='StaticFile'; $e['resourceType']='File'; $c.Add($e); $c=$cfg.GetSection('system.webServer/isapiFilters', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='remove41'; $e['path']='C:\\Windows\\System32\\inetsrv\\gzip.dll'; $e['enabled']=$false; $c.Add($e); $e=$c.CreateElement('add'); $e['name']='keep41'; $e['path']='C:\\Windows\\System32\\inetsrv\\gzip.dll'; $e['enabled']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/isapiCgiRestriction').GetCollection(); $e=$c.CreateElement('add'); $e['path']='C:\\remove41.dll'; $e['allowed']=$false; $c.Add($e); $e=$c.CreateElement('add'); $e['path']='C:\\keep41.dll'; $e['allowed']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/applicationInitialization', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['initializationPage']='/remove41'; $c.Add($e); $e=$c.CreateElement('add'); $e['initializationPage']='/keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/rewriteMaps', 'remove-site41').GetCollection(); $e=$c.CreateElement('rewriteMap'); $e['name']='remove41'; $c.Add($e); $e=$c.CreateElement('rewriteMap'); $e['name']='keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/rewriteMaps/rewriteMap[@name=''entries41'']', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['key']='remove41'; $e['value']='sentinel'; $c.Add($e); $e=$c.CreateElement('add'); $e['key']='keep41'; $e['value']='sentinel'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/allowedServerVariables', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='HTTP_X_REMOVE41'; $c.Add($e); $e=$c.CreateElement('add'); $e['name']='HTTP_X_KEEP41'; $c.Add($e); $sm.CommitChanges()\""
+    verify = "tests/iis_collection_removal_verify.ws"
+    step "failed_request_tracing_rule_absent" {
+      description = "Remove only the named failed_request_tracing_rule"
+      resource = "failed_request_tracing_rule"
+      properties { site = "remove-site41" content_path = "remove-*"  ensure = :absent }
+    }
+    step "ip_restriction_absent" {
+      description = "Remove only the named ip_restriction"
+      resource = "ip_restriction"
+      properties { site = "remove-site41" ip_address = "192.0.2.41"  ensure = :absent }
+    }
+    step "request_filtering_rule_absent" {
+      description = "Remove only the named request_filtering_rule"
+      resource = "request_filtering_rule"
+      properties { site = "remove-site41" value = "remove41" kind = :hidden_segment ensure = :absent }
+    }
+    step "http_error_absent" {
+      description = "Remove only the named http_error"
+      resource = "http_error"
+      properties { site = "remove-site41" status_code = 491  ensure = :absent }
+    }
+    step "mime_map_absent" {
+      description = "Remove only the named mime_map"
+      resource = "mime_map"
+      properties { site = "remove-site41" file_extension = ".remove41"  ensure = :absent }
+    }
+    step "output_cache_profile_absent" {
+      description = "Remove only the named output_cache_profile"
+      resource = "output_cache_profile"
+      properties { site = "remove-site41" extension = ".remove41"  ensure = :absent }
+    }
+    step "handler_absent" {
+      description = "Remove only the named handler"
+      resource = "handler"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "isapi_filter_absent" {
+      description = "Remove only the named isapi_filter"
+      resource = "isapi_filter"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "isapi_cgi_restriction_absent" {
+      description = "Remove only the named isapi_cgi_restriction"
+      resource = "isapi_cgi_restriction"
+      properties { executable_path = "C:\\remove41.dll"  ensure = :absent }
+    }
+    step "application_initialization_page_absent" {
+      description = "Remove only the named application_initialization_page"
+      resource = "application_initialization_page"
+      properties { site = "remove-site41" init_page = "/remove41"  ensure = :absent }
+    }
+    step "rewrite_map_absent" {
+      description = "Remove only the named rewrite_map"
+      resource = "rewrite_map"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "rewrite_map_entry_absent" {
+      description = "Remove only the named rewrite_map_entry"
+      resource = "rewrite_map_entry"
+      properties { site = "remove-site41" key = "remove41" map = "entries41" ensure = :absent }
+    }
+    step "rewrite_allowed_server_variable_absent" {
+      description = "Remove only the named rewrite_allowed_server_variable"
+      resource = "rewrite_allowed_server_variable"
+      properties { site = "remove-site41" name = "HTTP_X_REMOVE41"  ensure = :absent }
+    }
+  }
+
+  test "iis_collection_missing" {
+    description = "Direct collection removal of missing targets"
+    template = "x86_64/windows-server-2025"
+    group = "removal-missing41"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -Command \"$ErrorActionPreference='Stop'; Install-WindowsFeature Web-Server,Web-Scripting-Tools,Web-Http-Tracing,Web-IP-Security,Web-AppInit,Web-ISAPI-Filter,Web-ISAPI-Ext | Out-Null; $msi=Join-Path $env:TEMP 'rewrite41.msi'; Invoke-WebRequest 'https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi' -OutFile $msi; $sig=Get-AuthenticodeSignature $msi; if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'invalid rewrite signature' }; $p=Start-Process msiexec.exe -ArgumentList @('/i',$msi,'/qn','/norestart') -Wait -PassThru; if ($p.ExitCode -notin @(0,3010,1641)) { throw 'rewrite install failed' }; Add-Type -Path (Join-Path $env:windir 'system32\\inetsrv\\Microsoft.Web.Administration.dll'); $sm=New-Object Microsoft.Web.Administration.ServerManager; if ($null -eq $sm.Sites['remove-site41']) { New-Item -ItemType Directory -Force C:\\remove41 | Out-Null; $sm.Sites.Add('remove-site41','http','*:8941:','C:\\remove41') | Out-Null; $sm.CommitChanges() }; $cfg=$sm.GetApplicationHostConfiguration(); $maps=$cfg.GetSection('system.webServer/rewrite/rewriteMaps','remove-site41').GetCollection(); $e=$maps.CreateElement('rewriteMap'); $e['name']='entries41'; $maps.Add($e); $c=$cfg.GetSection('system.webServer/tracing/traceFailedRequests', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['path']='keep-*'; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/ipSecurity', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['ipAddress']='192.0.2.42'; $e['subnetMask']='255.255.255.255'; $e['allowed']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/requestFiltering', 'remove-site41').GetCollection('hiddenSegments'); $e=$c.CreateElement('add'); $e['segment']='keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/httpErrors', 'remove-site41').GetCollection(); $e=$c.CreateElement('error'); $e['statusCode']=492; $e['subStatusCode']=-1; $e['path']='/error.html'; $e['responseMode']='ExecuteURL'; $c.Add($e); $c=$cfg.GetSection('system.webServer/staticContent', 'remove-site41').GetCollection(); $e=$c.CreateElement('mimeMap'); $e['fileExtension']='.keep41'; $e['mimeType']='text/plain'; $c.Add($e); $c=$cfg.GetSection('system.webServer/caching', 'remove-site41').GetCollection('profiles'); $e=$c.CreateElement('add'); $e['extension']='.keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/handlers', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='keep41'; $e['path']='*.never41'; $e['verb']='GET'; $e['modules']='StaticFile'; $e['resourceType']='File'; $c.Add($e); $c=$cfg.GetSection('system.webServer/isapiFilters', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='keep41'; $e['path']='C:\\Windows\\System32\\inetsrv\\gzip.dll'; $e['enabled']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/security/isapiCgiRestriction').GetCollection(); $e=$c.CreateElement('add'); $e['path']='C:\\keep41.dll'; $e['allowed']=$false; $c.Add($e); $c=$cfg.GetSection('system.webServer/applicationInitialization', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['initializationPage']='/keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/rewriteMaps', 'remove-site41').GetCollection(); $e=$c.CreateElement('rewriteMap'); $e['name']='keep41'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/rewriteMaps/rewriteMap[@name=''entries41'']', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['key']='keep41'; $e['value']='sentinel'; $c.Add($e); $c=$cfg.GetSection('system.webServer/rewrite/allowedServerVariables', 'remove-site41').GetCollection(); $e=$c.CreateElement('add'); $e['name']='HTTP_X_KEEP41'; $c.Add($e); $sm.CommitChanges()\""
+    verify = "tests/iis_collection_missing_verify.ws"
+    step "failed_request_tracing_rule_absent" {
+      description = "Remove only the named failed_request_tracing_rule"
+      resource = "failed_request_tracing_rule"
+      properties { site = "remove-site41" content_path = "remove-*"  ensure = :absent }
+    }
+    step "ip_restriction_absent" {
+      description = "Remove only the named ip_restriction"
+      resource = "ip_restriction"
+      properties { site = "remove-site41" ip_address = "192.0.2.41"  ensure = :absent }
+    }
+    step "request_filtering_rule_absent" {
+      description = "Remove only the named request_filtering_rule"
+      resource = "request_filtering_rule"
+      properties { site = "remove-site41" value = "remove41" kind = :hidden_segment ensure = :absent }
+    }
+    step "http_error_absent" {
+      description = "Remove only the named http_error"
+      resource = "http_error"
+      properties { site = "remove-site41" status_code = 491  ensure = :absent }
+    }
+    step "mime_map_absent" {
+      description = "Remove only the named mime_map"
+      resource = "mime_map"
+      properties { site = "remove-site41" extension = ".remove41"  ensure = :absent }
+    }
+    step "output_cache_profile_absent" {
+      description = "Remove only the named output_cache_profile"
+      resource = "output_cache_profile"
+      properties { site = "remove-site41" extension = ".remove41"  ensure = :absent }
+    }
+    step "handler_absent" {
+      description = "Remove only the named handler"
+      resource = "handler"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "isapi_filter_absent" {
+      description = "Remove only the named isapi_filter"
+      resource = "isapi_filter"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "isapi_cgi_restriction_absent" {
+      description = "Remove only the named isapi_cgi_restriction"
+      resource = "isapi_cgi_restriction"
+      properties { executable_path = "C:\\remove41.dll"  ensure = :absent }
+    }
+    step "application_initialization_page_absent" {
+      description = "Remove only the named application_initialization_page"
+      resource = "application_initialization_page"
+      properties { site = "remove-site41" init_page = "/remove41"  ensure = :absent }
+    }
+    step "rewrite_map_absent" {
+      description = "Remove only the named rewrite_map"
+      resource = "rewrite_map"
+      properties { site = "remove-site41" name = "remove41"  ensure = :absent }
+    }
+    step "rewrite_map_entry_absent" {
+      description = "Remove only the named rewrite_map_entry"
+      resource = "rewrite_map_entry"
+      properties { site = "remove-site41" key = "remove41" map = "entries41" ensure = :absent }
+    }
+    step "rewrite_allowed_server_variable_absent" {
+      description = "Remove only the named rewrite_allowed_server_variable"
+      resource = "rewrite_allowed_server_variable"
+      properties { site = "remove-site41" name = "HTTP_X_REMOVE41"  ensure = :absent }
+    }
+  }
+
+  // Separate disposable VM. Never remove features from the active-site group.
+  test "iis_feature_removal" {
+    description = "Removing one installed role service keeps a sibling installed"
+    template = "x86_64/windows-server-2025"
+    memory = "4GiB"
+    setup = "powershell -NoProfile -Command Install-WindowsFeature Web-Server,Web-Http-Redirect,Web-Dir-Browsing; Uninstall-WindowsFeature Web-DAV-Publishing"
+    verify = "tests/iis_feature_removal_verify.ws"
+    step "feature_absent" {
+      description = "Remove an installed leaf feature"
+      resource = "feature"
+      properties { name = :http_redirect ensure = :absent }
+    }
+    step "missing_feature_absent" {
+      description = "An uninstalled leaf feature stays absent"
+      resource = "feature"
+      properties { name = :dav_publishing ensure = :absent }
+      expect = "already_configured"
+    }
+  }
+
   // Removes what the earlier tests created, each from a real object, and
   // verify asserts every one is gone — the HTTP.sys certificate binding of
   // the removed https binding included.
