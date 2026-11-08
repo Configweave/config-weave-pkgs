@@ -3260,4 +3260,152 @@ package "windows_powershell" {
       }
     }
   }
+  test "psreadline_option_removal" {
+    description = "Remove only the generated entry and preserve unrelated profile text"
+    image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
+    setup = "mkdir -p /tmp/cfw42-psreadline_option && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: psreadline\nSet-PSReadLineOption -EditMode Emacs\n# END config-weave: psreadline\n' > /tmp/cfw42-psreadline_option/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-psreadline_option/configured.ps1"
+    verify = "tests/psreadline_option_removal_verify.ws"
+    step "remove" {
+      resource = "psreadline_option"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_option/remove.ps1"
+        edit_mode = :emacs
+      }
+    }
+    step "configured" {
+      resource = "psreadline_option"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_option/configured.ps1"
+        edit_mode = :emacs
+      }
+    }
+    step "missing" {
+      resource = "psreadline_option"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_option/missing.ps1"
+        edit_mode = :emacs
+      }
+    }
+  }
+
+  test "psreadline_key_handler_removal" {
+    description = "Remove only the generated entry and preserve unrelated profile text"
+    image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
+    setup = "mkdir -p /tmp/cfw42-psreadline_key_handler && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: psreadline-key-Ctrl-x\nSet-PSReadLineKeyHandler -Chord '\\''Ctrl+x'\\'' -Function '\\''Cut'\\''\n# END config-weave: psreadline-key-Ctrl-x\n' > /tmp/cfw42-psreadline_key_handler/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-psreadline_key_handler/configured.ps1"
+    verify = "tests/psreadline_key_handler_removal_verify.ws"
+    step "remove" {
+      resource = "psreadline_key_handler"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_key_handler/remove.ps1"
+        chord = "Ctrl+x"
+      }
+    }
+    step "configured" {
+      resource = "psreadline_key_handler"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_key_handler/configured.ps1"
+        chord = "Ctrl+x"
+      }
+    }
+    step "missing" {
+      resource = "psreadline_key_handler"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-psreadline_key_handler/missing.ps1"
+        chord = "Ctrl+x"
+      }
+    }
+  }
+
+  test "default_parameter_values_removal" {
+    description = "Remove only the generated entry and preserve unrelated profile text"
+    image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
+    setup = "mkdir -p /tmp/cfw42-default_parameter_values && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n# BEGIN config-weave: defaultparam-get-childitem-force\n$PSDefaultParameterValues['\\''Get-ChildItem:Force'\\''] = $true\n# END config-weave: defaultparam-get-childitem-force\n' > /tmp/cfw42-default_parameter_values/remove.ps1 && printf '%s' '# before\n$Keep = '\\''sentinel'\\''\n# BEGIN config-weave: sibling\n$Sibling = 1\n# END config-weave: sibling\n# after\n' > /tmp/cfw42-default_parameter_values/configured.ps1"
+    verify = "tests/default_parameter_values_removal_verify.ws"
+    step "remove" {
+      resource = "default_parameter_values"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-default_parameter_values/remove.ps1"
+        key = "Get-ChildItem:Force"
+      }
+    }
+    step "configured" {
+      resource = "default_parameter_values"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-default_parameter_values/configured.ps1"
+        key = "Get-ChildItem:Force"
+      }
+    }
+    step "missing" {
+      resource = "default_parameter_values"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        path = "/tmp/cfw42-default_parameter_values/missing.ps1"
+        key = "Get-ChildItem:Force"
+      }
+    }
+  }
+  test "module_path_removal" {
+    description = "Remove selected module paths, dropping the final key without losing other settings"
+    image = "mcr.microsoft.com/powershell:7.5-ubuntu-24.04"
+    setup = "mkdir -p /tmp/cfw42-module && printf '%s' '{\"PSModulePath\":\"/keep/one:/remove:/keep/two\",\"Sentinel\":17}' > /tmp/cfw42-module/remove.json && printf '%s' '{\"PSModulePath\":\"/remove\",\"Sentinel\":17}' > /tmp/cfw42-module/last.json && printf '%s' '{\"Sentinel\":17}' > /tmp/cfw42-module/configured.json"
+    verify = "tests/module_path_removal_verify.ws"
+    step "remove" {
+      resource = "module_path"
+      properties {
+        ensure = :absent
+        entries = ["/remove"]
+        path = "/tmp/cfw42-module/remove.json"
+      }
+    }
+    step "last" {
+      resource = "module_path"
+      properties {
+        ensure = :absent
+        entries = ["/remove"]
+        path = "/tmp/cfw42-module/last.json"
+      }
+    }
+    step "configured" {
+      resource = "module_path"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        entries = ["/remove"]
+        path = "/tmp/cfw42-module/configured.json"
+      }
+    }
+    step "missing" {
+      resource = "module_path"
+      expect = "already_configured"
+      properties {
+        ensure = :absent
+        entries = ["/remove"]
+        path = "/tmp/cfw42-module/missing.json"
+      }
+    }
+  }
+  test "console_session_configuration_removal" {
+    description = "Disable the console policy without a name, retaining the stored name"
+    template = "x86_64/windows-server-2025"
+    setup = "reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ConsoleSessionConfiguration /v EnableConsoleSessionConfiguration /t REG_DWORD /d 1 /f & reg add HKLM\\SOFTWARE\\Policies\\Microsoft\\PowerShellCore\\ConsoleSessionConfiguration /v ConsoleSessionConfigurationName /t REG_SZ /d CwSentinel /f"
+    verify = "tests/console_removal_verify.ws"
+    step "disable" {
+      resource = "console_session_configuration"
+      properties { ensure = :absent }
+    }
+  }
 }
