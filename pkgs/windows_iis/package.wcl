@@ -4152,7 +4152,7 @@ package "windows_iis" {
     step "mime_map_absent" {
       description = "Remove only the named mime_map"
       resource = "mime_map"
-      properties { site = "remove-site41" extension = ".remove41"  ensure = :absent }
+      properties { site = "remove-site41" file_extension = ".remove41"  ensure = :absent }
     }
     step "output_cache_profile_absent" {
       description = "Remove only the named output_cache_profile"
