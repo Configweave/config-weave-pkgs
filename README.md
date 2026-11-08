@@ -82,7 +82,7 @@ The Linux package managers (`linux_apt`, `linux_dnf`, `linux_zypper`) keep
 `version` an exact pin, because distro versions follow their own ordering
 rules (epochs, `~`, `-release`); a value that reads as a range is an error.
 
-- `linux_facts`: Linux OS, init system, services, mounts and network facts.
+- `linux_facts`: Linux OS, init system, services, mounts, network and getent (passwd, group, hosts) facts.
 - `linux_files`: files (exact content or URL-fetched), single lines,
   blocks and regex substitutions in text files, directories, symlinks/hard
   links, archives and modes.
@@ -108,6 +108,9 @@ rules (epochs, `~`, `-release`); a value that reads as a range is an error.
   `git config`, so the target needs git installed. `checkout` clones and
   updates a working tree at a branch, tag or commit, and removes it with
   `ensure = :absent` (Linux).
+- `subversion`: `checkout` checks out and updates a Subversion working copy
+  at HEAD or a pinned revision, and removes it with `ensure = :absent`
+  (Linux; needs svn installed).
 - `linux_system`: sysctl, hostname, timezone, locales, cron and fstab.
 - `linux_network`: hosts entries, firewalld/ufw rules and nftables
   tables/chains/rules.
@@ -242,7 +245,7 @@ Core system settings. 6 resources:
 ### `linux_facts`
 
 OS facts as gatherers: `os_release` (with `/usr/lib/os-release` as
-fallback), `init_system`, `network`, `services` and `mounts`.
+fallback), `init_system`, `network`, `services`, `mounts` and `getent`.
 `init_system` reads PID 1, so a container whose PID 1 is an entrypoint
 reports `:unknown`. `network.network_system` is a symbol (`:netplan`,
 `:network_manager`, `:systemd_networkd`, `:wicked`, `:ifupdown`,
@@ -271,6 +274,19 @@ fails or answers another code (a runit link that nothing supervises yet, a
 SysV script whose missing `status` verb exits with a code other than 0 to
 3) is left out, and the gather does not fail. Such a script that exits 1
 reads as `failed`/`dead`, which is what LSB defines for that code.
+
+`getent` reads the `passwd`, `group` or `hosts` database (`database`, a
+symbol; `shadow` and `gshadow` are not offered) through `getent -- <database>
+<key>`, for one `key` (a name or number) or, with `key = ""`, every entry. It
+returns `database`, `key`, `found`, `count` and `entries`, one `{ fields }`
+per record with the columns in database order: `passwd` and `group` split on
+`:` and keep empty columns, `hosts` splits on whitespace and keeps aliases, and
+one name can give several `hosts` entries. A key that is not found (exit 2) is
+`found = false`, `count = 0`, `entries = []`. A key with a NUL, a line break or
+a leading `-`, a missing `getent`, any other exit code and a malformed record
+are errors, never an empty result. NSS may consult remote backends (LDAP,
+SSSD, NIS, DNS), so the answer is what NSS returns, not only the local files.
+
 ### `linux_systemd`, `linux_openrc`, `linux_runit` and `linux_sysvinit`
 
 One package per init system, each with a `service` resource of the same
@@ -522,6 +538,46 @@ history), `force` and `ensure`.
   of a URL as `***`. Authenticate with an ssh key or a credential helper.
   Git runs with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails
   instead of waiting for input. Submodules are not handled.
+
+### `subversion`
+
+`checkout` manages a Subversion working copy with the svn client through
+bash on Linux. The target needs `svn` and `svnversion` (Debian: the
+`subversion` package); the resource never installs them. Params: `dest`
+(absolute path), `repo` (required when present), `revision` (`""` for HEAD,
+or a positive number) and `ensure`. There is no `force`, no credential
+param and no way to pass other svn options.
+
+- Converged means `dest` is the root of a working copy whose URL equals the
+  repository's canonical form of `repo`, and every path in it is at the
+  wanted revision with no switched path. The whole working copy is read
+  with `svnversion`, so mixed revisions are drift even when the root is at
+  the wanted revision. `""` asks the repository for HEAD on every check, so
+  a new commit is drift; a number stays pinned, also when it is lower than
+  the working copy's revision. Check writes nothing.
+- A missing `dest` is checked out in a scratch directory beside it
+  (`.<name>.cw-checkout`) and moved into place when complete; its parent is
+  created. An existing working copy is updated, up or down, only when it
+  has the same URL and no local edits, unversioned, switched or locked
+  paths. A symlink, a file, an empty directory, any other directory and a
+  working copy of another URL are refused, never overwritten. Local edits
+  on a working copy already at the wanted revision are left alone.
+- `ensure = :absent` needs only `dest`, and a missing `dest` is already
+  absent. It deletes `dest` only when it is the root of a working copy with
+  no local edits, unversioned or ignored files, switched or locked paths,
+  and no other working copy inside it. It refuses `/`, top-level
+  directories, symlinks and unrelated trees. With `repo` set, it removes
+  only a working copy of that URL. The repository is never touched.
+- An unreadable repository, a revision it does not have, a URL that is not
+  a directory, an auth or network failure and a missing svn are errors,
+  never drift. Every svn call has `--non-interactive` (no prompt and no
+  automatic certificate trust) and `--ignore-externals`: externals are not
+  checked out or updated.
+- Inputs reach svn through environment variables, never through shell
+  text. `repo` must be a `file://`, `http://`, `https://`, `svn://` or
+  `svn+ssh://` URL without a password and without a user part on http(s).
+  `dest` and `repo` may not contain `@` (svn reads it as a peg revision),
+  except in an `svn+ssh://` user name.
 
 ### `windows_powershell`
 

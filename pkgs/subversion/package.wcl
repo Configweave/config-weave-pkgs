@@ -1,0 +1,436 @@
+// Subversion working copies, managed with the svn command-line client.
+//
+// The package needs svn and svnversion on the target (Debian: the
+// `subversion` package); it never installs them. Like git.checkout, the
+// resource runs through bash on Linux and its safety rules follow
+// git.checkout's, without sharing code with it (lib/wc.ws).
+package "subversion" {
+  description = "Manage Subversion working copies"
+
+  resource "checkout" {
+    description = "Ensure a Subversion working copy of a repository URL at a revision is present at a path, or remove it (Linux; needs svn installed)"
+    script = "resources/checkout.ws"
+    // Different destinations are independent. Steps on the same dest
+    // must be ordered with `requires`.
+    concurrency = "parallel"
+    // Converged means: dest is the root of a working copy whose URL is
+    // the repository's canonical form of `repo`, and every path in it
+    // (svnversion, not only the root) is at the wanted revision with no
+    // switched path. "" asks the repository for HEAD on every check, so a
+    // new commit is drift; a number stays pinned, also below the current
+    // revision. Repository, network, auth and missing-svn errors are
+    // errors, never drift. Every svn call has --non-interactive (no
+    // prompt, no certificate trust) and --ignore-externals.
+    param "dest" { description = "Absolute path of the working copy root, without '..' or '@'; its parent is created when missing. With ensure = :present it must be missing or an existing working copy of repo; a symlink, a file, an empty or other directory is refused" type = "string" required = true }
+    param "repo" { description = "Repository URL (file://, http://, https://, svn:// or svn+ssh://) of the directory to check out (required when present). Must not embed credentials (no password, no user part on http(s)) or contain '@' outside an svn+ssh user name. When absent and set, only a working copy of this URL is removed" type = "string" default = "" }
+    param "revision" { description = "Revision to hold: \"\" = the repository's HEAD, asked on every check; otherwise a positive revision number, held also when it is lower than the working copy's" type = "string" default = "" }
+    param "ensure" {
+      description = "Desired state: :present or :absent. An update or a removal needs a working copy with no local edits, unversioned (for removal also ignored), switched or locked paths. Absent removes dest and everything in it only when dest is the root of such a working copy with no other working copy inside it, never /, a top-level directory or a symlink"
+      type = "symbol"
+      default = :present
+
+      symbol "present" { description = "Check out or update the working copy" }
+      symbol "absent"  { description = "Remove the working copy; the repository is not touched" }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Tests
+  //
+  // Both run in one debian:12 instance (group "svn-checkout") and share
+  // tests/checkout_verify.ws, which checks each test's tree when it is
+  // present. Each setup installs subversion once (guarded) and builds its
+  // own local repository under /srv/cw-svn/<test>, reached only through
+  // file:// URLs:
+  //
+  //   r1  import trunk/file.txt ("one"), trunk/sub/a.txt, branches/
+  //   r2  copy trunk to branches/b
+  //   r3  trunk/file.txt = "three"
+  //
+  // Every state a step checks is seeded in setup, one destination per
+  // step, because every step is checked before the first apply.
+  //
+  // Untested by design: svn missing from the target (svn is shared by
+  // the group, so it cannot be removed for one test; an unreadable
+  // repository covers the same error path), externals and a working copy
+  // nested inside dest (unversioned there, so the status check refuses it
+  // first).
+  // ---------------------------------------------------------------------
+
+  test "checkout_converges" {
+    description = "subversion.checkout checks out HEAD and pinned revisions, follows HEAD, pins downwards, repairs mixed revisions and removes a clean working copy"
+    image = "debian:12"
+    group = "svn-checkout"
+    setup = <<'SETUP'
+set -e
+(command -v svn && command -v svnadmin && command -v svnversion) >/dev/null || (apt-get update -qq && apt-get install -y -qq subversion)
+B=/srv/cw-svn/converge
+R="file://$B/repo"
+rm -rf "$B" && mkdir -p "$B"
+svnadmin create "$B/repo"
+mkdir -p "$B/init/trunk/sub" "$B/init/branches"
+echo one > "$B/init/trunk/file.txt" && echo a > "$B/init/trunk/sub/a.txt"
+svn import -q -m r1 "$B/init" "$R"
+svn copy -q -m r2 "$R/trunk" "$R/branches/b"
+svn checkout -q "$R/trunk" "$B/seed"
+echo three > "$B/seed/file.txt" && svn commit -q -m r3 "$B/seed"
+co() { svn checkout -q -r "$1" "$R/trunk" "$B/$2"; }
+co 1 behind
+co 2 pinned2
+co 3 at_head
+co 3 edited_ok && echo edited > "$B/edited_ok/file.txt"
+co 3 newer
+co 3 mixed && svn update -q -r 1 "$B/mixed/file.txt"
+co 3 remove_me
+co 3 remove_url
+SETUP
+    verify = "tests/checkout_verify.ws"
+
+    step "head_checkout" {
+      description = "A missing dest is checked out at the repository's HEAD"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/fresh" repo = "file:///srv/cw-svn/converge/repo/trunk" }
+    }
+
+    // The space in dest proves the path reaches svn as one argument.
+    step "pinned_checkout" {
+      description = "A missing dest is checked out at a pinned revision, into a path with a space"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/pinned one" repo = "file:///srv/cw-svn/converge/repo/trunk" revision = "1" }
+    }
+
+    step "parent_created" {
+      description = "Missing parent directories of dest are created"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/new/deep/wc" repo = "file:///srv/cw-svn/converge/repo/trunk" revision = "2" }
+    }
+
+    step "head_update" {
+      description = "A clean working copy at an older revision is updated to HEAD"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/behind" repo = "file:///srv/cw-svn/converge/repo/trunk" }
+    }
+
+    step "pinned_noop" {
+      description = "A working copy at the pinned revision is converged although HEAD is newer"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-svn/converge/pinned2" repo = "file:///srv/cw-svn/converge/repo/trunk" revision = "2" }
+    }
+
+    step "head_noop" {
+      description = "A working copy at HEAD is converged"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-svn/converge/at_head" repo = "file:///srv/cw-svn/converge/repo/trunk" }
+    }
+
+    step "edited_at_revision" {
+      description = "Local edits on a working copy already at the wanted revision are left alone"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-svn/converge/edited_ok" repo = "file:///srv/cw-svn/converge/repo/trunk" }
+    }
+
+    step "downgrade" {
+      description = "A pinned revision lower than the working copy's is held: the working copy is updated down"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/newer" repo = "file:///srv/cw-svn/converge/repo/trunk" revision = "1" }
+    }
+
+    // The root is at r3 = the wanted revision; only file.txt is at r1.
+    step "mixed_revisions" {
+      description = "A working copy whose root is at the wanted revision but holds an older path is drift and is updated as a whole"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/mixed" repo = "file:///srv/cw-svn/converge/repo/trunk" revision = "3" }
+    }
+
+    step "remove_clean" {
+      description = "A clean working copy is removed; no repo is needed"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/remove_me" ensure = :absent }
+    }
+
+    // The trailing slash proves repo is compared in svn's canonical form.
+    step "remove_matching_url" {
+      description = "With repo set, a clean working copy of that URL is removed"
+      resource = "checkout"
+      properties { dest = "/srv/cw-svn/converge/remove_url" repo = "file:///srv/cw-svn/converge/repo/trunk/" ensure = :absent }
+    }
+
+    step "remove_missing" {
+      description = "A missing dest is already absent"
+      resource = "checkout"
+      expect = "already_configured"
+      properties { dest = "/srv/cw-svn/converge/never" ensure = :absent }
+    }
+  }
+
+  // Every step is a refusal or an input error; the verify script proves
+  // that each seeded tree is unchanged and that no rejected dest was
+  // created. The credential URL has only the shape of one.
+  test "checkout_errors" {
+    description = "subversion.checkout refuses local state, other URLs, unrelated paths and unsafe input, and reports repository errors"
+    image = "debian:12"
+    group = "svn-checkout"
+    setup = <<'SETUP'
+set -e
+(command -v svn && command -v svnadmin && command -v svnversion) >/dev/null || (apt-get update -qq && apt-get install -y -qq subversion)
+B=/srv/cw-svn/errors
+R="file://$B/repo"
+rm -rf "$B" && mkdir -p "$B"
+svnadmin create "$B/repo"
+mkdir -p "$B/init/trunk/sub" "$B/init/branches"
+echo one > "$B/init/trunk/file.txt" && echo a > "$B/init/trunk/sub/a.txt"
+svn import -q -m r1 "$B/init" "$R"
+svn copy -q -m r2 "$R/trunk" "$R/branches/b"
+svn checkout -q "$R/trunk" "$B/seed"
+echo three > "$B/seed/file.txt" && svn commit -q -m r3 "$B/seed"
+co() { svn checkout -q -r "$1" "$R/trunk" "$B/$2"; }
+co 1 edited && echo edited > "$B/edited/file.txt"
+co 1 unversioned && echo mine > "$B/unversioned/new.txt"
+co 3 switched && svn switch -q "$R/branches/b/sub" "$B/switched/sub"
+svn checkout -q "$R/branches/b" "$B/wrongurl"
+mkdir "$B/plain" && echo mine > "$B/plain/keep.txt"
+mkdir "$B/empty"
+echo mine > "$B/afile"
+co 3 target_a && ln -s "$B/target_a" "$B/link_a"
+co 3 nest_a
+co 3 rm_edited && echo edited > "$B/rm_edited/file.txt"
+co 3 rm_unversioned && echo mine > "$B/rm_unversioned/new.txt"
+co 3 rm_ignored && echo obj > "$B/rm_ignored/build.o"
+co 3 rm_switched && svn switch -q "$R/branches/b/sub" "$B/rm_switched/sub"
+svn checkout -q "$R/branches/b" "$B/rm_wrongurl"
+mkdir "$B/rm_plain" && echo mine > "$B/rm_plain/keep.txt"
+mkdir "$B/rm_empty"
+co 3 target_b && ln -s "$B/target_b" "$B/link_b"
+co 3 nest_b
+SETUP
+    verify = "tests/checkout_verify.ws"
+
+    step "edited" {
+      description = "Local edits block an update"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/edited" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "unversioned" {
+      description = "An unversioned file blocks an update"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/unversioned" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    // Every path is at HEAD, so only the switched path makes it drift.
+    step "switched" {
+      description = "A working copy with a switched path is not converged and is not updated"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/switched" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "wrong_url" {
+      description = "A working copy of another URL is not changed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/wrongurl" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "plain_dir" {
+      description = "A directory that is not a working copy is not overwritten"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/plain" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "empty_dir" {
+      description = "An existing empty directory is not a working copy and is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/empty" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "file_dest" {
+      description = "A file at dest is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/afile" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "symlink_dest" {
+      description = "A symlink to a working copy is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/link_a" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "inside_wc" {
+      description = "A directory inside a working copy is not a working copy root and is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/nest_a/sub" repo = "file:///srv/cw-svn/errors/repo/trunk/sub" }
+    }
+
+    step "unknown_revision" {
+      description = "A revision the repository does not have is an error, not drift"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/unknown" repo = "file:///srv/cw-svn/errors/repo/trunk" revision = "99" }
+    }
+
+    step "unreadable_repo" {
+      description = "A repository that cannot be read is an error"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/unreadable" repo = "file:///srv/cw-svn/errors/missing" }
+    }
+
+    step "not_a_directory" {
+      description = "A URL of a file is an error"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/notdir" repo = "file:///srv/cw-svn/errors/repo/trunk/file.txt" }
+    }
+
+    step "missing_repo" {
+      description = "ensure = :present without repo"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/norepo" }
+    }
+
+    step "relative_dest" {
+      description = "A relative dest"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "srv/cw-svn/errors/rel" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "dotdot_dest" {
+      description = "A dest with a .. segment"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/../escape" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "peg_dest" {
+      description = "A dest with '@'"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/at@1" repo = "file:///srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "revision_zero" {
+      description = "Revision 0 is not a positive number"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rev0" repo = "file:///srv/cw-svn/errors/repo/trunk" revision = "0" }
+    }
+
+    step "revision_word" {
+      description = "A revision keyword is not accepted"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/revword" repo = "file:///srv/cw-svn/errors/repo/trunk" revision = "HEAD" }
+    }
+
+    step "credentials_in_url" {
+      description = "A URL with a password is rejected before svn runs"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/creds" repo = "https://user:notasecret@example.invalid/svn/trunk" }
+    }
+
+    step "path_not_url" {
+      description = "A plain path is not a repository URL"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/plainpath" repo = "/srv/cw-svn/errors/repo/trunk" }
+    }
+
+    step "option_repo" {
+      description = "A repo that looks like an option is rejected"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/option" repo = "--config-dir=/tmp" }
+    }
+
+    step "rm_edited" {
+      description = "A working copy with local edits is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_edited" ensure = :absent }
+    }
+
+    step "rm_unversioned" {
+      description = "A working copy with an unversioned file is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_unversioned" ensure = :absent }
+    }
+
+    step "rm_ignored" {
+      description = "A working copy with an ignored file (build.o) is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_ignored" ensure = :absent }
+    }
+
+    step "rm_switched" {
+      description = "A working copy with a switched path is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_switched" ensure = :absent }
+    }
+
+    step "rm_wrong_url" {
+      description = "With repo set, a working copy of another URL is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_wrongurl" repo = "file:///srv/cw-svn/errors/repo/trunk" ensure = :absent }
+    }
+
+    step "rm_plain" {
+      description = "A directory that is not a working copy is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_plain" ensure = :absent }
+    }
+
+    step "rm_empty" {
+      description = "An empty directory is not a working copy and is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/rm_empty" ensure = :absent }
+    }
+
+    step "rm_symlink" {
+      description = "A symlink to a working copy is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/link_b" ensure = :absent }
+    }
+
+    step "rm_inside_wc" {
+      description = "A directory inside a working copy is not removed"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv/cw-svn/errors/nest_b/sub" ensure = :absent }
+    }
+
+    step "rm_root" {
+      description = "/ is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/" ensure = :absent }
+    }
+
+    step "rm_top_level" {
+      description = "A top-level directory is refused"
+      resource = "checkout"
+      expect = "error"
+      properties { dest = "/srv" ensure = :absent }
+    }
+  }
+}
